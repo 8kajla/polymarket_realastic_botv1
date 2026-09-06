@@ -66,6 +66,10 @@ class PaperBot:
         self.pending_resolution: dict[str, Market] = {}
         self.last_price_by_token: dict[str, float] = {}
         self._last_price_delta: dict[str, float] = {}
+        self._resolution_last_attempt: dict[str, float] = {}
+        self._resolution_failure_count: dict[str, int] = {}
+        self._resolution_first_seen: dict[str, float] = {}
+        self._last_pnl_summary_at: float = 0.0
 
         self.ws_client = MarketWebSocketClient(get_book_state=self.book_states.get)
 
@@ -203,24 +207,108 @@ class PaperBot:
 
     # -- resolution / settlement -------------------------------------------
 
-    async def resolution_tick(self) -> None:
+    def _forget_resolution_tracking(self, cid: str) -> None:
+        self._resolution_last_attempt.pop(cid, None)
+        self._resolution_failure_count.pop(cid, None)
+        self._resolution_first_seen.pop(cid, None)
+
+    async def resolution_tick(self, now: float | None = None) -> None:
+        """
+        Poll Gamma for outcomes on retired (closed) markets, and settle any
+        filled orders once a winning side is decisive.
+
+        Rate-limited and bounded on purpose -- confirmed live that without
+        this, a growing backlog gets retried on every 2-second tick with no
+        backoff, which both self-inflicts a 429 storm against Gamma and (via
+        one full traceback logged per market per tick) floods Railway's own
+        log ingestion badly enough that Railway starts dropping messages.
+        Per market: at most one attempt per RESOLUTION_RETRY_COOLDOWN_SECONDS,
+        growing on repeated failure; at most RESOLUTION_MAX_ATTEMPTS_PER_TICK
+        markets attempted per call; and a hard give-up after
+        RESOLUTION_MAX_AGE_SECONDS so a persistently-broken lookup can't grow
+        the backlog (and therefore the request rate) forever.
+        """
+        now = now if now is not None else time.time()
+        attempted = 0
+
         for cid, market in list(self.pending_resolution.items()):
+            if attempted >= config.RESOLUTION_MAX_ATTEMPTS_PER_TICK:
+                break
+
+            first_seen = self._resolution_first_seen.setdefault(cid, now)
+            if now - first_seen > config.RESOLUTION_MAX_AGE_SECONDS:
+                logger.warning(
+                    "ABANDONED resolution for market=%s asset=%s after %.0fs -- Gamma never "
+                    "reported a decisive outcome; any filled orders on this market remain "
+                    "unsettled and are excluded from realized P&L",
+                    market.slug, market.asset, now - first_seen,
+                )
+                del self.pending_resolution[cid]
+                self._forget_resolution_tracking(cid)
+                continue
+
+            fails = self._resolution_failure_count.get(cid, 0)
+            cooldown = config.RESOLUTION_RETRY_COOLDOWN_SECONDS
+            if fails > 0:
+                cooldown = max(cooldown, config.RESOLUTION_BACKOFF_ON_FAILURE_SECONDS *
+                               min(fails, config.RESOLUTION_MAX_BACKOFF_MULTIPLIER))
+            # None (not 0.0) means "never attempted" -- do NOT use 0.0 as
+            # that sentinel here, the same class of bug already bit
+            # SimulatedOrder.remaining_size once (see fill_simulation.py):
+            # a 0.0 "unset" default is indistinguishable from a real
+            # elapsed-time-since-epoch-zero value in an edge case.
+            last_attempt = self._resolution_last_attempt.get(cid)
+            if last_attempt is not None and now - last_attempt < cooldown:
+                continue
+
+            attempted += 1
+            self._resolution_last_attempt[cid] = now
             try:
                 raw = await asyncio.to_thread(fetch_market_by_slug, market.slug, self.session)
-            except Exception:
-                logger.exception("resolution poll failed for market %s; will retry", market.slug)
+            except Exception as exc:
+                self._resolution_failure_count[cid] = fails + 1
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                logger.warning("resolution poll failed for market=%s (attempt %d, http_status=%s): %s",
+                                market.slug, fails + 1, status, exc)
                 continue
+
+            self._resolution_failure_count.pop(cid, None)
             if raw is None:
                 continue
+
             winning_side = parse_resolution(raw)
             if winning_side is None:
-                continue  # not resolved yet, try again next tick
+                logger.info("resolution check market=%s closed=%s outcomePrices=%s -- not decisive yet",
+                            market.slug, raw.get("closed"), raw.get("outcomePrices"))
+                continue
 
-            for order in self.fill_sim.orders.values():
-                if order.condition_id == cid and order.filled_size > 0:
-                    self.ledger.settle_order(order, winning_side)
+            settled = [
+                self.ledger.settle_order(order, winning_side)
+                for order in self.fill_sim.orders.values()
+                if order.condition_id == cid and order.filled_size > 0
+            ]
+            settled = [r for r in settled if r is not None]
             self.ledger.save()
+            logger.info(
+                "RESOLVED market=%s asset=%s winning_side=%s settled_orders=%d "
+                "realized_pnl_total=%.4f",
+                market.slug, market.asset, winning_side, len(settled), self.ledger.realized_pnl(),
+            )
             del self.pending_resolution[cid]
+            self._forget_resolution_tracking(cid)
+
+    def log_pnl_summary(self, now: float | None = None) -> None:
+        """Periodic heartbeat, independent of any individual settlement, so
+        realized P&L is visible in the logs even during a quiet stretch."""
+        now = now if now is not None else time.time()
+        by_asset = {a: round(v, 4) for a, v in self.ledger.realized_pnl_by_asset().items()}
+        open_orders = sum(1 for o in self.fill_sim.orders.values() if o.is_open())
+        logger.info(
+            "PNL_SUMMARY realized_total=%.4f settled_trades=%d open_orders=%d "
+            "pending_resolution=%d by_asset=%s",
+            self.ledger.realized_pnl(), len(self.ledger.records), open_orders,
+            len(self.pending_resolution), by_asset,
+        )
 
     # -- main loop -----------------------------------------------------
 
@@ -259,10 +347,14 @@ class PaperBot:
         ws_task = asyncio.create_task(self._ws_supervisor())
         try:
             while not stop_event.is_set():
-                await self.discovery_tick()
-                await self.strategy_tick()
-                self.manage_orders_tick()
-                await self.resolution_tick()
+                now = time.time()
+                await self.discovery_tick(now)
+                await self.strategy_tick(now)
+                self.manage_orders_tick(now)
+                await self.resolution_tick(now)
+                if now - self._last_pnl_summary_at >= config.PNL_SUMMARY_INTERVAL_SECONDS:
+                    self.log_pnl_summary(now)
+                    self._last_pnl_summary_at = now
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=tick_seconds)
                 except asyncio.TimeoutError:
@@ -270,7 +362,8 @@ class PaperBot:
         finally:
             ws_task.cancel()
             self.ledger.save()
-            logger.info("Shut down cleanly. Realized PnL: %.4f", self.ledger.realized_pnl())
+            self.log_pnl_summary()
+            logger.info("Shut down cleanly.")
 
     async def _ws_supervisor(self) -> None:
         """Reconnects the WebSocket with backoff if it drops. A dropped

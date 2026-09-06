@@ -31,7 +31,7 @@ paperbot/
   fill_simulation.py   the paper fill model (queueing, drift, expiry)
   ledger.py            settlement + realized P&L (recomputed, never cached)
   bot.py               main loop wiring it all together
-tests/                 107 tests covering the above
+tests/                 116 tests covering the above
 run_bot.py             CLI entry point
 ```
 
@@ -166,7 +166,7 @@ end:
 
 ## What the test suite covers
 
-107 tests, `python3 -m pytest tests/ -v`:
+116 tests, `python3 -m pytest tests/ -v`:
 
 - **Band classification** at the exact 0.30/0.70/0.90 boundaries.
 - **Per-asset sizing curves are genuinely distinct** -- a test that fails
@@ -302,13 +302,68 @@ in the book/WS layer once markets actually started onboarding:**
    addition happens). Covered by
    `TestSubscribeNeverSendsASecondMessageOnALiveConnection`.
 
-Both deploy-2 fixes were made from log evidence, not from a live
-reconnect I personally watched succeed -- the next deploy's logs are
-still the real confirmation. If `INVALID OPERATION` shows up again after
-this fix, that would mean there's a second, independent issue in the
-subscription payload shape itself (e.g. `custom_feature_enabled` isn't
-actually accepted the way the mirrored docs suggested), not just the
-one-message-per-connection behavior found here.
+Both deploy-2 fixes were confirmed live on the next deploy: clean
+onboarding across all six assets, `PLACE`/`REPRICE`/`FILLED` log lines
+flowing normally, no further `INVALID OPERATION` or float-parsing errors.
+
+**Deploy 2 logs also caught one more bug** while the pipeline was
+otherwise working correctly:
+
+5. **`FILLED order=9 ... time_to_fill=-0.1s`** -- a fill can't take
+   negative time. Root cause: `pending_trades` is drained once per
+   main-loop tick, *after* `strategy_tick` may have placed a brand-new
+   order that same tick. A trade print timestamped before that order
+   existed could still be sitting undrained and get applied to it once
+   placed -- but that trade is already reflected in the book snapshot the
+   order's `queue_ahead` was measured against, so letting it also
+   fill/drain-queue for an order it predates is both physically
+   impossible and pollutes the fill-rate/time-to-fill calibration stats.
+
+   **Fix:** `on_trade_print` now excludes any order with
+   `placed_at > trade.ts` from the candidate list entirely. Covered by
+   `TestTradesBeforeOrderPlacementAreIgnored`.
+
+**Deploy 3: the pipeline was placing, repricing, and filling orders
+correctly -- but resolution/settlement had never once succeeded, and the
+logs revealed why.**
+
+6. **An unbounded resolution backlog self-inflicted a 429 storm and
+   flooded Railway's own log ingestion.** `resolution_tick` retried
+   *every* pending market on *every* 2-second tick, forever, with no
+   backoff or cap. Over several hours of uptime the backlog grew into the
+   hundreds (5-minute markets across six assets accumulate fast when
+   nothing ever resolves), and each tick fired that many synchronous
+   Gamma requests. The result: `429 Too Many Requests` on effectively
+   every resolution lookup, `Railway rate limit reached for deployment,
+   ... Messages dropped: 483` (our own full-traceback-per-market-per-tick
+   logging was itself dense enough to get throttled by Railway's log
+   ingestion), and -- since every lookup was failing before it could even
+   be inspected -- zero visibility into whether the resolution logic
+   itself worked.
+
+   **Fix:** `resolution_tick` now enforces, per market: a minimum
+   `RESOLUTION_RETRY_COOLDOWN_SECONDS` (30s) between attempts, growing via
+   `RESOLUTION_BACKOFF_ON_FAILURE_SECONDS` on repeated failure; a hard
+   `RESOLUTION_MAX_ATTEMPTS_PER_TICK` (3) cap so a large backlog is worked
+   down gradually instead of all at once; and a
+   `RESOLUTION_MAX_AGE_SECONDS` (2h) give-up so a persistently-broken
+   lookup can't grow the backlog (and request rate) forever -- an
+   abandoned market's filled orders simply stay unsettled and excluded
+   from realized P&L, logged explicitly rather than silently dropped.
+   Failure logging switched from a full traceback per attempt to one
+   concise warning line. Covered by `TestResolutionThrottling` (attempt
+   cap, cooldown, backoff growth, max-age abandonment, and a successful
+   end-to-end resolution).
+
+   **This was also the fix for "no P&L visible in the logs"**: since
+   resolution never succeeded, `ledger.settle_order`'s existing per-
+   settlement log line never fired either. On top of unblocking that, a
+   `RESOLVED market=... winning_side=... settled_orders=N
+   realized_pnl_total=...` line now logs on every successful resolution,
+   and a `PNL_SUMMARY` heartbeat (`PNL_SUMMARY_INTERVAL_SECONDS`, default
+   5 min) logs running realized P&L, open-order count, and per-asset
+   breakdown independent of any individual settlement -- so P&L is
+   visible during quiet stretches too, not just at shutdown.
 
 ## Provenance
 

@@ -9,8 +9,14 @@ import os
 import signal
 import time
 
+import pytest
+import requests
+
+import paperbot.bot as botmod
+from paperbot import config
 from paperbot.bot import PaperBot
 from paperbot.book import BookState
+from paperbot.fill_simulation import Fill, OrderStatus, SimulatedOrder
 from paperbot.market_discovery import Market
 from paperbot.strategy import MarketActivityState
 
@@ -132,3 +138,137 @@ class TestHaltingIsolatesOnlyTheFailingMarket:
         assert bad_market.condition_id in bot.halted_conditions
         assert good_market.condition_id in bot.resting_order_id
         assert good_market.condition_id not in bot.halted_conditions
+
+
+def make_pending_market(n, asset="Bitcoin"):
+    cid = f"cond-{n}"
+    return cid, make_bitcoin_market(condition_id=cid)
+
+
+def make_filled_order(condition_id, order_id, asset="Bitcoin", side="Up", price=0.3, size=5.0):
+    order = SimulatedOrder(
+        order_id=order_id, condition_id=condition_id, token_id=f"{condition_id}-up",
+        asset=asset, regime="MID", position_tier="first", side=side, price=price,
+        original_size=size, is_floor_lot=False, placed_at=0.0, remaining_size=0.0,
+    )
+    order.fills.append(Fill(size=size, price=price, ts=0.0))
+    order.status = OrderStatus.FILLED
+    return order
+
+
+class TestResolutionThrottling:
+    """Direct regression tests for a live-confirmed bug: an unbounded
+    resolution backlog got retried on every 2-second tick with no backoff,
+    which self-inflicted a 429 storm against Gamma and flooded Railway's
+    own log ingestion (dropped messages) with one traceback per market per
+    tick. All of these run with the real config constants -- if someone
+    loosens RESOLUTION_MAX_ATTEMPTS_PER_TICK back to "attempt everything",
+    the first test here catches it."""
+
+    def test_at_most_max_attempts_per_tick_are_made(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        n_markets = config.RESOLUTION_MAX_ATTEMPTS_PER_TICK + 5
+        for i in range(n_markets):
+            cid, market = make_pending_market(i)
+            bot.pending_resolution[cid] = market
+
+        call_count = {"n": 0}
+
+        def fake_fetch(slug, session=None, timeout=10.0):
+            call_count["n"] += 1
+            return None  # "still open" -- no resolution yet
+
+        monkeypatch.setattr(botmod, "fetch_market_by_slug", fake_fetch)
+
+        asyncio.run(bot.resolution_tick(now=1000.0))
+
+        assert call_count["n"] == config.RESOLUTION_MAX_ATTEMPTS_PER_TICK
+        assert len(bot.pending_resolution) == n_markets  # none resolved, none dropped
+
+    def test_a_market_is_not_retried_before_its_cooldown_elapses(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=2)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+
+        call_count = {"n": 0}
+        monkeypatch.setattr(botmod, "fetch_market_by_slug",
+                             lambda slug, session=None, timeout=10.0: call_count.update(n=call_count["n"] + 1) or None)
+
+        asyncio.run(bot.resolution_tick(now=1000.0))
+        assert call_count["n"] == 1
+
+        # Immediately again, well within the cooldown window.
+        asyncio.run(bot.resolution_tick(now=1000.5))
+        assert call_count["n"] == 1, "must not retry before RESOLUTION_RETRY_COOLDOWN_SECONDS elapses"
+
+        # After the cooldown, it should retry.
+        asyncio.run(bot.resolution_tick(now=1000.0 + config.RESOLUTION_RETRY_COOLDOWN_SECONDS + 1))
+        assert call_count["n"] == 2
+
+    def test_repeated_failures_back_off_further_each_time(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=3)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+
+        def always_fails(slug, session=None, timeout=10.0):
+            resp = requests.Response()
+            resp.status_code = 429
+            raise requests.HTTPError("429", response=resp)
+
+        monkeypatch.setattr(botmod, "fetch_market_by_slug", always_fails)
+
+        asyncio.run(bot.resolution_tick(now=0.0))
+        assert bot._resolution_failure_count[cid] == 1
+
+        # Cooldown after 1 failure should exceed the base cooldown.
+        asyncio.run(bot.resolution_tick(now=config.RESOLUTION_RETRY_COOLDOWN_SECONDS + 1))
+        assert bot._resolution_failure_count[cid] == 1, "should still be backing off, not retried yet"
+
+        asyncio.run(bot.resolution_tick(now=config.RESOLUTION_BACKOFF_ON_FAILURE_SECONDS + 1))
+        assert bot._resolution_failure_count[cid] == 2
+
+    def test_gives_up_after_max_age_without_ever_calling_fetch(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=4)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        bot._resolution_first_seen[cid] = 0.0  # first seen at t=0
+
+        call_count = {"n": 0}
+        monkeypatch.setattr(botmod, "fetch_market_by_slug",
+                             lambda slug, session=None, timeout=10.0: call_count.update(n=call_count["n"] + 1) or None)
+
+        asyncio.run(bot.resolution_tick(now=config.RESOLUTION_MAX_AGE_SECONDS + 1))
+
+        assert cid not in bot.pending_resolution
+        assert call_count["n"] == 0, "should give up before even attempting a fetch past max age"
+
+    def test_successful_resolution_settles_filled_orders_and_logs_pnl(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=5)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        order = make_filled_order(cid, order_id=1, side="Up", price=0.3, size=5.0)
+        bot.fill_sim.orders[order.order_id] = order
+
+        def fake_fetch(slug, session=None, timeout=10.0):
+            return {"closed": True, "outcomes": '["Up", "Down"]', "outcomePrices": '["1", "0"]'}
+
+        monkeypatch.setattr(botmod, "fetch_market_by_slug", fake_fetch)
+
+        asyncio.run(bot.resolution_tick(now=1000.0))
+
+        assert cid not in bot.pending_resolution
+        assert bot.ledger.realized_pnl() == pytest.approx(5.0 * 1.0 - 5.0 * 0.3)
+
+
+class TestPnlSummaryLogging:
+    def test_log_pnl_summary_does_not_raise_and_reports_totals(self, caplog):
+        bot = PaperBot(assets=["Bitcoin"], seed=6)
+        order = make_filled_order("cond-x", order_id=1, price=0.4, size=2.0)
+        bot.fill_sim.orders[order.order_id] = order
+        bot.ledger.settle_order(order, winning_side="Up")
+
+        with caplog.at_level("INFO"):
+            bot.log_pnl_summary(now=1000.0)
+
+        assert any("PNL_SUMMARY" in r.message for r in caplog.records)
+        assert any("realized_total=" in r.message for r in caplog.records)

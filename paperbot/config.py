@@ -81,6 +81,23 @@ ALL_ASSETS = list(ASSET_SLUG_PREFIXES.keys())
 MARKET_DISCOVERY_POLL_SECONDS = 20
 
 # ---------------------------------------------------------------------------
+# Market resolution polling (post-close, waiting for Gamma to report the
+# winning outcome). Confirmed live: without these limits, a growing backlog
+# of unresolved markets gets retried on EVERY tick with no backoff, which
+# both self-inflicts a 429 storm against Gamma and floods Railway's own log
+# ingestion (dropped messages) with one full traceback per market per tick.
+# ---------------------------------------------------------------------------
+RESOLUTION_RETRY_COOLDOWN_SECONDS = 30.0   # don't re-hit the same market more often than this
+RESOLUTION_MAX_ATTEMPTS_PER_TICK = 3       # spread the backlog across ticks instead of blasting all of it
+RESOLUTION_BACKOFF_ON_FAILURE_SECONDS = 60.0  # extra cooldown per consecutive failure, capped below
+RESOLUTION_MAX_BACKOFF_MULTIPLIER = 5
+RESOLUTION_MAX_AGE_SECONDS = 2 * 60 * 60   # give up and log an explicit abandonment after this long
+
+# How often to log a running realized-P&L summary, independent of any
+# individual settlement.
+PNL_SUMMARY_INTERVAL_SECONDS = 300
+
+# ---------------------------------------------------------------------------
 # Timing
 # ---------------------------------------------------------------------------
 # Never place a NEW entry, and never let a resting paper order keep sitting

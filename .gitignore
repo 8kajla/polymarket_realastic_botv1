@@ -27,3 +27,6 @@ trade.jsonl
 
 # OS cruft
 .DS_Store
+
+# Claude Code session state -- not project files
+.claude/
