@@ -5,6 +5,9 @@ by construction, such as state going stale across the strategy /
 fill-simulation / order-tracking boundary.
 """
 import asyncio
+import os
+import signal
+import time
 
 from paperbot.bot import PaperBot
 from paperbot.book import BookState
@@ -85,6 +88,25 @@ class TestTimingGateBlocksLateMarkets:
 
         asyncio.run(bot.strategy_tick(now=1000.0))
         assert market.condition_id not in bot.resting_order_id
+
+
+class TestGracefulShutdownOnSignal:
+    """Railway (and most container platforms) send SIGTERM on redeploy/
+    stop, not SIGINT -- run_forever must actually stop (not hang until
+    the platform SIGKILLs it) and must not blow up trying to save state."""
+
+    def test_sigterm_stops_run_forever_promptly(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=5)
+        bot.discovery._last_poll = time.time()  # skip a real network poll attempt
+        bot.ledger.save = lambda *a, **kw: None  # avoid writing to disk in a test
+
+        async def scenario():
+            task = asyncio.create_task(bot.run_forever(tick_seconds=0.05))
+            await asyncio.sleep(0.1)
+            os.kill(os.getpid(), signal.SIGTERM)
+            await asyncio.wait_for(task, timeout=2.0)
+
+        asyncio.run(scenario())  # raises asyncio.TimeoutError if it hangs
 
 
 class TestHaltingIsolatesOnlyTheFailingMarket:

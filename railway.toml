@@ -1,0 +1,20 @@
+# Railway deployment config (Config as Code). Railway currently reads
+# this file for build/deploy settings; as of this build Railway flags
+# Config as Code as deprecated in favor of "Infrastructure as Code" but
+# still honors existing files (through at least 2026-12-01). If this file
+# stops being read, set the same two values (builder, start command)
+# directly in the Railway dashboard's service Settings instead.
+#
+# This is a background worker, not a web service: it opens an outbound
+# WebSocket to Polymarket and never listens on $PORT. Don't enable
+# "Generate Domain" for this service -- there's nothing for it to serve.
+
+[build]
+builder = "RAILPACK"
+
+[deploy]
+# -u: unbuffered stdout/stderr, so Railway's log viewer shows output
+# immediately instead of waiting for Python's buffer to flush.
+startCommand = "python -u run_bot.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

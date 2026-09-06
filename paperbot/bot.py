@@ -20,6 +20,8 @@ import argparse
 import asyncio
 import logging
 import random
+import signal
+import sys
 import time
 
 import requests
@@ -223,16 +225,42 @@ class PaperBot:
     # -- main loop -----------------------------------------------------
 
     async def run_forever(self, tick_seconds: float = 2.0) -> None:
+        """
+        Runs until asked to stop via SIGTERM/SIGINT (both handled the same
+        way here, since Railway -- and most container platforms -- send
+        SIGTERM on redeploy/stop, not SIGINT). Shutdown is prompt (interrupts
+        the tick sleep immediately) and always saves the ledger before
+        returning, so a redeploy doesn't lose recent settlements that
+        haven't hit a natural save point yet.
+        """
+        stop_event = asyncio.Event()
+
+        def _request_stop(sig_name: str) -> None:
+            logger.info("Received %s; shutting down gracefully.", sig_name)
+            stop_event.set()
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, _request_stop, sig.name)
+            except NotImplementedError:
+                pass  # e.g. Windows -- SIGINT still surfaces as KeyboardInterrupt there
+
         ws_task = asyncio.create_task(self._ws_supervisor())
         try:
-            while True:
+            while not stop_event.is_set():
                 await self.discovery_tick()
                 await self.strategy_tick()
                 self.manage_orders_tick()
                 await self.resolution_tick()
-                await asyncio.sleep(tick_seconds)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=tick_seconds)
+                except asyncio.TimeoutError:
+                    pass
         finally:
             ws_task.cancel()
+            self.ledger.save()
+            logger.info("Shut down cleanly. Realized PnL: %.4f", self.ledger.realized_pnl())
 
     async def _ws_supervisor(self) -> None:
         """Reconnects the WebSocket with backoff if it drops. A dropped
@@ -258,7 +286,10 @@ def main() -> None:
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
-    logging.basicConfig(level=args.log_level,
+    # stream=sys.stdout (rather than logging's default stderr) so this
+    # reads cleanly in Railway's log viewer, which surfaces both but
+    # orders/labels stdout more predictably for a single-process worker.
+    logging.basicConfig(level=args.log_level, stream=sys.stdout,
                          format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     bot = PaperBot(assets=args.assets, queue_safety_factor=args.queue_safety_factor,
@@ -268,6 +299,9 @@ def main() -> None:
     try:
         asyncio.run(bot.run_forever())
     except KeyboardInterrupt:
+        # Fallback path only -- run_forever installs its own SIGINT/SIGTERM
+        # handlers and normally returns cleanly (ledger already saved)
+        # before this would ever fire.
         logger.info("Shutting down. Realized PnL: %.4f", bot.ledger.realized_pnl())
 
 

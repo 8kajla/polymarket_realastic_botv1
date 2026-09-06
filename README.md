@@ -38,15 +38,54 @@ run_bot.py             CLI entry point
 ## Running it
 
 ```
-pip install -r requirements.txt
+pip install -r requirements-dev.txt          # runtime deps + pytest
 python3 run_bot.py                          # all six assets
 python3 run_bot.py --assets Bitcoin BNB      # restrict to a subset
 QUEUE_SAFETY_FACTOR=0.3 python3 run_bot.py   # tune the fill model
 python3 -m pytest tests/ -v                  # run the test suite
 ```
 
+For a production/deployment install (no test dependencies), use
+`pip install -r requirements.txt` -- see "Deploying on Railway" below.
+
 Paper-trading state (the settlement ledger) is written to `data/`, which
 is gitignored -- it's local run output, not code.
+
+## Deploying on Railway
+
+This repo is set up to deploy on Railway as a background worker (no HTTP
+port, no public domain needed):
+
+- **`railway.toml`** sets the builder to `RAILPACK` (Railway's current
+  default builder) and `startCommand = "python -u run_bot.py"` (`-u` for
+  unbuffered output, so logs show up immediately in Railway's log
+  viewer). Restart policy is `ON_FAILURE` with up to 10 retries -- the bot
+  should run indefinitely; if the whole process crashes on something
+  outside a single market's fail-closed isolation, Railway brings it back.
+- **`.python-version`** pins Python 3.13 for Railway's Railpack builder.
+- **`requirements.txt`** has only runtime deps (`requests`, `websockets`);
+  `pytest` lives in `requirements-dev.txt` so it doesn't get installed in
+  the deployed container.
+- Don't enable "Generate Domain" for this service -- it's a worker that
+  opens an outbound WebSocket to Polymarket, it doesn't listen on `$PORT`.
+
+**Environment variables to set in Railway's Variables tab** (all
+optional -- sane defaults if you set none of them):
+- `QUEUE_SAFETY_FACTOR` -- fill-model tuning, default `0.25`.
+- `POLYMARKET_TRADING_MODE` -- leave unset (defaults to `paper`). Setting
+  it to anything but `paper` makes the bot refuse to start, on purpose.
+- `PAPERBOT_DATA_DIR` -- see persistence note below.
+
+**Persistence note:** Railway's default filesystem is ephemeral --
+a redeploy or restart wipes `data/paper_ledger.json` unless you attach a
+[Railway Volume](https://docs.railway.com/reference/volumes) and set
+`PAPERBOT_DATA_DIR` to its mount path (e.g. mount a volume at `/data` and
+set `PAPERBOT_DATA_DIR=/data`). Without a volume, the bot still runs
+fine -- it just starts its realized-P&L history over on every redeploy.
+
+**Graceful shutdown:** `run_forever()` installs SIGTERM/SIGINT handlers
+and saves the ledger before exiting, so a Railway redeploy's stop signal
+doesn't lose recent settlements.
 
 ## Safety
 
@@ -128,7 +167,7 @@ end:
 
 ## What the test suite covers
 
-96 tests, `python3 -m pytest tests/ -v`:
+97 tests, `python3 -m pytest tests/ -v`:
 
 - **Band classification** at the exact 0.30/0.70/0.90 boundaries.
 - **Per-asset sizing curves are genuinely distinct** -- a test that fails
@@ -156,8 +195,11 @@ end:
   check that there is no mutable running-total field to accidentally
   increment from two places.
 - **Cross-module wiring** (`tests/test_bot.py`): one-order-per-market
-  policy, the 90-second timing gate end to end, and a fail-closed check
-  that an exception in one market halts only that market.
+  policy, the 90-second timing gate end to end, a fail-closed check that
+  an exception in one market halts only that market, and a graceful-
+  shutdown test that sends the running process a real `SIGTERM` and
+  confirms `run_forever()` stops promptly rather than hanging until
+  Railway (or any host) has to `SIGKILL` it.
 
 ### Two real bugs this build caught in its own pre-commit testing
 
