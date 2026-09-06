@@ -31,7 +31,7 @@ paperbot/
   fill_simulation.py   the paper fill model (queueing, drift, expiry)
   ledger.py            settlement + realized P&L (recomputed, never cached)
   bot.py               main loop wiring it all together
-tests/                 123 tests covering the above
+tests/                 125 tests covering the above
 run_bot.py             CLI entry point
 ```
 
@@ -166,7 +166,7 @@ end:
 
 ## What the test suite covers
 
-123 tests, `python3 -m pytest tests/ -v`:
+125 tests, `python3 -m pytest tests/ -v`:
 
 - **Band classification** at the exact 0.30/0.70/0.90 boundaries.
 - **Per-asset sizing curves are genuinely distinct** -- a test that fails
@@ -393,15 +393,31 @@ Gamma's `closed` flag had simply never flipped.**
    integration tests (resolves via price when `closed=False`; does NOT
    resolve on an indecisive price even without `closed`).
 
-   **Separately observed, not yet acted on:** the WebSocket periodically
-   disconnects with `1013 (try again later) slow consumer: send buffer
-   full` (a few times over 30 minutes). The existing reconnect-with-
-   backoff in `_ws_supervisor` handles this cleanly with no data loss or
-   crash, so it isn't blocking anything -- but it suggests the event
-   loop occasionally isn't draining incoming WS messages fast enough
-   (candidate cause: per-message book-level re-sorting, or onboarding
-   bursts of sequential REST calls at market rollovers). Flagged here as
-   a known, currently-benign issue rather than a silent one.
+**Deploy 5: the price-fallback resolution fix confirmed working end to
+end** -- real settlements landed with real P&L (e.g. 12 filled Bitcoin
+orders settling to -$11.95 on one market). While confirming that, the WS
+"slow consumer" disconnect flagged as benign above recurred twice more,
+both times within seconds of a 5-minute market rollover -- enough of a
+pattern to fix rather than continue merely documenting:
+
+8. **Onboarding a rollover batch (up to 6 markets x 2 tokens = 12
+   blocking REST round trips) awaited them sequentially, one after
+   another, all within a single coroutine.** The event loop can
+   technically interleave other coroutines during any single await, but a
+   long chain of them back-to-back gave the WS reader task repeated
+   opportunities to fall behind, and it did -- confirmed live, twice, both
+   times seconds after a batch of `ONBOARD` lines.
+
+   **Fix:** `_onboard_markets` (was `_onboard_market`, singular) now
+   bootstraps every token across the WHOLE batch concurrently via
+   `asyncio.gather` over `asyncio.to_thread`, and subscribes once with the
+   complete set of new token ids instead of once per market (which also
+   incidentally removed some redundant same-tick WS-close calls from the
+   old per-market subscribe pattern). A failure bootstrapping one market's
+   token still only halts that market -- covered by
+   `TestBatchedOnboarding`. Not yet independently re-confirmed against a
+   live rollover (same watch-and-see position as every fix in this log);
+   the existing reconnect-with-backoff remains the safety net regardless.
 
 ## Provenance
 

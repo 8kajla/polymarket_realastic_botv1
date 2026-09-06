@@ -90,29 +90,65 @@ class PaperBot:
         new_conditions = set(active) - set(self.markets_by_condition)
         dropped_conditions = set(self.markets_by_condition) - set(active)
 
-        for cid in new_conditions:
-            market = active[cid]
-            await self._onboard_market(market)
+        new_markets = [active[cid] for cid in new_conditions]
+        if new_markets:
+            await self._onboard_markets(new_markets)
 
         for cid in dropped_conditions:
             await self._retire_market(self.markets_by_condition[cid])
 
         self.markets_by_condition = active
 
-    async def _onboard_market(self, market: Market) -> None:
-        logger.info("ONBOARD market=%s asset=%s condition=%s", market.slug, market.asset,
-                    market.condition_id)
-        self.activity[market.condition_id] = MarketActivityState()
-        for token_id in (market.token_id_up, market.token_id_down):
+    async def _onboard_markets(self, markets: list[Market]) -> None:
+        """
+        Onboard a batch of newly-discovered markets. Every token's REST
+        book-bootstrap across the WHOLE batch runs concurrently (asyncio.
+        gather over asyncio.to_thread) rather than one market -- and one
+        token within it -- at a time.
+
+        This isn't just a speed optimization: confirmed live that
+        sequentially awaiting up to 12 blocking REST round trips (6 markets
+        x 2 tokens, the normal size of a 5-minute rollover batch) coincided
+        with the WebSocket getting kicked as a "slow consumer" (websockets
+        1013) a couple of times. The event loop can technically interleave
+        other coroutines while any single await is pending, but a long
+        CHAIN of sequential awaits in this one coroutine gives the WS
+        reader far more, and far more frequent, opportunities to fall
+        behind than one batched gather does. The existing reconnect-with-
+        backoff in _ws_supervisor already recovered cleanly every time this
+        happened, but reducing how often it happens at all is worth doing
+        now that there's a clear, reproducible trigger (rollover batches).
+        """
+        for market in markets:
+            logger.info("ONBOARD market=%s asset=%s condition=%s", market.slug, market.asset,
+                        market.condition_id)
+            self.activity[market.condition_id] = MarketActivityState()
+
+        token_jobs = [
+            (market, token_id)
+            for market in markets
+            for token_id in (market.token_id_up, market.token_id_down)
+        ]
+
+        async def _bootstrap_one(market: Market, token_id: str):
             try:
-                state = await asyncio.to_thread(bootstrap_book_state, token_id, self.session)
+                return await asyncio.to_thread(bootstrap_book_state, token_id, self.session)
             except Exception:
                 logger.exception("failed to bootstrap book for token %s (market %s); halting it",
                                   token_id, market.slug)
                 self.halted_conditions.add(market.condition_id)
-                continue
-            self.book_states[token_id] = state
-        await self.ws_client.subscribe([market.token_id_up, market.token_id_down])
+                return None
+
+        results = await asyncio.gather(*(_bootstrap_one(m, t) for m, t in token_jobs))
+
+        subscribed_ids = []
+        for (market, token_id), state in zip(token_jobs, results):
+            if state is not None:
+                self.book_states[token_id] = state
+                subscribed_ids.append(token_id)
+
+        if subscribed_ids:
+            await self.ws_client.subscribe(subscribed_ids)
 
     async def _retire_market(self, market: Market) -> None:
         logger.info("RETIRE market=%s asset=%s condition=%s", market.slug, market.asset,

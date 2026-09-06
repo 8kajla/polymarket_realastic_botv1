@@ -41,6 +41,81 @@ def wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0):
     return up
 
 
+class TestBatchedOnboarding:
+    """Direct regression tests for a live-confirmed issue: onboarding a
+    rollover batch (6 markets x 2 tokens = 12 sequential REST round trips,
+    awaited one after another) coincided with the WebSocket getting kicked
+    as a "slow consumer" a couple of times in production. Onboarding now
+    bootstraps every token across the whole batch concurrently and
+    subscribes once with the complete set, instead of once per market."""
+
+    def test_multiple_new_markets_bootstrap_concurrently_and_subscribe_once(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        markets = [make_bitcoin_market(condition_id=f"cond-{i}") for i in range(3)]
+
+        call_order = []
+
+        def fake_poll():
+            return {m.condition_id: m for m in markets}
+
+        def fake_bootstrap(token_id, session=None):
+            call_order.append(token_id)
+            book = BookState(token_id=token_id)
+            book.apply_snapshot(bids=[(0.2, 10)], asks=[(0.21, 10)])
+            return book
+
+        subscribe_calls = []
+        orig_subscribe = bot.ws_client.subscribe
+
+        async def spy_subscribe(token_ids):
+            subscribe_calls.append(list(token_ids))
+            await orig_subscribe(token_ids)
+
+        monkeypatch.setattr(bot.discovery, "poll", fake_poll)
+        monkeypatch.setattr(botmod, "bootstrap_book_state", fake_bootstrap)
+        monkeypatch.setattr(bot.ws_client, "subscribe", spy_subscribe)
+        bot.discovery._last_poll = 0.0  # force due_for_poll() true
+
+        asyncio.run(bot.discovery_tick(now=1000.0))
+
+        # All 6 tokens (3 markets x 2) bootstrapped...
+        assert len(call_order) == 6
+        assert set(call_order) == {t for m in markets for t in (m.token_id_up, m.token_id_down)}
+        # ...and subscribed in exactly ONE call with the complete set, not
+        # once per market.
+        assert len(subscribe_calls) == 1
+        assert set(subscribe_calls[0]) == set(call_order)
+        for m in markets:
+            assert m.condition_id in bot.activity
+
+    def test_one_markets_bootstrap_failure_does_not_block_the_others(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=2)
+        good_market = make_bitcoin_market(condition_id="cond-good")
+        bad_market = make_bitcoin_market(condition_id="cond-bad")
+
+        def fake_poll():
+            return {good_market.condition_id: good_market, bad_market.condition_id: bad_market}
+
+        def fake_bootstrap(token_id, session=None):
+            if "bad" in token_id:
+                raise RuntimeError("simulated REST failure")
+            book = BookState(token_id=token_id)
+            book.apply_snapshot(bids=[(0.2, 10)], asks=[(0.21, 10)])
+            return book
+
+        monkeypatch.setattr(bot.discovery, "poll", fake_poll)
+        monkeypatch.setattr(botmod, "bootstrap_book_state", fake_bootstrap)
+        bot.discovery._last_poll = 0.0
+
+        asyncio.run(bot.discovery_tick(now=1000.0))
+
+        assert good_market.token_id_up in bot.book_states
+        assert good_market.token_id_down in bot.book_states
+        assert bad_market.token_id_up not in bot.book_states
+        assert bad_market.condition_id in bot.halted_conditions
+        assert good_market.condition_id not in bot.halted_conditions
+
+
 class TestOneOrderPerMarketPolicy:
     def test_second_strategy_tick_does_not_double_place(self):
         bot = PaperBot(assets=["Bitcoin"], seed=1)
