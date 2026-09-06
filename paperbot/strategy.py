@@ -117,28 +117,47 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     return max(median * jitter, 0.0), False
 
 
-def build_order_intent(market: Market, book: BookState, activity: MarketActivityState,
-                        rng: random.Random, recent_price_delta: Optional[float] = None,
+def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
+                        activity: MarketActivityState, rng: random.Random,
+                        recent_price_delta: Optional[float] = None,
                         now: Optional[float] = None) -> Optional[OrderIntent]:
     """
     Runs the full per-market pipeline (steps 1-6 of Part 5) and returns an
     OrderIntent, or None if this market isn't tradeable right now. Does NOT
     check for an existing pending order in this market -- bot.py enforces
     at-most-one-resting-order-per-market before calling this.
+
+    Requires BOTH the Up and Down token's books, not just one: Down's
+    price is (roughly) 1 - Up's price, NOT the same value, so once `side`
+    is decided, regime classification, sizing, and the resting price must
+    all come from whichever token is actually about to be traded.
+
+    An earlier version took a single `book` (always the Up token's,
+    regardless of which side got chosen) and used it for everything,
+    treating Down as if it "shared the same regime dynamics" as Up. That
+    assumption is only defensible for liquidity shape (spread/depth), not
+    price -- and confirmed live to badly mis-classify and mis-size Down
+    orders: a HIGH-band Up price (e.g. 0.95, meaning Up is heavily
+    favored) was used to size a Down order that actually got postOnly-
+    corrected down to Down's real ~0.03 price, producing a HIGH-regime
+    notional divided by a CHEAP-regime price -- a 1354-share order that
+    should have been a normal small CHEAP-band size.
     """
     if not timing_ok(market, now):
         return None
 
-    price = book.best_bid
+    side = decide_side(market.asset, activity, rng)
+    side_book = up_book if side == "Up" else down_book
+
+    price = side_book.best_bid
     if price is None:
         return None
     regime = bc.classify_regime(price)
 
-    ok, reason = availability_check(book)
+    ok, reason = availability_check(side_book)
     if not ok:
         return None
 
-    side = decide_side(market.asset, activity, rng)
     position_tier = activity.position_tier()
     notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng)
 

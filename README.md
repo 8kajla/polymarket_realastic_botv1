@@ -31,7 +31,7 @@ paperbot/
   fill_simulation.py   the paper fill model (queueing, drift, expiry)
   ledger.py            settlement + realized P&L (recomputed, never cached)
   bot.py               main loop wiring it all together
-tests/                 126 tests covering the above
+tests/                 127 tests covering the above
 run_bot.py             CLI entry point
 ```
 
@@ -166,7 +166,7 @@ end:
 
 ## What the test suite covers
 
-126 tests, `python3 -m pytest tests/ -v`:
+127 tests, `python3 -m pytest tests/ -v`:
 
 - **Band classification** at the exact 0.30/0.70/0.90 boundaries.
 - **Per-asset sizing curves are genuinely distinct** -- a test that fails
@@ -438,6 +438,59 @@ pattern to fix rather than continue merely documenting:
    30 connections per host (comfortable headroom over the ~12-connection
    worst case), via `_make_session()`. Covered by
    `TestSessionConnectionPoolSizing`.
+
+**Deploy 6: the most serious bug in this log.** Trading, resolution, and
+P&L were all confirmed working, and then a single settlement jumped
+realized P&L from -$16.46 to +$1,297.27 -- one order, `entry_cost=$40.63,
+payout=$1,354.36`. The order that produced it: `PLACE ... asset=Bitcoin
+regime=HIGH ... side=Down price=0.0300 size=1354.360918`. **A "HIGH"-regime
+order priced at $0.03 is internally impossible** -- HIGH is 0.90-1.00 --
+which is what led to finding this:
+
+10. **Every order's regime, price, and sizing were computed from the Up
+    token's book, regardless of which side (`Up`/`Down`) actually got
+    traded.** `_evaluate_one_market` fetched only `token_id_up`'s book and
+    passed it into `build_order_intent` as *the* book; `build_order_intent`
+    used it for `classify_regime`, `availability_check`, and
+    `decide_size` unconditionally, then only used the correct Down token
+    for the final `token_id`. The Down token's real price is (roughly)
+    `1 - Up's price` -- not the same value -- so whenever `decide_side`
+    picked "Down" while Up was, say, 0.95 (HIGH), the order was priced and
+    sized as a HIGH-band trade using Up's 0.95, while Down's *real* price
+    was ~0.05 (CHEAP). The postOnly safety check then silently
+    "corrected" the price down to Down's actual book (~0.03) to avoid
+    constructing a crossing order -- without correcting the regime or the
+    notional that had already been sized off the wrong curve. Result:
+    `notional / price` with a HIGH-sized notional and a CHEAP-sized price
+    produces a wildly oversized order (1354 shares from what should have
+    been roughly a 15-40 unit HIGH-regime notional).
+
+    This affected **every single Down-side order since this bot went
+    live** -- roughly half of all trades, given side is close to a coin
+    flip on a market's first entry. It's the reason several earlier
+    `PLACE ... regime=X ... price=Y` log lines looked internally
+    inconsistent in hindsight (X's band and Y didn't match) -- that
+    inconsistency was sitting in the logs the whole time; it just took an
+    extreme case (a near-1300-share order) to be obvious enough to
+    investigate.
+
+    **Fix:** `build_order_intent` now requires both `up_book` and
+    `down_book`, decides `side` *first*, then uses whichever book actually
+    corresponds to that side for `classify_regime`, `availability_check`,
+    and `decide_size` -- not just for the final resting price. Covered by
+    `test_regime_price_and_sizing_come_from_the_chosen_sides_book`, which
+    reproduces the exact live scenario (Up=0.95/HIGH, Down=0.04/CHEAP,
+    side forced to Down) and asserts the intent is correctly CHEAP-priced
+    and CHEAP-sized, not HIGH-sized.
+
+    **Not addressed, flagged for awareness:** the still-open Bitcoin
+    position this bug produced live did go on to settle profitably (Down
+    won), so the paper ledger's +$1,297 isn't itself wrong or reversed --
+    but it's a real position that was sized by a bug, not by the intended
+    calibration, and shouldn't be read as a signal about strategy
+    performance. Anyone reviewing this bot's historical paper P&L should
+    treat everything settled before this fix's deploy timestamp as
+    unreliable for that reason.
 
 ## Provenance
 

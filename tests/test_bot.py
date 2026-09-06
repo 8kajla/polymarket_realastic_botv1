@@ -38,6 +38,15 @@ def wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0):
     up = BookState(token_id=market.token_id_up)
     up.apply_snapshot(bids=[(bid, depth)], asks=[(ask, depth)])
     bot.book_states[market.token_id_up] = up
+
+    # _evaluate_one_market requires both books since the fix for the
+    # wrong-book regime/sizing bug -- mirror Up's price for Down (roughly
+    # 1 - price, not exact, real markets aren't perfectly complementary
+    # either) so tests that don't care about Down specifically still see
+    # a normal two-sided liquid book.
+    down = BookState(token_id=market.token_id_down)
+    down.apply_snapshot(bids=[(round(1 - ask, 6), depth)], asks=[(round(1 - bid, 6), depth)])
+    bot.book_states[market.token_id_down] = down
     return up
 
 
@@ -223,6 +232,11 @@ class TestHaltingIsolatesOnlyTheFailingMarket:
                 raise RuntimeError("simulated book corruption")
 
         bot.book_states[bad_market.token_id_up] = ExplodingBook()
+        # A normal down book, so the up-book None-check doesn't
+        # short-circuit before ever touching the exploding property.
+        down = BookState(token_id=bad_market.token_id_down)
+        down.apply_snapshot(bids=[(0.79, 200.0)], asks=[(0.80, 200.0)])
+        bot.book_states[bad_market.token_id_down] = down
 
         asyncio.run(bot.strategy_tick(now=1000.0))
 

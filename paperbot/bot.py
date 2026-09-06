@@ -200,18 +200,20 @@ class PaperBot:
                 self.halted_conditions.add(cid)
 
     def _evaluate_one_market(self, market: Market, now: float) -> None:
-        # We evaluate against the "Up" token's book; the Down token is a
-        # mirror (price_down ~= 1 - price_up) and shares the same regime
-        # dynamics for our purposes, so one side is enough to decide
-        # in/out-of-band and liquidity.
-        book = self.book_states.get(market.token_id_up)
-        if book is None or book.best_bid is None:
+        # Both books are required: Down's price is (roughly) 1 - Up's
+        # price, not the same value, so build_order_intent needs whichever
+        # one actually corresponds to the side it decides to trade. See
+        # build_order_intent's docstring for the live bug this fixed.
+        up_book = self.book_states.get(market.token_id_up)
+        down_book = self.book_states.get(market.token_id_down)
+        if up_book is None or down_book is None or up_book.best_bid is None \
+                or down_book.best_bid is None:
             return
 
         activity = self.activity[market.condition_id]
-        delta = self._recent_price_delta(market.token_id_up, book.best_bid)
+        delta = self._recent_price_delta(market.token_id_up, up_book.best_bid)
 
-        intent = build_order_intent(market, book, activity, self.rng,
+        intent = build_order_intent(market, up_book, down_book, activity, self.rng,
                                      recent_price_delta=delta, now=now)
         if intent is None:
             return
