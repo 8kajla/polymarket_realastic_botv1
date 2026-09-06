@@ -111,6 +111,50 @@ class TestQueueConsumption:
         assert order.remaining_size == 0.0
 
 
+class TestTradesBeforeOrderPlacementAreIgnored:
+    """Direct regression test for a live-confirmed bug: pending_trades is
+    drained once per main-loop tick, so a trade print timestamped BEFORE
+    an order was placed can still be sitting undrained when that order
+    gets placed later in the same tick. It must not be able to fill (or
+    drain queue for) an order it predates -- that trade is already
+    reflected in the book snapshot the order's queue_ahead came from.
+    Confirmed live as a negative time_to_fill (order=9, time_to_fill=-0.1s)
+    before this filter existed."""
+
+    def test_a_trade_print_older_than_the_order_does_not_fill_it(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=0.0)  # no queue ahead
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0), book, now=10.0)
+
+        # This trade printed BEFORE the order existed (ts=9.0 < placed_at=10.0).
+        sim.on_trade_print("tok-up", TradePrint(price=0.20, size=5.0, side="SELL", ts=9.0))
+
+        assert order.status == OrderStatus.PENDING
+        assert order.filled_size == 0.0
+        assert order.first_fill_at is None
+
+    def test_a_trade_print_older_than_the_order_does_not_drain_its_queue_either(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=20.0)  # raw queue 20
+        sim = FillSimulator(queue_safety_factor=0.5)              # discounted queue 10
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0), book, now=10.0)
+        assert order.queue_ahead_discounted == pytest.approx(10.0)
+
+        sim.on_trade_print("tok-up", TradePrint(price=0.20, size=8.0, side="SELL", ts=9.0))
+
+        assert order.queue_ahead_discounted == pytest.approx(10.0)  # untouched
+
+    def test_a_trade_print_at_or_after_placement_still_fills_normally(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=0.0)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0), book, now=10.0)
+
+        sim.on_trade_print("tok-up", TradePrint(price=0.20, size=5.0, side="SELL", ts=10.0))
+
+        assert order.status == OrderStatus.FILLED
+        assert order.time_to_fill == pytest.approx(0.0)
+        assert order.time_to_fill >= 0
+
+
 class TestExpiry:
     def test_order_expires_unfilled_at_timing_cutoff(self):
         from paperbot import config

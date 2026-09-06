@@ -151,11 +151,22 @@ class FillSimulator:
         Consumption is applied price-then-time priority across our own
         open orders on this token (best price first, then earliest
         placement), matching real CLOB matching priority.
+
+        `trade.ts < order.placed_at` is excluded on purpose: pending_trades
+        is drained once per main-loop tick, so a trade that printed before
+        an order existed can still be sitting undrained when that order
+        gets placed later in the same tick. That trade is already
+        reflected in the book snapshot the order's queue_ahead was measured
+        against -- letting it also retroactively fill (or drain queue for)
+        an order it predates produces impossible negative time-to-fill and
+        inflates the fill rate. Confirmed live: order=9 in a real deploy
+        logged `time_to_fill=-0.1s` before this filter was added.
         """
         remaining_trade_size = trade.size
         candidates = [
             o for o in self.orders.values()
             if o.token_id == token_id and o.is_open() and trade.price <= o.price
+            and trade.ts >= o.placed_at
         ]
         candidates.sort(key=lambda o: (-o.price, o.placed_at))
 
