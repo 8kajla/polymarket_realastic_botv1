@@ -2,11 +2,14 @@
 Gamma API polling and active-market tracking for the six 5-minute crypto
 Up/Down markets.
 
-Network calls here (fetch_active_markets) are shaped per Polymarket's
-documented Gamma API contract but could not be live-tested from this
-build environment (no outbound network to polymarket.com hosts available
-here) -- verify against a live pull before relying on this in production,
-especially the ASSUMPTION-flagged slug prefixes in config.py.
+fetch_active_markets queries Gamma by exact slug for each asset's current
+and next 5-minute window, rather than paginating the full active-markets
+table. That's not just an efficiency choice: an earlier version did paginate
+`GET /markets?active=true&closed=false` and, on a real Railway deployment,
+Gamma returned `422 Unprocessable Entity` once the offset got deep enough
+(that endpoint covers every active market on the whole platform, not just
+these six, so it got there fast). Slug lookups are immune to that and
+confirmed working in that same live deployment.
 """
 from __future__ import annotations
 
@@ -106,35 +109,64 @@ def parse_market(raw: dict) -> Optional[Market]:
     )
 
 
+# 5-minute markets sit on a fixed 300-second grid: a market's slug embeds
+# the epoch second its window STARTS at, and that epoch is always a
+# multiple of BUCKET_SECONDS (confirmed from the historical trade data,
+# e.g. "bnb-updown-5m-1786127400" -- 1786127400 % 300 == 0).
+BUCKET_SECONDS = 300
+
+
+def _candidate_slugs(asset: str, now: Optional[float] = None) -> list[str]:
+    """
+    The slug(s) for `asset`'s current and next 5-minute window. Checking
+    two buckets (not just the current one) covers both "the next window
+    already exists and is worth onboarding early" and "we polled right at
+    a boundary and the current window's market hasn't rolled over in our
+    cache yet" -- without ever having to enumerate markets we don't care
+    about.
+    """
+    now = now if now is not None else time.time()
+    prefix = config.ASSET_SLUG_PREFIXES[asset]
+    current_bucket = int(now // BUCKET_SECONDS) * BUCKET_SECONDS
+    return [
+        f"{prefix}{current_bucket}",
+        f"{prefix}{current_bucket + BUCKET_SECONDS}",
+    ]
+
+
 def fetch_active_markets(session: Optional[requests.Session] = None,
-                          limit: int = 100, timeout: float = 10.0) -> list[Market]:
+                          assets: Optional[list[str]] = None,
+                          timeout: float = 10.0,
+                          now: Optional[float] = None) -> list[Market]:
     """
-    Poll Gamma for active, non-closed markets and return the ones matching
-    our six tracked assets' 5-minute Up/Down slug prefixes. Paginates until
-    a short page is returned.
+    Fetch exactly the markets we can trade right now: for each tracked
+    asset, look up its current and next 5-minute window BY SLUG, directly.
+
+    This deliberately does NOT enumerate Gamma's full active-markets table
+    (an earlier version did `GET /markets?active=true&closed=false` and
+    paginated through it) -- that endpoint returns every active market on
+    the entire platform across every category, not just these six, and in
+    production that pagination ran into a `422 Unprocessable Entity` once
+    the offset got large enough (Gamma appears to cap how deep you can
+    paginate). Querying the ~12 slugs we actually care about is both
+    immune to that limit and far cheaper per poll.
     """
+    assets = assets or config.ALL_ASSETS
     sess = session or requests
     markets: list[Market] = []
-    offset = 0
-    while True:
-        resp = sess.get(f"{config.GAMMA_BASE_URL}/markets", params={
-            "active": "true",
-            "closed": "false",
-            "archived": "false",
-            "limit": limit,
-            "offset": offset,
-        }, timeout=timeout)
-        resp.raise_for_status()
-        page = resp.json()
-        if not page:
-            break
-        for raw in page:
+    for asset in assets:
+        for slug in _candidate_slugs(asset, now):
+            try:
+                raw = fetch_market_by_slug(slug, session=sess, timeout=timeout)
+            except requests.HTTPError:
+                logger.warning("lookup failed for slug %s; skipping this cycle", slug,
+                                exc_info=True)
+                continue
+            if raw is None or raw.get("closed"):
+                continue
             m = parse_market(raw)
             if m is not None:
                 markets.append(m)
-        if len(page) < limit:
-            break
-        offset += limit
     return markets
 
 
@@ -182,14 +214,16 @@ class MarketDiscovery:
     `active` snapshots to manage WS subscriptions and per-market state."""
 
     def __init__(self, session: Optional[requests.Session] = None,
-                 poll_seconds: float = config.MARKET_DISCOVERY_POLL_SECONDS):
+                 poll_seconds: float = config.MARKET_DISCOVERY_POLL_SECONDS,
+                 assets: Optional[list[str]] = None):
         self._session = session or requests.Session()
         self.poll_seconds = poll_seconds
+        self.assets = assets or config.ALL_ASSETS
         self.active: dict[str, Market] = {}  # condition_id -> Market
         self._last_poll = 0.0
 
     def poll(self) -> dict[str, Market]:
-        markets = fetch_active_markets(session=self._session)
+        markets = fetch_active_markets(session=self._session, assets=self.assets)
         self.active = {m.condition_id: m for m in markets}
         self._last_poll = time.time()
         return self.active

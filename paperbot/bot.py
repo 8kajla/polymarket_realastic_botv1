@@ -53,7 +53,7 @@ class PaperBot:
 
         self.assets = assets or config.ALL_ASSETS
         self.session = requests.Session()
-        self.discovery = MarketDiscovery(session=self.session)
+        self.discovery = MarketDiscovery(session=self.session, assets=self.assets)
         self.fill_sim = FillSimulator(queue_safety_factor=queue_safety_factor)
         self.ledger = Ledger.load()
         self.rng = random.Random(seed)
@@ -245,6 +245,16 @@ class PaperBot:
                 loop.add_signal_handler(sig, _request_stop, sig.name)
             except NotImplementedError:
                 pass  # e.g. Windows -- SIGINT still surfaces as KeyboardInterrupt there
+
+        # Run one discovery pass BEFORE opening the WebSocket, so the
+        # connection has real token ids to subscribe with from the moment
+        # it opens rather than sitting connected with an empty
+        # subscription while the first poll is still in flight. Without
+        # this there's a race where the WS connects, sends nothing (no
+        # markets discovered yet), and the server closes it as an invalid/
+        # empty subscription -- which then repeats every reconnect until
+        # discovery happens to win the race.
+        await self.discovery_tick()
 
         ws_task = asyncio.create_task(self._ws_supervisor())
         try:
