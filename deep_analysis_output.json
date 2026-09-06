@@ -1,0 +1,1012 @@
+{
+  "meta": {
+    "total_trades": 778116,
+    "total_markets": 76154,
+    "confidently_resolved_markets": 64731,
+    "confident_pct": 85.0,
+    "trades_in_confidently_resolved_markets": 688034
+  },
+  "overall": {
+    "n": 688034,
+    "wins": 206664,
+    "cost": 2704775.18594676,
+    "payout": 2679239.790547044,
+    "pnl": -25535.395399992274,
+    "win_rate_pct": 30.04,
+    "roi_pct": -0.94
+  },
+  "by_asset": {
+    "Hyperliquid": {
+      "n": 119373,
+      "wins": 25993,
+      "cost": 113723.61117300643,
+      "payout": 102167.5024440718,
+      "pnl": -11556.10872899989,
+      "win_rate_pct": 21.77,
+      "roi_pct": -10.16
+    },
+    "Dogecoin": {
+      "n": 126132,
+      "wins": 15952,
+      "cost": 175668.88642697898,
+      "payout": 151091.4730709828,
+      "pnl": -24577.41335599706,
+      "win_rate_pct": 12.65,
+      "roi_pct": -13.99
+    },
+    "Bitcoin": {
+      "n": 125504,
+      "wins": 59092,
+      "cost": 1146532.004071043,
+      "payout": 1174356.849512009,
+      "pnl": 27824.845440999303,
+      "win_rate_pct": 47.08,
+      "roi_pct": 2.43
+    },
+    "Ethereum": {
+      "n": 112430,
+      "wins": 34137,
+      "cost": 642850.6474469965,
+      "payout": 630946.9441400572,
+      "pnl": -11903.703306999949,
+      "win_rate_pct": 30.36,
+      "roi_pct": -1.85
+    },
+    "Solana": {
+      "n": 122382,
+      "wins": 38410,
+      "cost": 489398.9950409887,
+      "payout": 484307.5413211291,
+      "pnl": -5091.45372000009,
+      "win_rate_pct": 31.39,
+      "roi_pct": -1.04
+    },
+    "BNB": {
+      "n": 82213,
+      "wins": 33080,
+      "cost": 136601.04178699714,
+      "payout": 136369.48005802903,
+      "pnl": -231.5617290000138,
+      "win_rate_pct": 40.24,
+      "roi_pct": -0.17
+    }
+  },
+  "by_asset_regime": {
+    "Hyperliquid|CHEAP": {
+      "n": 92448,
+      "wins": 6772,
+      "cost": 28968.80556399386,
+      "payout": 12753.407357001914,
+      "pnl": -16215.398207000202,
+      "win_rate_pct": 7.33,
+      "roi_pct": -55.98,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Dogecoin|MID": {
+      "n": 8159,
+      "wins": 3676,
+      "cost": 10353.185598999955,
+      "payout": 11960.125408000327,
+      "pnl": 1606.9398089999738,
+      "win_rate_pct": 45.05,
+      "roi_pct": 15.52,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Dogecoin|CHEAP": {
+      "n": 110886,
+      "wins": 5261,
+      "cost": 51339.785288992825,
+      "payout": 20311.430540000394,
+      "pnl": -31028.35474899617,
+      "win_rate_pct": 4.74,
+      "roi_pct": -60.44,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Dogecoin|HIGH": {
+      "n": 4994,
+      "wins": 4988,
+      "cost": 105137.1134940001,
+      "payout": 108317.32700400104,
+      "pnl": 3180.213510000058,
+      "win_rate_pct": 99.88,
+      "roi_pct": 3.02,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Hyperliquid|CORE": {
+      "n": 6662,
+      "wins": 6519,
+      "cost": 8931.170756000012,
+      "payout": 10557.17521900218,
+      "pnl": 1626.0044630000134,
+      "win_rate_pct": 97.85,
+      "roi_pct": 18.21,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Hyperliquid|HIGH": {
+      "n": 5340,
+      "wins": 5335,
+      "cost": 70491.77033399917,
+      "payout": 72793.97983699883,
+      "pnl": 2302.209503000035,
+      "win_rate_pct": 99.91,
+      "roi_pct": 3.27,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Dogecoin|CORE": {
+      "n": 2093,
+      "wins": 2027,
+      "cost": 8838.802045000006,
+      "payout": 10502.590119000195,
+      "pnl": 1663.7880739999937,
+      "win_rate_pct": 96.85,
+      "roi_pct": 18.82,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Hyperliquid|MID": {
+      "n": 14923,
+      "wins": 7367,
+      "cost": 5331.86451900022,
+      "payout": 6062.940031002465,
+      "pnl": 731.0755119999868,
+      "win_rate_pct": 49.37,
+      "roi_pct": 13.71,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Bitcoin|CHEAP": {
+      "n": 49455,
+      "wins": 3877,
+      "cost": 78415.15985900194,
+      "payout": 36995.97848499947,
+      "pnl": -41419.18137399875,
+      "win_rate_pct": 7.84,
+      "roi_pct": -52.82,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Bitcoin|CORE": {
+      "n": 21513,
+      "wins": 19765,
+      "cost": 229326.47240600138,
+      "payout": 262707.2042379952,
+      "pnl": 33380.73183199993,
+      "win_rate_pct": 91.87,
+      "roi_pct": 14.56,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Bitcoin|MID": {
+      "n": 37751,
+      "wins": 18714,
+      "cost": 138207.5072600025,
+      "payout": 145908.755125997,
+      "pnl": 7701.24786599973,
+      "win_rate_pct": 49.57,
+      "roi_pct": 5.57,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Bitcoin|HIGH": {
+      "n": 16785,
+      "wins": 16736,
+      "cost": 700582.8645459979,
+      "payout": 728744.9116630054,
+      "pnl": 28162.04711700017,
+      "win_rate_pct": 99.71,
+      "roi_pct": 4.02,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Ethereum|CHEAP": {
+      "n": 71951,
+      "wins": 4309,
+      "cost": 69122.0603869986,
+      "payout": 30907.74283000011,
+      "pnl": -38214.317556997994,
+      "win_rate_pct": 5.99,
+      "roi_pct": -55.29,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Ethereum|CORE": {
+      "n": 9179,
+      "wins": 8426,
+      "cost": 73266.84349799967,
+      "payout": 83484.99664700167,
+      "pnl": 10218.153148999763,
+      "win_rate_pct": 91.8,
+      "roi_pct": 13.95,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Ethereum|HIGH": {
+      "n": 12065,
+      "wins": 12023,
+      "cost": 450526.9744549995,
+      "payout": 464015.5284200206,
+      "pnl": 13488.553964999885,
+      "win_rate_pct": 99.65,
+      "roi_pct": 2.99,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Ethereum|MID": {
+      "n": 19235,
+      "wins": 9379,
+      "cost": 49934.76910699957,
+      "payout": 52538.6762429986,
+      "pnl": 2603.9071360000244,
+      "win_rate_pct": 48.76,
+      "roi_pct": 5.21,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Solana|CHEAP": {
+      "n": 75859,
+      "wins": 5665,
+      "cost": 57697.99549999524,
+      "payout": 28889.114934000554,
+      "pnl": -28808.88056599783,
+      "win_rate_pct": 7.47,
+      "roi_pct": -49.93,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Solana|HIGH": {
+      "n": 11098,
+      "wins": 11076,
+      "cost": 316746.912839996,
+      "payout": 328016.391231014,
+      "pnl": 11269.478390999908,
+      "win_rate_pct": 99.8,
+      "roi_pct": 3.56,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Solana|MID": {
+      "n": 24567,
+      "wins": 11490,
+      "cost": 49937.47472599934,
+      "payout": 51706.30944999566,
+      "pnl": 1768.8347240000126,
+      "win_rate_pct": 46.77,
+      "roi_pct": 3.54,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "Solana|CORE": {
+      "n": 10858,
+      "wins": 10179,
+      "cost": 65016.61197500034,
+      "payout": 75695.72570600129,
+      "pnl": 10679.113730999885,
+      "win_rate_pct": 93.75,
+      "roi_pct": 16.43,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "BNB|MID": {
+      "n": 26771,
+      "wins": 13580,
+      "cost": 23468.468552999595,
+      "payout": 23562.34179400357,
+      "pnl": 93.87324100001419,
+      "win_rate_pct": 50.73,
+      "roi_pct": 0.4,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "BNB|CHEAP": {
+      "n": 38446,
+      "wins": 3363,
+      "cost": 12637.147885000204,
+      "payout": 6285.687752000483,
+      "pnl": -6351.460132999965,
+      "win_rate_pct": 8.75,
+      "roi_pct": -50.26,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "BNB|CORE": {
+      "n": 11495,
+      "wins": 10665,
+      "cost": 26963.1317149998,
+      "payout": 30601.041500002728,
+      "pnl": 3637.909784999961,
+      "win_rate_pct": 92.78,
+      "roi_pct": 13.49,
+      "avg_price_vs_win_rate_edge": null
+    },
+    "BNB|HIGH": {
+      "n": 5501,
+      "wins": 5472,
+      "cost": 73532.29363399946,
+      "payout": 75920.40901199763,
+      "pnl": 2388.1153780000227,
+      "win_rate_pct": 99.47,
+      "roi_pct": 3.25,
+      "avg_price_vs_win_rate_edge": null
+    }
+  },
+  "by_asset_position": {
+    "Hyperliquid|first": {
+      "n": 14582,
+      "wins": 2797,
+      "cost": 18482.627866999625,
+      "payout": 16002.406885000433,
+      "pnl": -2480.220982000048,
+      "win_rate_pct": 19.18,
+      "roi_pct": -13.42
+    },
+    "Hyperliquid|2nd_3rd": {
+      "n": 24255,
+      "wins": 4085,
+      "cost": 32022.520351998886,
+      "payout": 27702.634756000665,
+      "pnl": -4319.88559599999,
+      "win_rate_pct": 16.84,
+      "roi_pct": -13.49
+    },
+    "Hyperliquid|4th_plus": {
+      "n": 80536,
+      "wins": 19111,
+      "cost": 63218.46295399243,
+      "payout": 58462.46080295494,
+      "pnl": -4756.002151000058,
+      "win_rate_pct": 23.73,
+      "roi_pct": -7.52
+    },
+    "Dogecoin|first": {
+      "n": 15537,
+      "wins": 2659,
+      "cost": 19689.003453999656,
+      "payout": 15973.904440000173,
+      "pnl": -3715.0990140000563,
+      "win_rate_pct": 17.11,
+      "roi_pct": -18.87
+    },
+    "Dogecoin|2nd_3rd": {
+      "n": 28202,
+      "wins": 3642,
+      "cost": 38717.55373899875,
+      "payout": 31342.21534900019,
+      "pnl": -7375.338389999985,
+      "win_rate_pct": 12.91,
+      "roi_pct": -19.05
+    },
+    "Dogecoin|4th_plus": {
+      "n": 82393,
+      "wins": 9651,
+      "cost": 117262.32923400537,
+      "payout": 103775.35328200764,
+      "pnl": -13486.975951999848,
+      "win_rate_pct": 11.71,
+      "roi_pct": -11.5
+    },
+    "Bitcoin|first": {
+      "n": 10229,
+      "wins": 4736,
+      "cost": 84453.28892500127,
+      "payout": 86402.65938299977,
+      "pnl": 1949.37045799999,
+      "win_rate_pct": 46.3,
+      "roi_pct": 2.31
+    },
+    "Bitcoin|2nd_3rd": {
+      "n": 19550,
+      "wins": 8969,
+      "cost": 186419.21185599838,
+      "payout": 190948.5591710006,
+      "pnl": 4529.347315000028,
+      "win_rate_pct": 45.88,
+      "roi_pct": 2.43
+    },
+    "Bitcoin|4th_plus": {
+      "n": 95725,
+      "wins": 45387,
+      "cost": 875659.5032900216,
+      "payout": 897005.6309580061,
+      "pnl": 21346.12766799966,
+      "win_rate_pct": 47.41,
+      "roi_pct": 2.44
+    },
+    "Ethereum|first": {
+      "n": 10691,
+      "wins": 3101,
+      "cost": 55853.490731999984,
+      "payout": 53315.79854099947,
+      "pnl": -2537.6921910000174,
+      "win_rate_pct": 29.01,
+      "roi_pct": -4.54
+    },
+    "Ethereum|2nd_3rd": {
+      "n": 19603,
+      "wins": 5224,
+      "cost": 111439.4435580012,
+      "payout": 107153.20003200108,
+      "pnl": -4286.24352600006,
+      "win_rate_pct": 26.65,
+      "roi_pct": -3.85
+    },
+    "Ethereum|4th_plus": {
+      "n": 82136,
+      "wins": 25812,
+      "cost": 475557.7131569934,
+      "payout": 470477.94556704786,
+      "pnl": -5079.767589999898,
+      "win_rate_pct": 31.43,
+      "roi_pct": -1.07
+    },
+    "Solana|first": {
+      "n": 10208,
+      "wins": 3343,
+      "cost": 35798.147827999695,
+      "payout": 34708.17327299943,
+      "pnl": -1089.9745550000055,
+      "win_rate_pct": 32.75,
+      "roi_pct": -3.04
+    },
+    "Solana|2nd_3rd": {
+      "n": 19079,
+      "wins": 5877,
+      "cost": 77494.10064200018,
+      "payout": 75955.39034199996,
+      "pnl": -1538.7103000000307,
+      "win_rate_pct": 30.8,
+      "roi_pct": -1.99
+    },
+    "Solana|4th_plus": {
+      "n": 93095,
+      "wins": 29190,
+      "cost": 376106.7465709893,
+      "payout": 373643.97770604986,
+      "pnl": -2462.7688650001764,
+      "win_rate_pct": 31.36,
+      "roi_pct": -0.65
+    },
+    "BNB|first": {
+      "n": 3484,
+      "wins": 1284,
+      "cost": 4250.191319000017,
+      "payout": 4119.342489999995,
+      "pnl": -130.8488289999999,
+      "win_rate_pct": 36.85,
+      "roi_pct": -3.08
+    },
+    "BNB|2nd_3rd": {
+      "n": 6876,
+      "wins": 2480,
+      "cost": 8348.389166000024,
+      "payout": 8330.302806000407,
+      "pnl": -18.08636000000052,
+      "win_rate_pct": 36.07,
+      "roi_pct": -0.22
+    },
+    "BNB|4th_plus": {
+      "n": 71853,
+      "wins": 29316,
+      "cost": 124002.46130200136,
+      "payout": 123919.83476204758,
+      "pnl": -82.62654000002459,
+      "win_rate_pct": 40.8,
+      "roi_pct": -0.07
+    }
+  },
+  "calibration_curve": {
+    "0.0": {
+      "n": 39955,
+      "wins": 17,
+      "win_rate_pct": 0.04,
+      "edge_pct": 0.04
+    },
+    "0.05": {
+      "n": 112588,
+      "wins": 760,
+      "win_rate_pct": 0.68,
+      "edge_pct": -4.32
+    },
+    "0.1": {
+      "n": 91709,
+      "wins": 2892,
+      "win_rate_pct": 3.15,
+      "edge_pct": -6.85
+    },
+    "0.15": {
+      "n": 75079,
+      "wins": 5517,
+      "win_rate_pct": 7.35,
+      "edge_pct": -7.65
+    },
+    "0.2": {
+      "n": 58501,
+      "wins": 7461,
+      "win_rate_pct": 12.75,
+      "edge_pct": -7.25
+    },
+    "0.25": {
+      "n": 46393,
+      "wins": 9002,
+      "win_rate_pct": 19.4,
+      "edge_pct": -5.6
+    },
+    "0.3": {
+      "n": 33728,
+      "wins": 8783,
+      "win_rate_pct": 26.04,
+      "edge_pct": -3.96
+    },
+    "0.35": {
+      "n": 23895,
+      "wins": 7613,
+      "win_rate_pct": 31.86,
+      "edge_pct": -3.14
+    },
+    "0.4": {
+      "n": 17350,
+      "wins": 6794,
+      "win_rate_pct": 39.16,
+      "edge_pct": -0.84
+    },
+    "0.45": {
+      "n": 14899,
+      "wins": 7032,
+      "win_rate_pct": 47.2,
+      "edge_pct": 2.2
+    },
+    "0.5": {
+      "n": 13721,
+      "wins": 7430,
+      "win_rate_pct": 54.15,
+      "edge_pct": 4.15
+    },
+    "0.55": {
+      "n": 13017,
+      "wins": 7975,
+      "win_rate_pct": 61.27,
+      "edge_pct": 6.27
+    },
+    "0.6": {
+      "n": 12528,
+      "wins": 8789,
+      "win_rate_pct": 70.15,
+      "edge_pct": 10.15
+    },
+    "0.65": {
+      "n": 12277,
+      "wins": 9453,
+      "win_rate_pct": 77.0,
+      "edge_pct": 12.0
+    },
+    "0.7": {
+      "n": 12295,
+      "wins": 10288,
+      "win_rate_pct": 83.68,
+      "edge_pct": 13.68
+    },
+    "0.75": {
+      "n": 13210,
+      "wins": 11712,
+      "win_rate_pct": 88.66,
+      "edge_pct": 13.66
+    },
+    "0.8": {
+      "n": 14742,
+      "wins": 13807,
+      "win_rate_pct": 93.66,
+      "edge_pct": 13.66
+    },
+    "0.85": {
+      "n": 18112,
+      "wins": 17568,
+      "win_rate_pct": 97.0,
+      "edge_pct": 12.0
+    },
+    "0.9": {
+      "n": 21711,
+      "wins": 21497,
+      "win_rate_pct": 99.01,
+      "edge_pct": 9.01
+    },
+    "0.95": {
+      "n": 29691,
+      "wins": 29641,
+      "win_rate_pct": 99.83,
+      "edge_pct": 4.83
+    },
+    "1.0": {
+      "n": 12633,
+      "wins": 12633,
+      "win_rate_pct": 100.0,
+      "edge_pct": 0.0
+    }
+  },
+  "side_persistence_consistency": {
+    "consistent": {
+      "n": 547110,
+      "wins": 148231,
+      "pnl": -39256.023697990095,
+      "win_rate_pct": 27.09
+    },
+    "switch": {
+      "n": 76193,
+      "wins": 40513,
+      "pnl": 21725.093410999238,
+      "win_rate_pct": 53.17
+    }
+  },
+  "floor_lot_vs_normal": {
+    "normal": {
+      "n": 517938,
+      "wins": 153060,
+      "cost": 2703670.7617462995,
+      "pnl": -25503.051200001017,
+      "win_rate_pct": 29.55,
+      "roi_pct": -0.94
+    },
+    "floor_lot": {
+      "n": 170096,
+      "wins": 53604,
+      "cost": 1104.4242000000302,
+      "pnl": -32.34420000000249,
+      "win_rate_pct": 31.51,
+      "roi_pct": -2.93
+    }
+  },
+  "gradient_alignment": {
+    "CHEAP|aligned": {
+      "n": 214256,
+      "wins": 13352,
+      "pnl": -81753.10729899863,
+      "win_rate_pct": 6.23
+    },
+    "CHEAP|not": {
+      "n": 183461,
+      "wins": 11861,
+      "pnl": -60800.42966798954,
+      "win_rate_pct": 6.47
+    },
+    "HIGH|aligned": {
+      "n": 31149,
+      "wins": 31058,
+      "pnl": 37008.820169999555,
+      "win_rate_pct": 99.71
+    },
+    "HIGH|not": {
+      "n": 21962,
+      "wins": 21909,
+      "pnl": 19538.39285199941,
+      "win_rate_pct": 99.76
+    }
+  },
+  "by_hour_utc": {
+    "0": {
+      "n": 30803,
+      "wins": 9403,
+      "pnl": 519.615399999936,
+      "win_rate_pct": 30.53
+    },
+    "1": {
+      "n": 29511,
+      "wins": 8253,
+      "pnl": -2280.5984700000295,
+      "win_rate_pct": 27.97
+    },
+    "2": {
+      "n": 26430,
+      "wins": 8445,
+      "pnl": 1175.225400999969,
+      "win_rate_pct": 31.95
+    },
+    "3": {
+      "n": 26449,
+      "wins": 8564,
+      "pnl": 312.2431009999936,
+      "win_rate_pct": 32.38
+    },
+    "4": {
+      "n": 24475,
+      "wins": 8241,
+      "pnl": 1482.4692789999654,
+      "win_rate_pct": 33.67
+    },
+    "5": {
+      "n": 25201,
+      "wins": 8049,
+      "pnl": 278.02423500000015,
+      "win_rate_pct": 31.94
+    },
+    "6": {
+      "n": 27641,
+      "wins": 8697,
+      "pnl": -329.7764669999956,
+      "win_rate_pct": 31.46
+    },
+    "7": {
+      "n": 27588,
+      "wins": 8599,
+      "pnl": -380.3859050000073,
+      "win_rate_pct": 31.17
+    },
+    "8": {
+      "n": 29789,
+      "wins": 9699,
+      "pnl": 310.7058149999919,
+      "win_rate_pct": 32.56
+    },
+    "9": {
+      "n": 28142,
+      "wins": 8914,
+      "pnl": -1307.7844290000419,
+      "win_rate_pct": 31.68
+    },
+    "10": {
+      "n": 26944,
+      "wins": 7759,
+      "pnl": -2199.843665000067,
+      "win_rate_pct": 28.8
+    },
+    "11": {
+      "n": 28611,
+      "wins": 8249,
+      "pnl": -1258.378812000027,
+      "win_rate_pct": 28.83
+    },
+    "12": {
+      "n": 29891,
+      "wins": 8253,
+      "pnl": -2593.882250000059,
+      "win_rate_pct": 27.61
+    },
+    "13": {
+      "n": 36278,
+      "wins": 10940,
+      "pnl": -2844.1684810000816,
+      "win_rate_pct": 30.16
+    },
+    "14": {
+      "n": 32404,
+      "wins": 10201,
+      "pnl": -126.05203300001469,
+      "win_rate_pct": 31.48
+    },
+    "15": {
+      "n": 32019,
+      "wins": 9345,
+      "pnl": -1261.3287150001142,
+      "win_rate_pct": 29.19
+    },
+    "16": {
+      "n": 31894,
+      "wins": 8611,
+      "pnl": -2236.831777000075,
+      "win_rate_pct": 27.0
+    },
+    "17": {
+      "n": 27444,
+      "wins": 8832,
+      "pnl": -453.9146430000531,
+      "win_rate_pct": 32.18
+    },
+    "18": {
+      "n": 29545,
+      "wins": 8729,
+      "pnl": -2099.3984620000265,
+      "win_rate_pct": 29.54
+    },
+    "19": {
+      "n": 28634,
+      "wins": 7875,
+      "pnl": -2811.5980640000876,
+      "win_rate_pct": 27.5
+    },
+    "20": {
+      "n": 26970,
+      "wins": 6982,
+      "pnl": -2958.6809910000065,
+      "win_rate_pct": 25.89
+    },
+    "21": {
+      "n": 28047,
+      "wins": 8359,
+      "pnl": -1406.2602870000649,
+      "win_rate_pct": 29.8
+    },
+    "22": {
+      "n": 26766,
+      "wins": 8422,
+      "pnl": 212.11220900000632,
+      "win_rate_pct": 31.47
+    },
+    "23": {
+      "n": 26558,
+      "wins": 7243,
+      "pnl": -3276.907389000036,
+      "win_rate_pct": 27.27
+    }
+  },
+  "by_day_of_week": {
+    "0": {
+      "n": 90465,
+      "wins": 24225,
+      "pnl": -7056.301094999854,
+      "win_rate_pct": 26.78
+    },
+    "1": {
+      "n": 84952,
+      "wins": 23066,
+      "pnl": -3111.9429650001307,
+      "win_rate_pct": 27.15
+    },
+    "2": {
+      "n": 101342,
+      "wins": 28865,
+      "pnl": -2915.3137780001466,
+      "win_rate_pct": 28.48
+    },
+    "3": {
+      "n": 102976,
+      "wins": 31429,
+      "pnl": -2454.2251530001745,
+      "win_rate_pct": 30.52
+    },
+    "4": {
+      "n": 121936,
+      "wins": 41829,
+      "pnl": -4214.8034420000895,
+      "win_rate_pct": 34.3
+    },
+    "5": {
+      "n": 96368,
+      "wins": 31805,
+      "pnl": -14.826772000159243,
+      "win_rate_pct": 33.0
+    },
+    "6": {
+      "n": 89995,
+      "wins": 25445,
+      "pnl": -5767.98219500008,
+      "win_rate_pct": 28.27
+    }
+  },
+  "entries_per_market": {
+    "4-6": {
+      "n_markets": 14676,
+      "total_pnl": -9829.880193999998,
+      "total_cost": 449853.003788,
+      "avg_pnl_per_market": -0.6698,
+      "roi_pct": -2.19
+    },
+    "7-15": {
+      "n_markets": 23372,
+      "total_pnl": -15813.974534999888,
+      "total_cost": 1054463.0809250032,
+      "avg_pnl_per_market": -0.6766,
+      "roi_pct": -1.5
+    },
+    "2-3": {
+      "n_markets": 10118,
+      "total_pnl": -3287.738027999998,
+      "total_cost": 221086.71204199942,
+      "avg_pnl_per_market": -0.3249,
+      "roi_pct": -1.49
+    },
+    "1": {
+      "n_markets": 3534,
+      "total_pnl": -1037.2870150000006,
+      "total_cost": 39615.18454599989,
+      "avg_pnl_per_market": -0.2935,
+      "roi_pct": -2.62
+    },
+    "16+": {
+      "n_markets": 13031,
+      "total_pnl": 4433.484371999957,
+      "total_cost": 939757.2046450025,
+      "avg_pnl_per_market": 0.3402,
+      "roi_pct": 0.47
+    }
+  },
+  "streak_transitions": {
+    "win_then_win": 142464,
+    "win_then_loss": 64200,
+    "loss_then_win": 64200,
+    "loss_then_loss": 417169
+  },
+  "dollar_weighted_win_rate_pct": 84.33,
+  "by_regime_consistency": {
+    "CHEAP|consistent": {
+      "n": 367336,
+      "wins": 22963,
+      "pnl": -131370.8569390301,
+      "cost": 236442.87679892595,
+      "win_rate_pct": 6.25,
+      "roi_pct": -55.56
+    },
+    "CHEAP|switch": {
+      "n": 30381,
+      "wins": 2250,
+      "pnl": -11182.680027999788,
+      "cost": 21444.860833999537,
+      "win_rate_pct": 7.41,
+      "roi_pct": -52.15
+    },
+    "HIGH|switch": {
+      "n": 16582,
+      "wins": 16548,
+      "pnl": 18215.54690699959,
+      "cost": 572201.772354984,
+      "win_rate_pct": 99.79,
+      "roi_pct": 3.18
+    },
+    "HIGH|consistent": {
+      "n": 36529,
+      "wins": 36419,
+      "pnl": 38331.66611499906,
+      "cost": 1049737.9165799324,
+      "win_rate_pct": 99.7,
+      "roi_pct": 3.65
+    },
+    "CORE|switch": {
+      "n": 13127,
+      "wins": 12424,
+      "pnl": 10623.773924999823,
+      "cost": 68973.10171299997,
+      "win_rate_pct": 94.64,
+      "roi_pct": 15.4
+    },
+    "MID|consistent": {
+      "n": 98731,
+      "wins": 47520,
+      "pnl": 9137.18395699992,
+      "cost": 209928.34573196905,
+      "win_rate_pct": 48.13,
+      "roi_pct": 4.35
+    },
+    "MID|switch": {
+      "n": 16103,
+      "wins": 9291,
+      "pnl": 4068.4526070000543,
+      "cost": 26278.059118999983,
+      "win_rate_pct": 57.7,
+      "roi_pct": 15.48
+    },
+    "CORE|consistent": {
+      "n": 44514,
+      "wins": 41329,
+      "pnl": 44645.98316899697,
+      "cost": 301241.5026889995,
+      "win_rate_pct": 92.84,
+      "roi_pct": 14.82
+    }
+  },
+  "per_market_net_result": {
+    "markets_evaluated": 64731,
+    "net_positive": 21125,
+    "net_negative": 43605,
+    "net_zero": 1,
+    "pct_net_negative": 67.36,
+    "pct_net_positive": 32.64,
+    "by_asset": {
+      "Hyperliquid": {
+        "pos": 3197,
+        "neg": 11385,
+        "zero": 0,
+        "pct_net_negative": 78.08
+      },
+      "Dogecoin": {
+        "pos": 3102,
+        "neg": 12435,
+        "zero": 0,
+        "pct_net_negative": 80.03
+      },
+      "Bitcoin": {
+        "pos": 5366,
+        "neg": 4862,
+        "zero": 1,
+        "pct_net_negative": 47.53
+      },
+      "Ethereum": {
+        "pos": 3733,
+        "neg": 6958,
+        "zero": 0,
+        "pct_net_negative": 65.08
+      },
+      "Solana": {
+        "pos": 4109,
+        "neg": 6099,
+        "zero": 0,
+        "pct_net_negative": 59.75
+      },
+      "BNB": {
+        "pos": 1618,
+        "neg": 1866,
+        "zero": 0,
+        "pct_net_negative": 53.56
+      }
+    }
+  }
+}
