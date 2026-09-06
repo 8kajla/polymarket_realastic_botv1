@@ -31,7 +31,7 @@ paperbot/
   fill_simulation.py   the paper fill model (queueing, drift, expiry)
   ledger.py            settlement + realized P&L (recomputed, never cached)
   bot.py               main loop wiring it all together
-tests/                 125 tests covering the above
+tests/                 126 tests covering the above
 run_bot.py             CLI entry point
 ```
 
@@ -166,7 +166,7 @@ end:
 
 ## What the test suite covers
 
-125 tests, `python3 -m pytest tests/ -v`:
+126 tests, `python3 -m pytest tests/ -v`:
 
 - **Band classification** at the exact 0.30/0.70/0.90 boundaries.
 - **Per-asset sizing curves are genuinely distinct** -- a test that fails
@@ -415,9 +415,29 @@ pattern to fix rather than continue merely documenting:
    incidentally removed some redundant same-tick WS-close calls from the
    old per-market subscribe pattern). A failure bootstrapping one market's
    token still only halts that market -- covered by
-   `TestBatchedOnboarding`. Not yet independently re-confirmed against a
-   live rollover (same watch-and-see position as every fix in this log);
-   the existing reconnect-with-backoff remains the safety net regardless.
+   `TestBatchedOnboarding`.
+
+   **Confirmed live within minutes** -- the very next rollover showed all
+   12 `ONBOARD` lines land at the identical millisecond timestamp
+   (`21:39:18,860`), proving the batch really does bootstrap concurrently
+   now rather than one-token-at-a-time. It also immediately surfaced a
+   side effect of its own success:
+
+9. **A burst of `Connection pool is full, discarding connection:
+   clob.polymarket.com. Connection pool size: 10` warnings** appeared
+   right after the concurrency fix landed. Firing ~12 concurrent
+   bootstrap tasks (each making 2 sequential REST calls) against one
+   shared `requests.Session` exceeded its default `HTTPAdapter`'s
+   10-connections-per-host pool. Not a functional bug -- `urllib3` just
+   opens a fresh connection instead of reusing one, and the bot kept
+   trading normally through it (`PLACE` orders logged immediately after)
+   -- but noisy and easy to fix properly rather than leave as a
+   self-inflicted warning storm on every rollover from now on.
+
+   **Fix:** the bot's shared session now mounts an `HTTPAdapter` sized to
+   30 connections per host (comfortable headroom over the ~12-connection
+   worst case), via `_make_session()`. Covered by
+   `TestSessionConnectionPoolSizing`.
 
 ## Provenance
 

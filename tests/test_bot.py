@@ -41,6 +41,22 @@ def wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0):
     return up
 
 
+class TestSessionConnectionPoolSizing:
+    """Direct regression test for a bug introduced by the onboarding
+    parallelization fix itself: firing ~12 concurrent bootstrap tasks (each
+    making 2 sequential requests) against one requests.Session exceeded
+    the default HTTPAdapter's 10-connections-per-host pool, confirmed live
+    as a burst of "Connection pool is full, discarding connection" urllib3
+    warnings right after that fix shipped."""
+
+    def test_session_pool_has_headroom_for_a_full_rollover_batch(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        adapter = bot.session.get_adapter("https://clob.polymarket.com/book")
+        # A full 6-market rollover batch bootstraps 12 tokens concurrently;
+        # the pool must comfortably exceed that, not merely match it.
+        assert adapter.poolmanager.connection_pool_kw.get("maxsize", 0) >= 12
+
+
 class TestBatchedOnboarding:
     """Direct regression tests for a live-confirmed issue: onboarding a
     rollover batch (6 markets x 2 tokens = 12 sequential REST round trips,

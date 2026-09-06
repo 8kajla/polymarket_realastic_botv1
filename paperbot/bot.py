@@ -42,6 +42,27 @@ from .strategy import MarketActivityState, build_order_intent, safe_postonly_pri
 
 logger = logging.getLogger("paperbot.bot")
 
+# _onboard_markets bootstraps every token in a rollover batch concurrently
+# (up to ~12 tokens at once, per market rollover) via asyncio.gather over
+# asyncio.to_thread, all against one shared requests.Session. requests'
+# default HTTPAdapter pools only 10 connections per host, which isn't
+# enough for that -- confirmed live as a burst of "Connection pool is
+# full, discarding connection: clob.polymarket.com" warnings right after
+# the onboarding-parallelization fix shipped (harmless -- urllib3 just
+# opens a fresh connection instead of reusing one -- but noisy and
+# avoidable). Sized with headroom above the current worst case.
+SESSION_POOL_SIZE = 30
+
+
+def _make_session() -> requests.Session:
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=SESSION_POOL_SIZE, pool_maxsize=SESSION_POOL_SIZE,
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
 
 class PaperBot:
     def __init__(self, assets: list[str] | None = None,
@@ -53,7 +74,7 @@ class PaperBot:
         config.get_trading_mode()
 
         self.assets = assets or config.ALL_ASSETS
-        self.session = requests.Session()
+        self.session = _make_session()
         self.discovery = MarketDiscovery(session=self.session, assets=self.assets)
         self.fill_sim = FillSimulator(queue_safety_factor=queue_safety_factor)
         self.ledger = Ledger.load()
