@@ -1,0 +1,1682 @@
+{
+  "meta": {
+    "input_file": "trade.jsonl",
+    "total_lines_read": 778116,
+    "distinct_markets": 76154,
+    "unparseable_asset_rows": 0,
+    "regime_bands": {
+      "CHEAP": [
+        0.0,
+        0.3
+      ],
+      "MID": [
+        0.3,
+        0.7
+      ],
+      "CORE": [
+        0.7,
+        0.9
+      ],
+      "HIGH": [
+        0.9,
+        1.0001
+      ]
+    }
+  },
+  "assets": {
+    "Hyperliquid": {
+      "trade_count": 127532,
+      "dollar_volume": 119714.79,
+      "regime_distribution": {
+        "CHEAP": {
+          "count": 96449,
+          "count_pct": 75.63,
+          "volume": 31536.4,
+          "volume_pct": 26.34
+        },
+        "MID": {
+          "count": 18669,
+          "count_pct": 14.64,
+          "volume": 7742.57,
+          "volume_pct": 6.47
+        },
+        "CORE": {
+          "count": 7074,
+          "count_pct": 5.55,
+          "volume": 9944.05,
+          "volume_pct": 8.31
+        },
+        "HIGH": {
+          "count": 5340,
+          "count_pct": 4.19,
+          "volume": 70491.77,
+          "volume_pct": 58.88
+        }
+      },
+      "entry_count_sizing": {
+        "CHEAP": {
+          "positions": {
+            "first": {
+              "n": 13000,
+              "median_usdc": 0.351175
+            },
+            "2nd-3rd": {
+              "n": 21374,
+              "median_usdc": 0.219512
+            },
+            "4th+": {
+              "n": 62075,
+              "median_usdc": 0.0046
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 47.14,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 9813,
+              "median_usdc": 0.702702
+            },
+            "2nd-3rd": {
+              "n": 15461,
+              "median_usdc": 0.45
+            },
+            "4th+": {
+              "n": 25713,
+              "median_usdc": 0.3
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "MID": {
+          "positions": {
+            "first": {
+              "n": 3083,
+              "median_usdc": 0.538461
+            },
+            "2nd-3rd": {
+              "n": 3483,
+              "median_usdc": 0.0106
+            },
+            "4th+": {
+              "n": 12103,
+              "median_usdc": 0.0088
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 75.97,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 1744,
+              "median_usdc": 1.891
+            },
+            "2nd-3rd": {
+              "n": 1330,
+              "median_usdc": 1.86
+            },
+            "4th+": {
+              "n": 1412,
+              "median_usdc": 1.86
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "flat"
+        },
+        "CORE": {
+          "positions": {
+            "first": {
+              "n": 462,
+              "median_usdc": 4.473
+            },
+            "2nd-3rd": {
+              "n": 710,
+              "median_usdc": 3.166666
+            },
+            "4th+": {
+              "n": 5902,
+              "median_usdc": 0.0166
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 73.98,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 381,
+              "median_usdc": 5.011111
+            },
+            "2nd-3rd": {
+              "n": 443,
+              "median_usdc": 5.396
+            },
+            "4th+": {
+              "n": 1017,
+              "median_usdc": 5.0172
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "flat"
+        },
+        "HIGH": {
+          "positions": {
+            "first": {
+              "n": 367,
+              "median_usdc": 17.233333
+            },
+            "2nd-3rd": {
+              "n": 863,
+              "median_usdc": 15.974
+            },
+            "4th+": {
+              "n": 4110,
+              "median_usdc": 0.0194
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 41.97,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 349,
+              "median_usdc": 18.6
+            },
+            "2nd-3rd": {
+              "n": 797,
+              "median_usdc": 18.228
+            },
+            "4th+": {
+              "n": 1953,
+              "median_usdc": 14.3507
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        }
+      },
+      "side_persistence_pct": 85.12,
+      "side_persistence_n": 110620,
+      "weakness_strength_gradient": {
+        "CHEAP": {
+          "n": 83449,
+          "rising_pct": 16.79,
+          "falling_pct": 56.16,
+          "flat_pct": 27.04
+        },
+        "MID": {
+          "n": 15586,
+          "rising_pct": 47.25,
+          "falling_pct": 33.68,
+          "flat_pct": 19.07
+        },
+        "CORE": {
+          "n": 6612,
+          "rising_pct": 60.42,
+          "falling_pct": 21.94,
+          "flat_pct": 17.63
+        },
+        "HIGH": {
+          "n": 4973,
+          "rising_pct": 65.01,
+          "falling_pct": 10.58,
+          "flat_pct": 24.41
+        }
+      },
+      "intertrade_interval_seconds": {
+        "n": 110620,
+        "median_seconds": 5.0,
+        "p75_seconds": 15.0,
+        "p90_seconds": 40.0
+      }
+    },
+    "Dogecoin": {
+      "trade_count": 134338,
+      "dollar_volume": 185873.16,
+      "regime_distribution": {
+        "CHEAP": {
+          "count": 115417,
+          "count_pct": 85.92,
+          "volume": 55002.63,
+          "volume_pct": 29.59
+        },
+        "MID": {
+          "count": 11496,
+          "count_pct": 8.56,
+          "volume": 15544.44,
+          "volume_pct": 8.36
+        },
+        "CORE": {
+          "count": 2431,
+          "count_pct": 1.81,
+          "volume": 10188.98,
+          "volume_pct": 5.48
+        },
+        "HIGH": {
+          "count": 4994,
+          "count_pct": 3.72,
+          "volume": 105137.11,
+          "volume_pct": 56.56
+        }
+      },
+      "entry_count_sizing": {
+        "CHEAP": {
+          "positions": {
+            "first": {
+              "n": 13679,
+              "median_usdc": 0.495662
+            },
+            "2nd-3rd": {
+              "n": 26198,
+              "median_usdc": 0.380952
+            },
+            "4th+": {
+              "n": 75540,
+              "median_usdc": 0.2
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 15.2,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 11634,
+              "median_usdc": 0.670641
+            },
+            "2nd-3rd": {
+              "n": 22692,
+              "median_usdc": 0.494505
+            },
+            "4th+": {
+              "n": 63545,
+              "median_usdc": 0.276
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "MID": {
+          "positions": {
+            "first": {
+              "n": 3412,
+              "median_usdc": 1.5
+            },
+            "2nd-3rd": {
+              "n": 3444,
+              "median_usdc": 1.272857
+            },
+            "4th+": {
+              "n": 4640,
+              "median_usdc": 1.476005
+            }
+          },
+          "direction_first_to_4th+": "flat",
+          "floor_lot_fraction_pct": 19.86,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 2734,
+              "median_usdc": 1.86
+            },
+            "2nd-3rd": {
+              "n": 2778,
+              "median_usdc": 1.738044
+            },
+            "4th+": {
+              "n": 3701,
+              "median_usdc": 1.891
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "flat"
+        },
+        "CORE": {
+          "positions": {
+            "first": {
+              "n": 401,
+              "median_usdc": 5.032
+            },
+            "2nd-3rd": {
+              "n": 555,
+              "median_usdc": 4.644545
+            },
+            "4th+": {
+              "n": 1475,
+              "median_usdc": 3.784
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 22.09,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 374,
+              "median_usdc": 5.196181
+            },
+            "2nd-3rd": {
+              "n": 472,
+              "median_usdc": 5.175
+            },
+            "4th+": {
+              "n": 1048,
+              "median_usdc": 5.032
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "flat"
+        },
+        "HIGH": {
+          "positions": {
+            "first": {
+              "n": 342,
+              "median_usdc": 12.6026
+            },
+            "2nd-3rd": {
+              "n": 882,
+              "median_usdc": 13.285714
+            },
+            "4th+": {
+              "n": 3770,
+              "median_usdc": 11.5
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 9.23,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 335,
+              "median_usdc": 12.96
+            },
+            "2nd-3rd": {
+              "n": 846,
+              "median_usdc": 14.469
+            },
+            "4th+": {
+              "n": 3352,
+              "median_usdc": 14.25
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "increasing (4th+ > first)"
+        }
+      },
+      "side_persistence_pct": 91.52,
+      "side_persistence_n": 116504,
+      "weakness_strength_gradient": {
+        "CHEAP": {
+          "n": 101738,
+          "rising_pct": 13.05,
+          "falling_pct": 51.42,
+          "flat_pct": 35.53
+        },
+        "MID": {
+          "n": 8084,
+          "rising_pct": 48.76,
+          "falling_pct": 31.9,
+          "flat_pct": 19.33
+        },
+        "CORE": {
+          "n": 2030,
+          "rising_pct": 70.3,
+          "falling_pct": 20.0,
+          "flat_pct": 9.7
+        },
+        "HIGH": {
+          "n": 4652,
+          "rising_pct": 76.89,
+          "falling_pct": 8.25,
+          "flat_pct": 14.85
+        }
+      },
+      "intertrade_interval_seconds": {
+        "n": 116504,
+        "median_seconds": 5.0,
+        "p75_seconds": 18.0,
+        "p90_seconds": 45.0
+      }
+    },
+    "Bitcoin": {
+      "trade_count": 164062,
+      "dollar_volume": 1336355.73,
+      "regime_distribution": {
+        "CHEAP": {
+          "count": 54775,
+          "count_pct": 33.39,
+          "volume": 90674.64,
+          "volume_pct": 6.79
+        },
+        "MID": {
+          "count": 65514,
+          "count_pct": 39.93,
+          "volume": 263427.99,
+          "volume_pct": 19.71
+        },
+        "CORE": {
+          "count": 26988,
+          "count_pct": 16.45,
+          "volume": 281670.23,
+          "volume_pct": 21.08
+        },
+        "HIGH": {
+          "count": 16785,
+          "count_pct": 10.23,
+          "volume": 700582.86,
+          "volume_pct": 52.42
+        }
+      },
+      "entry_count_sizing": {
+        "CHEAP": {
+          "positions": {
+            "first": {
+              "n": 4069,
+              "median_usdc": 1.792
+            },
+            "2nd-3rd": {
+              "n": 8405,
+              "median_usdc": 1.5092
+            },
+            "4th+": {
+              "n": 42301,
+              "median_usdc": 1.15
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 0.74,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 4042,
+              "median_usdc": 1.792596
+            },
+            "2nd-3rd": {
+              "n": 8328,
+              "median_usdc": 1.5285
+            },
+            "4th+": {
+              "n": 42000,
+              "median_usdc": 1.164935
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "MID": {
+          "positions": {
+            "first": {
+              "n": 6171,
+              "median_usdc": 4.209
+            },
+            "2nd-3rd": {
+              "n": 10643,
+              "median_usdc": 3.74
+            },
+            "4th+": {
+              "n": 48700,
+              "median_usdc": 3.021
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 0.43,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 6156,
+              "median_usdc": 4.209
+            },
+            "2nd-3rd": {
+              "n": 10613,
+              "median_usdc": 3.774
+            },
+            "4th+": {
+              "n": 48464,
+              "median_usdc": 3.021
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "CORE": {
+          "positions": {
+            "first": {
+              "n": 2131,
+              "median_usdc": 12.403
+            },
+            "2nd-3rd": {
+              "n": 4064,
+              "median_usdc": 10.912846
+            },
+            "4th+": {
+              "n": 20793,
+              "median_usdc": 7.8
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 0.37,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 2128,
+              "median_usdc": 12.403
+            },
+            "2nd-3rd": {
+              "n": 4058,
+              "median_usdc": 10.98939
+            },
+            "4th+": {
+              "n": 20703,
+              "median_usdc": 7.9
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "HIGH": {
+          "positions": {
+            "first": {
+              "n": 728,
+              "median_usdc": 39.0093
+            },
+            "2nd-3rd": {
+              "n": 1932,
+              "median_usdc": 39.96
+            },
+            "4th+": {
+              "n": 14125,
+              "median_usdc": 26.01
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 0.2,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 728,
+              "median_usdc": 39.0093
+            },
+            "2nd-3rd": {
+              "n": 1930,
+              "median_usdc": 39.96
+            },
+            "4th+": {
+              "n": 14094,
+              "median_usdc": 26.01
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        }
+      },
+      "side_persistence_pct": 91.17,
+      "side_persistence_n": 150963,
+      "weakness_strength_gradient": {
+        "CHEAP": {
+          "n": 50706,
+          "rising_pct": 12.58,
+          "falling_pct": 51.16,
+          "flat_pct": 36.26
+        },
+        "MID": {
+          "n": 59343,
+          "rising_pct": 29.6,
+          "falling_pct": 45.78,
+          "flat_pct": 24.62
+        },
+        "CORE": {
+          "n": 24857,
+          "rising_pct": 44.68,
+          "falling_pct": 31.87,
+          "flat_pct": 23.45
+        },
+        "HIGH": {
+          "n": 16057,
+          "rising_pct": 55.4,
+          "falling_pct": 13.95,
+          "flat_pct": 30.65
+        }
+      },
+      "intertrade_interval_seconds": {
+        "n": 150963,
+        "median_seconds": 1.0,
+        "p75_seconds": 7.0,
+        "p90_seconds": 34.0
+      }
+    },
+    "Ethereum": {
+      "trade_count": 125405,
+      "dollar_volume": 689017.49,
+      "regime_distribution": {
+        "CHEAP": {
+          "count": 75065,
+          "count_pct": 59.86,
+          "volume": 74614.93,
+          "volume_pct": 10.83
+        },
+        "MID": {
+          "count": 27150,
+          "count_pct": 21.65,
+          "volume": 76510.49,
+          "volume_pct": 11.1
+        },
+        "CORE": {
+          "count": 11125,
+          "count_pct": 8.87,
+          "volume": 87365.1,
+          "volume_pct": 12.68
+        },
+        "HIGH": {
+          "count": 12065,
+          "count_pct": 9.62,
+          "volume": 450526.97,
+          "volume_pct": 65.39
+        }
+      },
+      "entry_count_sizing": {
+        "CHEAP": {
+          "positions": {
+            "first": {
+              "n": 7092,
+              "median_usdc": 0.868268
+            },
+            "2nd-3rd": {
+              "n": 13658,
+              "median_usdc": 0.64
+            },
+            "4th+": {
+              "n": 54315,
+              "median_usdc": 0.45
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 8.54,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 6576,
+              "median_usdc": 0.994285
+            },
+            "2nd-3rd": {
+              "n": 12653,
+              "median_usdc": 0.75
+            },
+            "4th+": {
+              "n": 49426,
+              "median_usdc": 0.55
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "MID": {
+          "positions": {
+            "first": {
+              "n": 3534,
+              "median_usdc": 2.704
+            },
+            "2nd-3rd": {
+              "n": 5285,
+              "median_usdc": 2.385
+            },
+            "4th+": {
+              "n": 18331,
+              "median_usdc": 2.226
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 9.87,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 3259,
+              "median_usdc": 2.968
+            },
+            "2nd-3rd": {
+              "n": 4797,
+              "median_usdc": 2.6
+            },
+            "4th+": {
+              "n": 16415,
+              "median_usdc": 2.45
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "CORE": {
+          "positions": {
+            "first": {
+              "n": 1011,
+              "median_usdc": 8.68
+            },
+            "2nd-3rd": {
+              "n": 1709,
+              "median_usdc": 6.9916
+            },
+            "4th+": {
+              "n": 8405,
+              "median_usdc": 5.5647
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 10.3,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 958,
+              "median_usdc": 9.1481
+            },
+            "2nd-3rd": {
+              "n": 1560,
+              "median_usdc": 7.676666
+            },
+            "4th+": {
+              "n": 7461,
+              "median_usdc": 6.3813
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "HIGH": {
+          "positions": {
+            "first": {
+              "n": 626,
+              "median_usdc": 27.73895
+            },
+            "2nd-3rd": {
+              "n": 1430,
+              "median_usdc": 26.01
+            },
+            "4th+": {
+              "n": 10009,
+              "median_usdc": 18.6
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 4.28,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 618,
+              "median_usdc": 28.29162
+            },
+            "2nd-3rd": {
+              "n": 1390,
+              "median_usdc": 26.757533
+            },
+            "4th+": {
+              "n": 9541,
+              "median_usdc": 19.38
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        }
+      },
+      "side_persistence_pct": 90.57,
+      "side_persistence_n": 113142,
+      "weakness_strength_gradient": {
+        "CHEAP": {
+          "n": 67973,
+          "rising_pct": 13.05,
+          "falling_pct": 51.07,
+          "flat_pct": 35.87
+        },
+        "MID": {
+          "n": 23616,
+          "rising_pct": 32.51,
+          "falling_pct": 43.26,
+          "flat_pct": 24.23
+        },
+        "CORE": {
+          "n": 10114,
+          "rising_pct": 47.3,
+          "falling_pct": 29.77,
+          "flat_pct": 22.93
+        },
+        "HIGH": {
+          "n": 11439,
+          "rising_pct": 51.94,
+          "falling_pct": 15.02,
+          "flat_pct": 33.04
+        }
+      },
+      "intertrade_interval_seconds": {
+        "n": 113142,
+        "median_seconds": 2.0,
+        "p75_seconds": 9.0,
+        "p90_seconds": 33.0
+      }
+    },
+    "Solana": {
+      "trade_count": 137041,
+      "dollar_volume": 527591.57,
+      "regime_distribution": {
+        "CHEAP": {
+          "count": 79699,
+          "count_pct": 58.16,
+          "volume": 63208.09,
+          "volume_pct": 11.98
+        },
+        "MID": {
+          "count": 33672,
+          "count_pct": 24.57,
+          "volume": 72808.43,
+          "volume_pct": 13.8
+        },
+        "CORE": {
+          "count": 12572,
+          "count_pct": 9.17,
+          "volume": 74828.15,
+          "volume_pct": 14.18
+        },
+        "HIGH": {
+          "count": 11098,
+          "count_pct": 8.1,
+          "volume": 316746.91,
+          "volume_pct": 60.04
+        }
+      },
+      "entry_count_sizing": {
+        "CHEAP": {
+          "positions": {
+            "first": {
+              "n": 6094,
+              "median_usdc": 0.765453
+            },
+            "2nd-3rd": {
+              "n": 12255,
+              "median_usdc": 0.5626
+            },
+            "4th+": {
+              "n": 61350,
+              "median_usdc": 0.312
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 17.04,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 5164,
+              "median_usdc": 1.09688
+            },
+            "2nd-3rd": {
+              "n": 10488,
+              "median_usdc": 0.805266
+            },
+            "4th+": {
+              "n": 50465,
+              "median_usdc": 0.49014
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "MID": {
+          "positions": {
+            "first": {
+              "n": 4495,
+              "median_usdc": 2.214
+            },
+            "2nd-3rd": {
+              "n": 6554,
+              "median_usdc": 2.016
+            },
+            "4th+": {
+              "n": 22623,
+              "median_usdc": 1.891
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 22.13,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 3592,
+              "median_usdc": 2.85
+            },
+            "2nd-3rd": {
+              "n": 5172,
+              "median_usdc": 2.597229
+            },
+            "4th+": {
+              "n": 17457,
+              "median_usdc": 2.387
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "CORE": {
+          "positions": {
+            "first": {
+              "n": 947,
+              "median_usdc": 6.8799
+            },
+            "2nd-3rd": {
+              "n": 1862,
+              "median_usdc": 5.928
+            },
+            "4th+": {
+              "n": 9763,
+              "median_usdc": 4.473
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 20.55,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 847,
+              "median_usdc": 7.373
+            },
+            "2nd-3rd": {
+              "n": 1608,
+              "median_usdc": 6.8799
+            },
+            "4th+": {
+              "n": 7534,
+              "median_usdc": 6.235
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "HIGH": {
+          "positions": {
+            "first": {
+              "n": 566,
+              "median_usdc": 21.506716
+            },
+            "2nd-3rd": {
+              "n": 1423,
+              "median_usdc": 22.204
+            },
+            "4th+": {
+              "n": 9109,
+              "median_usdc": 16.219
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 9.64,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 561,
+              "median_usdc": 21.62
+            },
+            "2nd-3rd": {
+              "n": 1391,
+              "median_usdc": 23.1264
+            },
+            "4th+": {
+              "n": 8076,
+              "median_usdc": 19.74
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        }
+      },
+      "side_persistence_pct": 86.34,
+      "side_persistence_n": 124939,
+      "weakness_strength_gradient": {
+        "CHEAP": {
+          "n": 73605,
+          "rising_pct": 12.78,
+          "falling_pct": 58.12,
+          "flat_pct": 29.1
+        },
+        "MID": {
+          "n": 29177,
+          "rising_pct": 34.21,
+          "falling_pct": 43.95,
+          "flat_pct": 21.85
+        },
+        "CORE": {
+          "n": 11625,
+          "rising_pct": 53.92,
+          "falling_pct": 27.19,
+          "flat_pct": 18.89
+        },
+        "HIGH": {
+          "n": 10532,
+          "rising_pct": 62.71,
+          "falling_pct": 13.79,
+          "flat_pct": 23.5
+        }
+      },
+      "intertrade_interval_seconds": {
+        "n": 124939,
+        "median_seconds": 3.0,
+        "p75_seconds": 11.0,
+        "p90_seconds": 33.0
+      }
+    },
+    "BNB": {
+      "trade_count": 89738,
+      "dollar_volume": 147704.48,
+      "regime_distribution": {
+        "CHEAP": {
+          "count": 40132,
+          "count_pct": 44.72,
+          "volume": 13537.43,
+          "volume_pct": 9.17
+        },
+        "MID": {
+          "count": 31902,
+          "count_pct": 35.55,
+          "volume": 30761.37,
+          "volume_pct": 20.83
+        },
+        "CORE": {
+          "count": 12203,
+          "count_pct": 13.6,
+          "volume": 29873.39,
+          "volume_pct": 20.23
+        },
+        "HIGH": {
+          "count": 5501,
+          "count_pct": 6.13,
+          "volume": 73532.29,
+          "volume_pct": 49.78
+        }
+      },
+      "entry_count_sizing": {
+        "CHEAP": {
+          "positions": {
+            "first": {
+              "n": 1546,
+              "median_usdc": 0.005
+            },
+            "2nd-3rd": {
+              "n": 3283,
+              "median_usdc": 0.005
+            },
+            "4th+": {
+              "n": 35303,
+              "median_usdc": 0.0046
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 63.85,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 491,
+              "median_usdc": 0.984731
+            },
+            "2nd-3rd": {
+              "n": 1067,
+              "median_usdc": 0.84
+            },
+            "4th+": {
+              "n": 12949,
+              "median_usdc": 0.613636
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        },
+        "MID": {
+          "positions": {
+            "first": {
+              "n": 2118,
+              "median_usdc": 0.0108
+            },
+            "2nd-3rd": {
+              "n": 3694,
+              "median_usdc": 0.0106
+            },
+            "4th+": {
+              "n": 26090,
+              "median_usdc": 0.0112
+            }
+          },
+          "direction_first_to_4th+": "flat",
+          "floor_lot_fraction_pct": 68.99,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 785,
+              "median_usdc": 2.548
+            },
+            "2nd-3rd": {
+              "n": 1210,
+              "median_usdc": 2.652
+            },
+            "4th+": {
+              "n": 7899,
+              "median_usdc": 2.670967
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "flat"
+        },
+        "CORE": {
+          "positions": {
+            "first": {
+              "n": 237,
+              "median_usdc": 0.0178
+            },
+            "2nd-3rd": {
+              "n": 623,
+              "median_usdc": 1.596
+            },
+            "4th+": {
+              "n": 11343,
+              "median_usdc": 0.0168
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 67.84,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 118,
+              "median_usdc": 5.4355
+            },
+            "2nd-3rd": {
+              "n": 324,
+              "median_usdc": 6.48
+            },
+            "4th+": {
+              "n": 3483,
+              "median_usdc": 6.48
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "increasing (4th+ > first)"
+        },
+        "HIGH": {
+          "positions": {
+            "first": {
+              "n": 43,
+              "median_usdc": 16.284
+            },
+            "2nd-3rd": {
+              "n": 129,
+              "median_usdc": 9.9
+            },
+            "4th+": {
+              "n": 5329,
+              "median_usdc": 0.0194
+            }
+          },
+          "direction_first_to_4th+": "decreasing (4th+ < first)",
+          "floor_lot_fraction_pct": 52.25,
+          "positions_excluding_floor_lot": {
+            "first": {
+              "n": 38,
+              "median_usdc": 18.5
+            },
+            "2nd-3rd": {
+              "n": 83,
+              "median_usdc": 19
+            },
+            "4th+": {
+              "n": 2506,
+              "median_usdc": 15.666666
+            }
+          },
+          "direction_first_to_4th+_excluding_floor_lot": "decreasing (4th+ < first)"
+        }
+      },
+      "side_persistence_pct": 80.85,
+      "side_persistence_n": 85794,
+      "weakness_strength_gradient": {
+        "CHEAP": {
+          "n": 38586,
+          "rising_pct": 13.72,
+          "falling_pct": 57.09,
+          "flat_pct": 29.19
+        },
+        "MID": {
+          "n": 29784,
+          "rising_pct": 33.62,
+          "falling_pct": 40.02,
+          "flat_pct": 26.36
+        },
+        "CORE": {
+          "n": 11966,
+          "rising_pct": 50.18,
+          "falling_pct": 24.37,
+          "flat_pct": 25.46
+        },
+        "HIGH": {
+          "n": 5458,
+          "rising_pct": 53.1,
+          "falling_pct": 13.67,
+          "flat_pct": 33.24
+        }
+      },
+      "intertrade_interval_seconds": {
+        "n": 85794,
+        "median_seconds": 2.0,
+        "p75_seconds": 7.0,
+        "p90_seconds": 20.0
+      }
+    }
+  },
+  "daily_volume": {
+    "n_days": 85,
+    "average_daily_volume": 35367.73,
+    "total_volume": 3006257.23,
+    "flagged_days_gt_2x_avg": [
+      {
+        "date": "2026-08-14",
+        "volume": 77127.45,
+        "ratio_to_avg": 2.18
+      },
+      {
+        "date": "2026-08-15",
+        "volume": 90558.72,
+        "ratio_to_avg": 2.56
+      },
+      {
+        "date": "2026-08-16",
+        "volume": 84833.35,
+        "ratio_to_avg": 2.4
+      },
+      {
+        "date": "2026-08-17",
+        "volume": 74305.07,
+        "ratio_to_avg": 2.1
+      },
+      {
+        "date": "2026-08-20",
+        "volume": 87530.07,
+        "ratio_to_avg": 2.47
+      },
+      {
+        "date": "2026-08-21",
+        "volume": 122019.41,
+        "ratio_to_avg": 3.45
+      },
+      {
+        "date": "2026-08-22",
+        "volume": 83931.02,
+        "ratio_to_avg": 2.37
+      }
+    ]
+  },
+  "data_quality_flags": {
+    "degenerate_median_signature_detected": [
+      {
+        "asset": "BNB",
+        "regime": "CHEAP",
+        "medians_by_position": {
+          "first": [
+            0.005,
+            1546
+          ],
+          "2nd-3rd": [
+            0.005,
+            3283
+          ],
+          "4th+": [
+            0.0046,
+            35303
+          ]
+        },
+        "note": "position-tier medians cluster at near-floor-lot dollar amounts despite very different n -- position-based sizing signal is masked"
+      },
+      {
+        "asset": "BNB",
+        "regime": "MID",
+        "medians_by_position": {
+          "2nd-3rd": [
+            0.0106,
+            3694
+          ],
+          "4th+": [
+            0.0112,
+            26090
+          ],
+          "first": [
+            0.0108,
+            2118
+          ]
+        },
+        "note": "position-tier medians cluster at near-floor-lot dollar amounts despite very different n -- position-based sizing signal is masked"
+      }
+    ],
+    "investigation_samples": [
+      {
+        "asset": "BNB",
+        "regime": "CHEAP",
+        "total_n_in_combo": 40132,
+        "null_or_missing_usdcSize_count": 0,
+        "min_lot_size_0.02_count_full_population": 25625,
+        "min_lot_size_0.02_fraction_full_population": 63.85,
+        "sample_rows": [
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786127434,
+            "price": 0.26,
+            "usdc": 0.0052,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786130131,
+            "price": 0.25,
+            "usdc": 0.005,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786131031,
+            "price": 0.29,
+            "usdc": 0.0058,
+            "size": 0.02,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786131754,
+            "price": 0.11,
+            "usdc": 0.0022,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786132234,
+            "price": 0.25,
+            "usdc": 0.005,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786132527,
+            "price": 0.17,
+            "usdc": 1.5623,
+            "size": 9.19,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786133128,
+            "price": 0.22,
+            "usdc": 0.0044,
+            "size": 0.02,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786133728,
+            "price": 0.29,
+            "usdc": 0.0058,
+            "size": 0.02,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786136436,
+            "price": 0.25,
+            "usdc": 0.005,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786137328,
+            "price": 0.25,
+            "usdc": 0.005,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786139469,
+            "price": 0.29,
+            "usdc": 0.435,
+            "size": 1.5,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786142763,
+            "price": 0.19,
+            "usdc": 1.596,
+            "size": 8.4,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786144039,
+            "price": 0.16,
+            "usdc": 0.19238,
+            "size": 1.202375,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786148745,
+            "price": 0.25,
+            "usdc": 0.005,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786149093,
+            "price": 0.25,
+            "usdc": 1.725,
+            "size": 6.9,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786150894,
+            "price": 0.22,
+            "usdc": 1.672,
+            "size": 7.6,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786152541,
+            "price": 0.02,
+            "usdc": 0.0176,
+            "size": 0.88,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786153047,
+            "price": 0.2100002287,
+            "usdc": 0.101012,
+            "size": 0.481009,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786154440,
+            "price": 0.23,
+            "usdc": 0.0046,
+            "size": 0.02,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786154926,
+            "price": 0.05,
+            "usdc": 0.052631,
+            "size": 1.05262,
+            "outcome": "Down"
+          }
+        ]
+      },
+      {
+        "asset": "BNB",
+        "regime": "MID",
+        "total_n_in_combo": 31902,
+        "null_or_missing_usdcSize_count": 0,
+        "min_lot_size_0.02_count_full_population": 22008,
+        "min_lot_size_0.02_fraction_full_population": 68.99,
+        "sample_rows": [
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786127731,
+            "price": 0.41,
+            "usdc": 0.0082,
+            "size": 0.02,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786128034,
+            "price": 0.63,
+            "usdc": 3.528,
+            "size": 5.6,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786128346,
+            "price": 0.32,
+            "usdc": 0.0064,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786128639,
+            "price": 0.42,
+            "usdc": 0.7854,
+            "size": 1.87,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786128934,
+            "price": 0.58,
+            "usdc": 3.074,
+            "size": 5.3,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786129237,
+            "price": 0.31,
+            "usdc": 0.0062,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786129836,
+            "price": 0.66,
+            "usdc": 1.0098,
+            "size": 1.53,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786130434,
+            "price": 0.44,
+            "usdc": 0.8228,
+            "size": 1.87,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786130739,
+            "price": 0.41,
+            "usdc": 0.0082,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786131334,
+            "price": 0.47,
+            "usdc": 0.0094,
+            "size": 0.02,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786132846,
+            "price": 0.52,
+            "usdc": 2.6,
+            "size": 5,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786133463,
+            "price": 0.55,
+            "usdc": 0.011,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786134057,
+            "price": 0.51,
+            "usdc": 0.0102,
+            "size": 0.02,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786134346,
+            "price": 0.68,
+            "usdc": 4.08,
+            "size": 6,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786134681,
+            "price": 0.55,
+            "usdc": 0.011,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786134933,
+            "price": 0.57,
+            "usdc": 3.021,
+            "size": 5.3,
+            "outcome": "Up"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786135264,
+            "price": 0.4,
+            "usdc": 0.008,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786135566,
+            "price": 0.61,
+            "usdc": 0.0122,
+            "size": 0.02,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786136145,
+            "price": 0.63,
+            "usdc": 3.528,
+            "size": 5.6,
+            "outcome": "Down"
+          },
+          {
+            "position": "first",
+            "asset": "BNB",
+            "ts": 1786136764,
+            "price": 0.4700000224,
+            "usdc": 1.676037,
+            "size": 3.566036,
+            "outcome": "Down"
+          }
+        ]
+      }
+    ]
+  }
+}

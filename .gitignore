@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+
+# Local paper-trading run state -- never commit real run output
+data/
+*.log
+
+# Raw historical trade data used to derive behavior_config.py's numbers --
+# ~684MB, not code, not something to version in git. The derived summary
+# (trade_behavioral_analysis.json) and the script that produced it
+# (analyze_trades.py) ARE kept, as provenance for behavior_config.py.
+trade.jsonl
+
+# OS cruft
+.DS_Store
