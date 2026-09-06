@@ -7,6 +7,7 @@ from paperbot.market_discovery import (
     BUCKET_SECONDS,
     _candidate_slugs,
     fetch_active_markets,
+    infer_resolution_from_price,
     parse_market,
     parse_resolution,
 )
@@ -180,3 +181,38 @@ class TestParseResolution:
 
     def test_malformed_payload_returns_none_not_an_exception(self):
         assert parse_resolution({"closed": True}) is None
+
+
+class TestInferResolutionFromPrice:
+    """Direct regression tests for a live-confirmed issue: Gamma's `closed`
+    flag can stay False for 30+ minutes on these 5-minute markets even
+    once the price is fully decisive and stable -- confirmed by
+    pending_resolution growing unbounded (36+ markets, zero ever resolving
+    via parse_resolution alone) while individual markets sat at
+    outcomePrices like ["0.9995", "0.0005"] for 10+ minutes straight."""
+
+    def test_ignores_closed_entirely(self):
+        raw = {"closed": False, "outcomes": json.dumps(["Up", "Down"]),
+               "outcomePrices": json.dumps(["0.995", "0.005"])}
+        assert infer_resolution_from_price(raw) == "Up"
+
+    def test_below_threshold_returns_none(self):
+        raw = {"closed": False, "outcomes": json.dumps(["Up", "Down"]),
+               "outcomePrices": json.dumps(["0.9", "0.1"])}
+        assert infer_resolution_from_price(raw, threshold=0.99) is None
+
+    def test_default_threshold_is_stricter_than_parse_resolutions(self):
+        # 0.95 would pass parse_resolution's 0.9 bar (if closed) but not
+        # this function's default 0.99 -- there's no `closed` confirmation
+        # to lean on here, so the bar is deliberately higher.
+        raw = {"closed": False, "outcomes": json.dumps(["Up", "Down"]),
+               "outcomePrices": json.dumps(["0.95", "0.05"])}
+        assert infer_resolution_from_price(raw) is None
+
+    def test_malformed_payload_returns_none(self):
+        assert infer_resolution_from_price({"closed": False}) is None
+
+    def test_picks_the_higher_priced_outcome(self):
+        raw = {"outcomes": json.dumps(["Up", "Down"]),
+               "outcomePrices": json.dumps(["0.001", "0.999"])}
+        assert infer_resolution_from_price(raw) == "Down"

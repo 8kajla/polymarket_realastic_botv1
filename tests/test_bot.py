@@ -259,6 +259,45 @@ class TestResolutionThrottling:
         assert cid not in bot.pending_resolution
         assert bot.ledger.realized_pnl() == pytest.approx(5.0 * 1.0 - 5.0 * 0.3)
 
+    def test_resolves_via_decisive_price_when_gamma_never_marks_closed(self, monkeypatch):
+        """Direct regression test for a live-confirmed issue: Gamma's
+        `closed` flag stayed False for 30+ minutes on real 5-minute
+        markets while pending_resolution grew unbounded (36+, zero ever
+        resolving). A market already in pending_resolution has, by our own
+        state machine, definitely finished trading -- so a very decisive
+        price is trusted even with closed=False."""
+        bot = PaperBot(assets=["Bitcoin"], seed=7)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        order = make_filled_order(cid, order_id=1, side="Up", price=0.3, size=5.0)
+        bot.fill_sim.orders[order.order_id] = order
+
+        def fake_fetch(slug, session=None, timeout=10.0):
+            return {"closed": False, "outcomes": '["Up", "Down"]',
+                    "outcomePrices": '["0.9995", "0.0005"]'}
+
+        monkeypatch.setattr(botmod, "fetch_market_by_slug", fake_fetch)
+
+        asyncio.run(bot.resolution_tick(now=1000.0))
+
+        assert cid not in bot.pending_resolution
+        assert bot.ledger.realized_pnl() == pytest.approx(5.0 * 1.0 - 5.0 * 0.3)
+
+    def test_does_not_resolve_on_an_indecisive_price_even_without_closed(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=8)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+
+        def fake_fetch(slug, session=None, timeout=10.0):
+            return {"closed": False, "outcomes": '["Up", "Down"]',
+                    "outcomePrices": '["0.6", "0.4"]'}
+
+        monkeypatch.setattr(botmod, "fetch_market_by_slug", fake_fetch)
+
+        asyncio.run(bot.resolution_tick(now=1000.0))
+
+        assert cid in bot.pending_resolution  # still waiting, correctly
+
 
 class TestPnlSummaryLogging:
     def test_log_pnl_summary_does_not_raise_and_reports_totals(self, caplog):

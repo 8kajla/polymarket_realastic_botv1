@@ -31,7 +31,7 @@ paperbot/
   fill_simulation.py   the paper fill model (queueing, drift, expiry)
   ledger.py            settlement + realized P&L (recomputed, never cached)
   bot.py               main loop wiring it all together
-tests/                 116 tests covering the above
+tests/                 123 tests covering the above
 run_bot.py             CLI entry point
 ```
 
@@ -166,7 +166,7 @@ end:
 
 ## What the test suite covers
 
-116 tests, `python3 -m pytest tests/ -v`:
+123 tests, `python3 -m pytest tests/ -v`:
 
 - **Band classification** at the exact 0.30/0.70/0.90 boundaries.
 - **Per-asset sizing curves are genuinely distinct** -- a test that fails
@@ -364,6 +364,44 @@ logs revealed why.**
    5 min) logs running realized P&L, open-order count, and per-asset
    breakdown independent of any individual settlement -- so P&L is
    visible during quiet stretches too, not just at shutdown.
+
+**Deploy 4: the throttling fix worked perfectly (zero errors, clean ~30s
+cadence, sane backlog growth) -- but 29 minutes and 36 pending markets
+in, `settled_trades` was still 0. The oldest market's price had been
+fully decisive (`["0.9995", "0.0005"]`) and stable for 15+ minutes, and
+Gamma's `closed` flag had simply never flipped.**
+
+7. **`parse_resolution`'s hard requirement on Gamma's `closed` flag turned
+   out to be the wrong signal for this market type.** Confirmed live:
+   `closed` can stay `False` for 30+ minutes past a 5-minute market's
+   trading window ending -- possibly much longer, possibly never via this
+   specific `/markets?slug=` query -- even while `outcomePrices` are
+   already fully decisive and have stopped moving. Gating resolution on
+   `closed` alone meant the backlog only grew (36 markets and climbing,
+   zero ever settling) and every filled order sat unsettled indefinitely.
+
+   **Fix:** `infer_resolution_from_price()` is a new fallback, used only
+   when `parse_resolution` (the `closed`-gated path) returns None. It
+   trusts a very decisive price (>=99%, stricter than the 90% bar used
+   when `closed` is confirmed True) with no `closed` requirement at all.
+   This is safe specifically because `resolution_tick` only ever calls it
+   for markets already in `pending_resolution` -- i.e. markets this bot's
+   own state machine has independently confirmed finished trading (they
+   rolled out of `_candidate_slugs`'s current/next window). It is not
+   used, and would not be safe to use, for a market still considered
+   active. Covered by `TestInferResolutionFromPrice` and two `bot.py`
+   integration tests (resolves via price when `closed=False`; does NOT
+   resolve on an indecisive price even without `closed`).
+
+   **Separately observed, not yet acted on:** the WebSocket periodically
+   disconnects with `1013 (try again later) slow consumer: send buffer
+   full` (a few times over 30 minutes). The existing reconnect-with-
+   backoff in `_ws_supervisor` handles this cleanly with no data loss or
+   crash, so it isn't blocking anything -- but it suggests the event
+   loop occasionally isn't draining incoming WS messages fast enough
+   (candidate cause: per-message book-level re-sorting, or onboarding
+   bursts of sequential REST calls at market rollovers). Flagged here as
+   a known, currently-benign issue rather than a silent one.
 
 ## Provenance
 

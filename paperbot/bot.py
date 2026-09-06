@@ -35,6 +35,7 @@ from .market_discovery import (
     Market,
     MarketDiscovery,
     fetch_market_by_slug,
+    infer_resolution_from_price,
     parse_resolution,
 )
 from .strategy import MarketActivityState, build_order_intent, safe_postonly_price, would_cross_spread
@@ -277,10 +278,26 @@ class PaperBot:
                 continue
 
             winning_side = parse_resolution(raw)
+            used_price_fallback = False
+            if winning_side is None:
+                # Confirmed live: `closed` can stay False for 30+ minutes
+                # on these markets even once the price is fully decisive
+                # and has been stable across many checks. This market is
+                # already in pending_resolution -- our own state machine
+                # has confirmed its trading window is over -- so trust a
+                # very decisive (>=99%) price as a fallback signal rather
+                # than waiting indefinitely on `closed`.
+                winning_side = infer_resolution_from_price(raw)
+                used_price_fallback = winning_side is not None
+
             if winning_side is None:
                 logger.info("resolution check market=%s closed=%s outcomePrices=%s -- not decisive yet",
                             market.slug, raw.get("closed"), raw.get("outcomePrices"))
                 continue
+
+            if used_price_fallback:
+                logger.info("resolution inferred from decisive price (Gamma closed=False) market=%s "
+                            "outcomePrices=%s", market.slug, raw.get("outcomePrices"))
 
             settled = [
                 self.ledger.settle_order(order, winning_side)

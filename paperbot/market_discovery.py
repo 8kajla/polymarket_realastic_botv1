@@ -208,6 +208,44 @@ def parse_resolution(raw: dict) -> Optional[str]:
     return outcomes[best_idx]
 
 
+def infer_resolution_from_price(raw: dict, threshold: float = 0.99) -> Optional[str]:
+    """
+    Fallback resolution signal for a market Gamma hasn't marked `closed`
+    yet. Confirmed live: these 5-minute crypto Up/Down markets can sit
+    with closed=False for 30+ minutes after their trading window ends,
+    even while outcomePrices are already fully decisive (observed
+    0.995-0.9995, stable across many checks 10+ minutes apart) -- `closed`
+    is evidently not a prompt signal for this market type, if it ever
+    flips via this endpoint at all.
+
+    Only call this for a market this bot has independently confirmed is
+    done trading (i.e. already in pending_resolution, retired from
+    _candidate_slugs because its own window ended) -- never for a market
+    still considered tradeable. That's what makes trusting a very
+    decisive, unqualified-by-`closed` price a reasonable signal here: it
+    isn't "the market might still move," it's "our own state machine
+    already knows this window is over, and the price has settled."
+
+    Ignores `closed` entirely (unlike parse_resolution) and uses a higher
+    bar (default 0.99 vs 0.9) since there's no `closed` confirmation to
+    lean on.
+    """
+    try:
+        outcomes = json.loads(raw["outcomes"]) if isinstance(raw.get("outcomes"), str) \
+            else raw.get("outcomes")
+        prices = json.loads(raw["outcomePrices"]) if isinstance(raw.get("outcomePrices"), str) \
+            else raw.get("outcomePrices")
+    except (KeyError, json.JSONDecodeError, TypeError):
+        return None
+    if not outcomes or not prices or len(outcomes) != len(prices):
+        return None
+    prices = [float(p) for p in prices]
+    best_idx = max(range(len(prices)), key=lambda i: prices[i])
+    if prices[best_idx] < threshold:
+        return None
+    return outcomes[best_idx]
+
+
 class MarketDiscovery:
     """Tracks the currently-active set of Market objects, refreshed on a
     poll interval. Emits nothing by itself -- bot.py diffs successive
