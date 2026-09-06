@@ -11,6 +11,7 @@ from paperbot.strategy import (
     MarketActivityState,
     availability_check,
     build_order_intent,
+    decide_hedge,
     decide_side,
     decide_size,
     timing_ok,
@@ -205,3 +206,123 @@ class TestBuildOrderIntent:
         # shares worth, so every attempt should be rejected.
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
         assert intent is None
+
+
+class TestMarketActivityStateHedgeTracking:
+    def test_cost_by_side_accumulates_per_side(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.record_entry("Up", notional_usd=5.0, regime="MID")
+        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP")
+        assert activity.cost_by_side["Up"] == 15.0
+        assert activity.cost_by_side["Down"] == 2.0
+
+    def test_first_entry_regime_locked_on_first_call_only(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="HIGH")
+        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP")
+        assert activity.first_entry_regime == "HIGH"
+
+    def test_dominant_side_is_none_before_any_entry(self):
+        assert MarketActivityState().dominant_side() is None
+
+    def test_dominant_side_picks_higher_cost_side(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP")
+        assert activity.dominant_side() == "Up"
+
+    def test_record_entry_sets_hedge_placed_flag(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        assert activity.hedge_placed is False
+        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP", is_hedge=True)
+        assert activity.hedge_placed is True
+
+
+class TestDecideHedge:
+    def test_no_hedge_before_a_first_entry_exists(self):
+        activity = MarketActivityState()
+        assert decide_hedge("Bitcoin", activity, random.Random(0)) is None
+
+    def test_only_fires_at_exactly_the_second_entry(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")  # entry_count now 1
+        activity.record_entry("Up", notional_usd=1.0, regime="MID")   # entry_count now 2
+        # Even with seeds that would trigger at entry_count==1 (BNB/MID has
+        # the highest known probability, 0.9004), entry_count==2 must gate
+        # it off entirely.
+        for seed in range(20):
+            assert decide_hedge("BNB", activity, random.Random(seed)) is None
+
+    def test_returns_the_opposite_of_the_dominant_side(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        # BNB/MID has the highest trigger probability of any (asset, regime)
+        # combo (0.9004) -- a handful of seeds will trigger it reliably.
+        triggered = None
+        for seed in range(20):
+            r = decide_hedge("BNB", activity, random.Random(seed))
+            if r is not None:
+                triggered = r
+                break
+        assert triggered == "Down"
+
+    def test_does_not_refire_once_hedge_already_placed(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.hedge_placed = True
+        for seed in range(20):
+            assert decide_hedge("BNB", activity, random.Random(seed)) is None
+
+    def test_bitcoin_high_regime_rarely_triggers(self):
+        """Sanity check the probability is actually being used, not just
+        always-true or always-false: HIGH-regime Bitcoin has one of the
+        lowest trigger probabilities (0.2967) -- over many seeds, most
+        should NOT trigger."""
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="HIGH")
+        n = 500
+        triggered = sum(
+            1 for seed in range(n) if decide_hedge("Bitcoin", activity, random.Random(seed)) is not None
+        )
+        rate = triggered / n
+        assert abs(rate - 0.2967) < 0.05
+
+
+class TestBuildOrderIntentHedge:
+    def test_produces_a_hedge_intent_sized_off_dominant_cost(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="BNB")
+        up_book = make_liquid_book(price=0.80, token_id="up")    # MID/CORE-ish primary
+        down_book = make_liquid_book(price=0.15, token_id="down")  # cheap hedge side
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE")
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        assert intent is not None
+        assert intent.is_hedge is True
+        assert intent.is_floor_lot is False
+        assert intent.side == "Down"
+        assert intent.price == 0.15
+        expected_ratio = bc.hedge_size_ratio("BNB", "CORE")
+        # jittered by ±SIZING_JITTER_FRACTION around dominant_cost * ratio
+        expected_notional = 10.0 * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+        assert intent.reason == "hedge"
+
+    def test_no_hedge_falls_through_to_normal_flow(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.79, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: None)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+        assert intent is not None
+        assert intent.is_hedge is False
+        assert intent.reason in ("entry_curve", "floor_lot")

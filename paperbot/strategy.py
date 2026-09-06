@@ -18,18 +18,36 @@ from .market_discovery import Market
 
 @dataclass
 class MarketActivityState:
-    """Tracks what's already happened in one market, for position-index
-    and side-persistence purposes. One instance per condition_id."""
+    """Tracks what's already happened in one market, for position-index,
+    side-persistence, AND hedge-leg purposes. One instance per
+    condition_id."""
     entry_count: int = 0
     last_side: Optional[str] = None  # "Up" or "Down"
     last_price_seen: Optional[float] = None
+    first_entry_regime: Optional[str] = None
+    cost_by_side: dict = field(default_factory=lambda: {"Up": 0.0, "Down": 0.0})
+    hedge_placed: bool = False
 
     def position_tier(self) -> str:
         return bc.position_tier_for_index(self.entry_count)
 
-    def record_entry(self, side: str) -> None:
+    def dominant_side(self) -> Optional[str]:
+        """The side with more cumulative $ committed so far, or None if
+        nothing's been placed yet."""
+        up, down = self.cost_by_side.get("Up", 0.0), self.cost_by_side.get("Down", 0.0)
+        if up == 0.0 and down == 0.0:
+            return None
+        return "Up" if up >= down else "Down"
+
+    def record_entry(self, side: str, notional_usd: float = 0.0, regime: Optional[str] = None,
+                      is_hedge: bool = False) -> None:
+        if self.entry_count == 0 and regime is not None:
+            self.first_entry_regime = regime
+        self.cost_by_side[side] = self.cost_by_side.get(side, 0.0) + notional_usd
         self.entry_count += 1
         self.last_side = side
+        if is_hedge:
+            self.hedge_placed = True
 
 
 @dataclass
@@ -44,6 +62,7 @@ class OrderIntent:
     size_shares: float
     notional_usd: float
     is_floor_lot: bool
+    is_hedge: bool = False
     reason: str = ""
 
 
@@ -59,6 +78,29 @@ def decide_side(asset: str, activity: MarketActivityState, rng: random.Random) -
     if rng.random() < persistence:
         return activity.last_side
     return "Down" if activity.last_side == "Up" else "Up"
+
+
+def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random) -> Optional[str]:
+    """
+    Returns the hedge side ("Up"/"Down") if this market's SECOND entry
+    should be a deliberate insurance leg on the opposite side from the
+    first entry, or None if not (in which case the caller falls through
+    to the ordinary decide_side/decide_size flow).
+
+    Only ever fires at entry_count == 1 (about to place the 2nd entry) and
+    only if no hedge has been placed yet for this market -- see
+    HEDGE_TRIGGER_PROBABILITY's docstring in behavior_config.py for why
+    this is modeled as a single roll rather than a repeated one.
+    """
+    if activity.entry_count != 1 or activity.hedge_placed or activity.first_entry_regime is None:
+        return None
+    dominant = activity.dominant_side()
+    if dominant is None:
+        return None
+    p = bc.hedge_trigger_probability(asset, activity.first_entry_regime)
+    if rng.random() < p:
+        return "Down" if dominant == "Up" else "Up"
+    return None
 
 
 def gradient_score(asset: str, regime: str, recent_price_delta: Optional[float]) -> float:
@@ -146,7 +188,9 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     if not timing_ok(market, now):
         return None
 
-    side = decide_side(market.asset, activity, rng)
+    hedge_side = decide_hedge(market.asset, activity, rng)
+    is_hedge = hedge_side is not None
+    side = hedge_side if is_hedge else decide_side(market.asset, activity, rng)
     side_book = up_book if side == "Up" else down_book
 
     price = side_book.best_bid
@@ -159,7 +203,19 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         return None
 
     position_tier = activity.position_tier()
-    notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng)
+
+    if is_hedge:
+        # Hedge sizing scales with what it's protecting (the dominant
+        # side's cost so far), not the position-count curve -- that's the
+        # whole point: it's proportional insurance, not another ordinary
+        # entry. See HEDGE_SIZE_RATIO's docstring in behavior_config.py.
+        dominant_cost = activity.cost_by_side.get(activity.dominant_side(), 0.0)
+        ratio = bc.hedge_size_ratio(market.asset, activity.first_entry_regime)
+        jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)
+        notional = max(dominant_cost * ratio * jitter, 0.0)
+        is_floor_lot = False
+    else:
+        notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng)
 
     min_size = market.order_min_size
     if min_size is not None and notional < min_size * price:
@@ -175,6 +231,13 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
 
     token_id = market.token_id_up if side == "Up" else market.token_id_down
 
+    if is_hedge:
+        reason = "hedge"
+    elif is_floor_lot:
+        reason = "floor_lot"
+    else:
+        reason = "entry_curve"
+
     return OrderIntent(
         condition_id=market.condition_id,
         token_id=token_id,
@@ -186,7 +249,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         size_shares=size_shares,
         notional_usd=notional,
         is_floor_lot=is_floor_lot,
-        reason="floor_lot" if is_floor_lot else "entry_curve",
+        is_hedge=is_hedge,
+        reason=reason,
     )
 
 

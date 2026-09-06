@@ -153,3 +153,40 @@ class TestFloorLotProbability:
     def test_unknown_position_tier_rejected(self):
         with pytest.raises(ValueError):
             bc.floor_lot_probability("Bitcoin", "CHEAP", "5th")
+
+
+class TestHedgeCalibration:
+    """Confirmed from the full historical dataset: dual-sided markets have
+    a dramatically better worst-case outcome than single-sided ones
+    (-20.5% of stake on average vs -100%), and 24.9% are outright
+    arbitrage. All six assets and four regimes must have real, distinct
+    calibration data -- not a single shared fallback."""
+
+    def test_all_six_assets_and_four_regimes_present_for_trigger_probability(self):
+        assert set(bc.HEDGE_TRIGGER_PROBABILITY.keys()) == set(bc.ASSET_NAMES)
+        for asset in bc.ASSET_NAMES:
+            assert set(bc.HEDGE_TRIGGER_PROBABILITY[asset].keys()) == set(bc.REGIME_NAMES)
+
+    def test_all_six_assets_and_four_regimes_present_for_size_ratio(self):
+        assert set(bc.HEDGE_SIZE_RATIO.keys()) == set(bc.ASSET_NAMES)
+        for asset in bc.ASSET_NAMES:
+            assert set(bc.HEDGE_SIZE_RATIO[asset].keys()) == set(bc.REGIME_NAMES)
+
+    def test_probabilities_are_valid_and_asset_specific(self):
+        cheap_probs = {a: bc.hedge_trigger_probability(a, "CHEAP") for a in bc.ASSET_NAMES}
+        for p in cheap_probs.values():
+            assert 0.0 <= p <= 1.0
+        assert len(set(cheap_probs.values())) == len(cheap_probs)
+
+    def test_high_regime_has_the_lowest_trigger_probability_everywhere(self):
+        """Confirmed pattern: a HIGH-band primary entry is already so
+        confident that a hedge is added far less often than from any
+        other regime, consistently across every asset."""
+        for asset in bc.ASSET_NAMES:
+            high_p = bc.hedge_trigger_probability(asset, "HIGH")
+            for regime in ("CHEAP", "MID", "CORE"):
+                assert high_p <= bc.hedge_trigger_probability(asset, regime)
+
+    def test_unknown_asset_or_regime_falls_back_safely(self):
+        assert bc.hedge_trigger_probability("NotAnAsset", "CHEAP") == 0.0
+        assert bc.hedge_size_ratio("NotAnAsset", "CHEAP") == bc._DEFAULT_HEDGE_SIZE_RATIO

@@ -258,3 +258,61 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
         return ENTRY_SIZING_USD[asset][regime][position_tier]
     except KeyError as exc:
         raise BehaviorLookupError(asset, regime) from exc
+
+
+# ---------------------------------------------------------------------------
+# Dual-sided "hedge" behavior. Confirmed from the full historical dataset
+# (see deep_analysis.py / deep_analysis_output.json and hedge_calibration.py
+# in the repo): when the trader's early second entry into a market lands on
+# the OPPOSITE outcome from the first, it functions as deliberate insurance,
+# not a persistence-roll failure --
+#
+#   - Single-sided markets: worst-case outcome is always -100% of stake.
+#   - Dual-sided markets: worst-case outcome averages -20.5% of stake
+#     (median -27.6%), and 24.9% of them are outright arbitrage --
+#     guaranteed profit regardless of which side wins.
+#
+# Modeled as ONE roll, at the market's SECOND entry only (0-based
+# entry_count == 1), keyed by (asset, regime of the FIRST entry) --
+# because that's when it actually happens in the data: median first-hedge
+# entry index is 2-5, and in the timing analysis 55.8% of hedges land
+# within 5 seconds of the primary entry. If the roll doesn't trigger, the
+# market is NOT re-rolled at every later entry -- it just proceeds as an
+# ordinary single-side (or persistence/switch-governed) market, matching
+# the real per-market hedge frequency rather than compounding a smaller
+# probability across many entries into an inflated one.
+#
+# Hedge size = HEDGE_SIZE_RATIO[asset][primary_regime] * the dominant
+# side's cumulative cost so far (not the position-count sizing curve --
+# hedge sizing scales with what it's protecting, not with entry index).
+# ---------------------------------------------------------------------------
+HEDGE_TRIGGER_PROBABILITY = {
+    "Bitcoin":     {"CHEAP": 0.6242, "MID": 0.6697, "CORE": 0.4754, "HIGH": 0.2967},
+    "Ethereum":    {"CHEAP": 0.4006, "MID": 0.6562, "CORE": 0.5064, "HIGH": 0.2971},
+    "Solana":      {"CHEAP": 0.5950, "MID": 0.7286, "CORE": 0.5523, "HIGH": 0.3039},
+    "Dogecoin":    {"CHEAP": 0.3515, "MID": 0.4531, "CORE": 0.6209, "HIGH": 0.3041},
+    "Hyperliquid": {"CHEAP": 0.3506, "MID": 0.5819, "CORE": 0.5628, "HIGH": 0.3079},
+    "BNB":         {"CHEAP": 0.8389, "MID": 0.9004, "CORE": 0.7806, "HIGH": 0.4884},
+}
+
+HEDGE_SIZE_RATIO = {
+    "Bitcoin":     {"CHEAP": 0.1316, "MID": 0.2756, "CORE": 0.1062, "HIGH": 0.0306},
+    "Ethereum":    {"CHEAP": 0.1243, "MID": 0.2511, "CORE": 0.0822, "HIGH": 0.0204},
+    "Solana":      {"CHEAP": 0.1574, "MID": 0.2760, "CORE": 0.0625, "HIGH": 0.0159},
+    "Dogecoin":    {"CHEAP": 0.1992, "MID": 0.2937, "CORE": 0.0942, "HIGH": 0.0480},
+    "Hyperliquid": {"CHEAP": 0.1453, "MID": 0.1742, "CORE": 0.0833, "HIGH": 0.0358},
+    "BNB":         {"CHEAP": 0.1063, "MID": 0.1686, "CORE": 0.0503, "HIGH": 0.0285},
+}
+
+# Fallback ratio if an (asset, regime) combo is ever missing -- shouldn't
+# happen given all six assets and four regimes are populated above, but a
+# defined fallback beats a KeyError taking down a market's evaluation.
+_DEFAULT_HEDGE_SIZE_RATIO = 0.15
+
+
+def hedge_trigger_probability(asset: str, primary_regime: str) -> float:
+    return HEDGE_TRIGGER_PROBABILITY.get(asset, {}).get(primary_regime, 0.0)
+
+
+def hedge_size_ratio(asset: str, primary_regime: str) -> float:
+    return HEDGE_SIZE_RATIO.get(asset, {}).get(primary_regime, _DEFAULT_HEDGE_SIZE_RATIO)

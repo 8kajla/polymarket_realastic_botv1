@@ -8,17 +8,56 @@ from paperbot.ledger import Ledger
 
 def make_filled_order(order_id=1, asset="Bitcoin", regime="CHEAP", side="Up",
                        price=0.20, size=10.0, condition_id="cond-1",
-                       is_floor_lot=False):
+                       is_floor_lot=False, is_hedge=False):
     order = SimulatedOrder(
         order_id=order_id, condition_id=condition_id, token_id="tok-up",
         asset=asset, regime=regime, position_tier="first", side=side,
         price=price, original_size=size, is_floor_lot=is_floor_lot,
-        placed_at=0.0, remaining_size=0.0,
+        is_hedge=is_hedge, placed_at=0.0, remaining_size=0.0,
     )
     order.fills.append(Fill(size=size, price=price, ts=1.0))
     order.status = OrderStatus.FILLED
     order.first_fill_at = 1.0
     return order
+
+
+class TestHedgeFlagPropagation:
+    def test_is_hedge_flows_through_to_the_settlement_record(self):
+        ledger = Ledger()
+        order = make_filled_order(price=0.15, size=10.0, side="Down", is_hedge=True)
+        record = ledger.settle_order(order, winning_side="Down")
+        assert record.is_hedge is True
+
+    def test_non_hedge_order_settles_with_is_hedge_false(self):
+        ledger = Ledger()
+        order = make_filled_order(price=0.15, size=10.0, side="Down", is_hedge=False)
+        record = ledger.settle_order(order, winning_side="Down")
+        assert record.is_hedge is False
+
+    def test_persists_and_reloads_correctly(self, tmp_path):
+        path = tmp_path / "ledger.json"
+        ledger = Ledger()
+        order = make_filled_order(price=0.15, size=10.0, side="Down", is_hedge=True)
+        ledger.settle_order(order, winning_side="Down")
+        ledger.save(path)
+
+        reloaded = Ledger.load(path)
+        assert reloaded.records[0].is_hedge is True
+
+    def test_hedge_summary_separates_hedge_from_normal_pnl(self):
+        ledger = Ledger()
+        hedge_order = make_filled_order(order_id=1, price=0.10, size=5.0, side="Down",
+                                         condition_id="c1", is_hedge=True)
+        normal_order = make_filled_order(order_id=2, price=0.60, size=5.0, side="Up",
+                                          condition_id="c2", is_hedge=False)
+        ledger.settle_order(hedge_order, winning_side="Down")   # hedge wins
+        ledger.settle_order(normal_order, winning_side="Down")  # normal loses
+
+        summary = ledger.hedge_summary()
+        assert summary["hedge_trades"] == 1
+        assert summary["normal_trades"] == 1
+        assert summary["hedge_pnl"] == pytest.approx(5.0 * 1.0 - 5.0 * 0.10)
+        assert summary["normal_pnl"] == pytest.approx(0.0 - 5.0 * 0.60)
 
 
 class TestRealizedPnlRecompute:

@@ -30,3 +30,10 @@ trade.jsonl
 
 # Claude Code session state -- not project files
 .claude/
+
+# Local-only trader intelligence -- consolidated derived facts about the
+# real wallet this bot's behavior is calibrated on. Deliberately never
+# committed: unlike behavior_config.py's tables (which document the BOT's
+# own calibration and are meant to be public), this file exists purely as
+# private reference material, per explicit request.
+TRADER_PROFILE.md

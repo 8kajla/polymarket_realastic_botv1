@@ -19,20 +19,59 @@ into. Every order this bot places is therefore `GTC` + `postOnly` --
 modeling a confirmed fact about how this trader operates, not a
 stylistic choice.
 
+## Dual-sided hedge behavior
+
+Confirmed from the full 778,116-trade historical dataset (`deep_analysis.py`,
+committed in this repo): when the trader's early second entry into a
+market lands on the OPPOSITE side from the first, it's a deliberate
+insurance leg, not noise or a persistence-roll failure --
+
+- **Single-sided markets**: worst-case outcome is always -100% of stake
+  (no protection -- trivially true of any pure directional bet).
+- **Dual-sided markets**: worst-case outcome averages **-20.5%** of stake
+  (median -27.6%), and **24.9%** of them are outright arbitrage --
+  guaranteed profit regardless of which side wins.
+- The dominant pattern (~31% of dual-sided markets) is a confident
+  primary bet in CORE/HIGH paired with a cheap insurance leg in CHEAP on
+  the other side. Trigger probability and typical hedge size (as a
+  fraction of the primary side's cost) vary by asset and by which regime
+  the primary entry landed in -- see `HEDGE_TRIGGER_PROBABILITY` and
+  `HEDGE_SIZE_RATIO` in `behavior_config.py`.
+
+**Implementation** (`strategy.decide_hedge`, wired into
+`build_order_intent`): modeled as ONE roll, at the market's second entry
+only, keyed by (asset, regime of the first entry). If it doesn't trigger
+there, the market is not re-rolled at every later entry -- that matches
+the real per-market hedge frequency rather than compounding a smaller
+probability across many entries into an inflated one. When triggered,
+the hedge leg's size is `HEDGE_SIZE_RATIO[asset][primary_regime] *
+(dominant side's cumulative cost so far)` -- proportional to what it's
+protecting, not the ordinary (asset, regime, position-index) sizing
+curve used for every other entry. `OrderIntent.is_hedge` /
+`SimulatedOrder.is_hedge` / `SettlementRecord.is_hedge` carry the flag
+through placement, fills, and settlement, and `Ledger.hedge_summary()` +
+the periodic `PNL_SUMMARY` log line report hedge vs. normal trade P&L
+separately -- the live signal for whether the bot's simulated hedges are
+actually reproducing the confirmed better-worst-case property, not just
+firing.
+
 ## Architecture
 
 ```
 paperbot/
   config.py            endpoints, safety gate, tunable constants
-  behavior_config.py   per-asset regime/sizing/persistence/floor-lot tables
+  behavior_config.py   per-asset regime/sizing/persistence/floor-lot/hedge tables
   market_discovery.py  Gamma API polling -> Market objects
   book.py              CLOB REST bootstrap + WS live book state per token
-  strategy.py          regime/availability/side/sizing/timing decisions
+  strategy.py          regime/availability/side/sizing/timing/hedge decisions
   fill_simulation.py   the paper fill model (queueing, drift, expiry)
   ledger.py            settlement + realized P&L (recomputed, never cached)
   bot.py               main loop wiring it all together
-tests/                 127 tests covering the above
+tests/                 149 tests covering the above
 run_bot.py             CLI entry point
+deep_analysis.py       standalone script: win/loss economics + hedge
+                        behavior analysis on trade.jsonl (not part of the
+                        bot itself -- see "Dual-sided hedge behavior" below)
 ```
 
 ## Running it
@@ -166,7 +205,7 @@ end:
 
 ## What the test suite covers
 
-127 tests, `python3 -m pytest tests/ -v`:
+149 tests, `python3 -m pytest tests/ -v`:
 
 - **Band classification** at the exact 0.30/0.70/0.90 boundaries.
 - **Per-asset sizing curves are genuinely distinct** -- a test that fails
@@ -199,6 +238,12 @@ end:
   shutdown test that sends the running process a real `SIGTERM` and
   confirms `run_forever()` stops promptly rather than hanging until
   Railway (or any host) has to `SIGKILL` it.
+- **Hedge leg**: fires only at exactly the market's second entry (never
+  re-rolled at later entries, never before a first entry exists), uses
+  the opposite side from the dominant one, sizes off the dominant side's
+  cumulative cost rather than the ordinary position-count curve, and a
+  full pipeline test (`TestHedgeLegEndToEnd`) confirming it end to end
+  through `decide_hedge -> build_order_intent -> place_order`.
 
 ### Two real bugs this build caught in its own pre-commit testing
 

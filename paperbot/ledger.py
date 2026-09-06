@@ -38,6 +38,7 @@ class SettlementRecord:
     pnl: float                # payout - entry_cost
     settled_at: float
     is_floor_lot: bool
+    is_hedge: bool = False
 
 
 class Ledger:
@@ -91,6 +92,7 @@ class Ledger:
             pnl=pnl,
             settled_at=now,
             is_floor_lot=order.is_floor_lot,
+            is_hedge=order.is_hedge,
         )
         self.records.append(record)
         self._settled_order_ids.add(order.order_id)
@@ -117,6 +119,20 @@ class Ledger:
             key = (r.asset, r.regime)
             out[key] = out.get(key, 0.0) + r.pnl
         return out
+
+    def hedge_summary(self) -> dict:
+        """Hedge vs. non-hedge settlement counts and P&L -- the live
+        signal for whether the bot's simulated hedge legs are actually
+        reproducing the confirmed historical property (dual-sided markets
+        have a far better worst-case outcome than single-sided ones)."""
+        hedge = [r for r in self.records if r.is_hedge]
+        normal = [r for r in self.records if not r.is_hedge]
+        return {
+            "hedge_trades": len(hedge),
+            "hedge_pnl": round(sum(r.pnl for r in hedge), 4),
+            "normal_trades": len(normal),
+            "normal_pnl": round(sum(r.pnl for r in normal), 4),
+        }
 
     # -- persistence ---------------------------------------------------
 

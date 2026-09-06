@@ -14,6 +14,7 @@ import requests
 
 import paperbot.bot as botmod
 from paperbot import config
+from paperbot import strategy as stratmod
 from paperbot.bot import PaperBot
 from paperbot.book import BookState
 from paperbot.fill_simulation import Fill, OrderStatus, SimulatedOrder
@@ -27,6 +28,15 @@ def make_bitcoin_market(condition_id="cond-1", end_time=2000.0):
     return Market(
         condition_id=condition_id, slug=f"btc-updown-5m-{condition_id}", question="q",
         asset="Bitcoin", end_time=end_time,
+        token_id_up=f"{condition_id}-up", token_id_down=f"{condition_id}-down",
+        order_min_size=None, order_min_tick_size=0.01,
+    )
+
+
+def make_market_for_asset(asset, condition_id="cond-1", end_time=2000.0):
+    return Market(
+        condition_id=condition_id, slug=f"x-updown-5m-{condition_id}", question="q",
+        asset=asset, end_time=end_time,
         token_id_up=f"{condition_id}-up", token_id_down=f"{condition_id}-down",
         order_min_size=None, order_min_tick_size=0.01,
     )
@@ -64,6 +74,56 @@ class TestSessionConnectionPoolSizing:
         # A full 6-market rollover batch bootstraps 12 tokens concurrently;
         # the pool must comfortably exceed that, not merely match it.
         assert adapter.poolmanager.connection_pool_kw.get("maxsize", 0) >= 12
+
+
+class TestHedgeLegEndToEnd:
+    """Full-pipeline test: a market's second entry becomes a deliberately-
+    sized hedge leg on the opposite side, wired through decide_hedge ->
+    build_order_intent -> place_order -> resting_order_id, matching the
+    confirmed historical pattern (dual-sided markets have a dramatically
+    better worst-case outcome than single-sided ones)."""
+
+    def test_second_entry_becomes_a_sized_hedge_when_triggered(self, monkeypatch):
+        bot = PaperBot(assets=["BNB"], seed=1)
+        market = make_market_for_asset("BNB")
+        wire_market(bot, market, bid=0.75, ask=0.76, depth=200.0)  # primary lands in CORE
+
+        # First entry: establishes the primary side and its cost.
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        assert market.condition_id in bot.resting_order_id
+        first_order_id = bot.resting_order_id[market.condition_id]
+        first_order = bot.fill_sim.orders[first_order_id]
+        activity = bot.activity[market.condition_id]
+        assert activity.entry_count == 1
+        assert activity.first_entry_regime == "CORE"
+
+        # Free up the market for a second entry (as if the first got filled).
+        first_order.fills.append(Fill(size=first_order.original_size, price=first_order.price, ts=1001.0))
+        first_order.status = OrderStatus.FILLED
+        del bot.resting_order_id[market.condition_id]
+
+        # Force the hedge roll to trigger deterministically for this test.
+        monkeypatch.setattr(stratmod, "decide_hedge",
+                             lambda asset, activity, rng: "Down" if activity.dominant_side() == "Up"
+                             else "Up")
+
+        asyncio.run(bot.strategy_tick(now=1001.0))
+
+        assert market.condition_id in bot.resting_order_id
+        hedge_order_id = bot.resting_order_id[market.condition_id]
+        hedge_order = bot.fill_sim.orders[hedge_order_id]
+
+        assert hedge_order.is_hedge is True
+        assert hedge_order.is_floor_lot is False
+        assert hedge_order.side != first_order.side
+        assert activity.hedge_placed is True
+
+        # Sized as a ratio of the dominant side's cost, not the ordinary
+        # position-count curve -- confirm it's in a sane, small range
+        # relative to the primary, not an ordinary full-size entry.
+        primary_cost = first_order.original_size * first_order.price
+        hedge_cost = hedge_order.original_size * hedge_order.price
+        assert 0 < hedge_cost < primary_cost
 
 
 class TestBatchedOnboarding:
