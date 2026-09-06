@@ -31,7 +31,7 @@ paperbot/
   fill_simulation.py   the paper fill model (queueing, drift, expiry)
   ledger.py            settlement + realized P&L (recomputed, never cached)
   bot.py               main loop wiring it all together
-tests/                 103 tests covering the above
+tests/                 107 tests covering the above
 run_bot.py             CLI entry point
 ```
 
@@ -119,27 +119,21 @@ end:
   `last_trade_price` events -- without it you only get `book`/
   `price_change`, and the fill simulator has nothing to consume against.
   This is wired into `book.py`.
-- **Four of six slug prefixes are still unverified assumptions.** Only
-  BNB (`bnb-updown-5m-`) and Hyperliquid (`hype-updown-5m-`) slugs are
-  confirmed, because those are the only two that appeared in the raw
-  historical data sample used to build `market_discovery.py`. Bitcoin,
-  Ethereum, Solana, and Dogecoin follow the same observed
-  `<ticker>-updown-5m-<epoch>` convention but are flagged as
-  ASSUMPTION-TO-VERIFY in `config.py`. The first live deploy's crash (see
-  below) happened one layer below slug matching, so it didn't confirm or
-  refute these -- **watch the logs on the next deploy**: with the current
-  slug-lookup discovery, a wrong prefix now shows up as "this asset never
-  gets any markets" rather than silently mis-filtering, which is at least
-  easy to spot. Update `paperbot/config.py`'s `ASSET_SLUG_PREFIXES` if any
-  of the four turn out to differ.
+- **All six slug prefixes are now live-confirmed, not just BNB and
+  Hyperliquid.** Only those two appeared in the raw historical data
+  sample used to build `market_discovery.py`; Bitcoin, Ethereum, Solana,
+  and Dogecoin were flagged as ASSUMPTION-TO-VERIFY. The second live
+  deploy's logs showed clean `ONBOARD`/`RETIRE` cycles for all six assets
+  as their 5-minute windows rolled over, confirming every prefix in
+  `config.py`'s `ASSET_SLUG_PREFIXES` as-is. Nothing to fix here.
 - **The network-facing code paths were implemented against verified
   contracts but genuinely couldn't be exercised from the build
   environment** (no outbound network to any polymarket.com host from that
-  sandbox). The first live Railway deployment was the real integration
-  test, and it found a real bug on the first try -- see "Fixed after the
-  first live deploy" below. Message parsing/application logic
-  (`book.py`, `market_discovery.py`) was and remains pure and unit-tested
-  with synthetic payloads regardless of live network status.
+  sandbox). Real Railway deployments were the actual integration test,
+  and found real bugs on both of the first two tries -- see "Bugs found
+  and fixed via live Railway deploys" below. Message parsing/application
+  logic (`book.py`, `market_discovery.py`) was and remains pure and
+  unit-tested with synthetic payloads regardless of live network status.
 - **First-entry side (Up vs Down) is a 50/50 coin flip.** The historical
   data confirmed side *persistence* for subsequent entries in an
   already-active market, but not what determines the very first entry's
@@ -172,7 +166,7 @@ end:
 
 ## What the test suite covers
 
-103 tests, `python3 -m pytest tests/ -v`:
+107 tests, `python3 -m pytest tests/ -v`:
 
 - **Band classification** at the exact 0.30/0.70/0.90 boundaries.
 - **Per-asset sizing curves are genuinely distinct** -- a test that fails
@@ -230,11 +224,16 @@ instructions:
    sweep over tracked orders' actual current state every tick. Covered by
    `tests/test_bot.py::TestRestingOrderIdClearsOnFillViaTradePrint`.
 
-### Bugs found and fixed after the first live Railway deploy
+### Bugs found and fixed via live Railway deploys
 
-The first real deployment (real Gamma/CLOB/WS traffic, which this build
-environment couldn't produce) surfaced one real bug immediately, plus a
-likely-downstream symptom of it:
+This build environment has no outbound network to any polymarket.com
+host, so the network-facing layer (`book.py`, `market_discovery.py`) was
+implemented against documented contracts but genuinely couldn't be
+exercised end to end before shipping. Real deployments then did that
+testing for real, and found real bugs -- logged here as they were found
+and fixed, deploy by deploy.
+
+**Deploy 1: discovery crashed outright.**
 
 1. **Market discovery paginated the wrong endpoint and crashed.**
    `fetch_active_markets` originally called `GET /markets?active=true&closed=false`
@@ -258,22 +257,58 @@ likely-downstream symptom of it:
    subscription payload`, repeatedly.** Given discovery never succeeded
    even once, `MarketWebSocketClient` never had any token ids to
    subscribe with -- so every reconnect opened a connection and sent
-   nothing, which the server closed. This was very likely entirely
-   downstream of bug #1, but to close the underlying race regardless of
-   root cause, `run_forever` now runs one discovery pass *before* opening
-   the WebSocket at all, so subscriptions are ready the moment it
-   connects instead of racing the first poll.
+   nothing, which the server closed. `run_forever` now runs one discovery
+   pass *before* opening the WebSocket at all, so subscriptions are ready
+   the moment it connects instead of racing the first poll.
 
-   This was not independently re-confirmed against a live connection
-   after the fix (same sandbox network limitation as the original build)
-   -- watch the logs on the next deploy to confirm the WS connects and
-   stays connected once discovery is finding markets.
-
-Both fixes are covered by new tests: `tests/test_market_discovery.py::TestFetchActiveMarketsUsesSlugLookupNotPagination`
+Covered by `tests/test_market_discovery.py::TestFetchActiveMarketsUsesSlugLookupNotPagination`
 (including a direct regression test that a `422` on one asset's slug
-lookup doesn't abort the other five), and the existing
-`TestGracefulShutdownOnSignal`/wiring tests continue to pass with the
-reordered startup sequence.
+lookup doesn't abort the other five).
+
+**Deploy 2: discovery fix confirmed working -- all six slug prefixes
+turned out correct, no code changes needed there. Two new bugs surfaced
+in the book/WS layer once markets actually started onboarding:**
+
+3. **`ValueError: could not convert string to float: 'size'`, crashing
+   every book bootstrap.** `BookState.apply_snapshot` assumed each book
+   level was a `[price, size]` pair and did `for p, s in bids`. Real
+   Polymarket levels are objects: `{"price": "0.20", "size": "10"}`.
+   Unpacking a dict with `p, s = level` binds it to its *keys* -- so
+   `p="price"`, `s="size"` -- and `float("size")` throws exactly this
+   error. This hit every single market, on both the REST bootstrap and
+   the WS `book` snapshot (same code path), so no book state was ever
+   built and every market got halted immediately after onboarding.
+
+   **Fix:** `_extract_level()` normalizes either shape (object or pair)
+   into a `(price, size)` float tuple. Covered by
+   `TestBookStateSnapshot::test_apply_snapshot_handles_real_polymarket_object_shaped_levels`.
+
+4. **The WebSocket kept closing with a plain-text `INVALID OPERATION`
+   (not the documented JSON schema) immediately after each new market
+   onboarded.** The pattern: one `ONBOARD` log line, immediately followed
+   by one `INVALID OPERATION`, repeating per market. `subscribe()` was
+   sending a fresh `{"assets_ids": [...], ...}` message on the live
+   connection every time a new market appeared, in addition to the one
+   sent at connect time. The market channel appears to accept exactly
+   *one* subscription message per connection -- any further message on
+   the same connection gets rejected.
+
+   **Fix:** `subscribe()` no longer sends anything on an already-open
+   connection. When new token ids need to be added, it closes the
+   connection instead; `_ws_supervisor`'s existing reconnect loop opens a
+   fresh one immediately, which sends a single consolidated message with
+   the complete, updated id set (this is what `connect_and_run` already
+   did at initial connect time -- now it's also how every subsequent
+   addition happens). Covered by
+   `TestSubscribeNeverSendsASecondMessageOnALiveConnection`.
+
+Both deploy-2 fixes were made from log evidence, not from a live
+reconnect I personally watched succeed -- the next deploy's logs are
+still the real confirmation. If `INVALID OPERATION` shows up again after
+this fix, that would mean there's a second, independent issue in the
+subscription payload shape itself (e.g. `custom_feature_enabled` isn't
+actually accepted the way the mirrored docs suggested), not just the
+one-message-per-connection behavior found here.
 
 ## Provenance
 

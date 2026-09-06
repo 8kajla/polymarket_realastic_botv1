@@ -1,4 +1,6 @@
+import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -29,6 +31,24 @@ class TestBookStateSnapshot:
         assert book.depth_shares_at_or_better("bid", 0.19) == 15.0
         assert book.depth_shares_at_or_better("bid", 0.20) == 10.0
         assert book.depth_shares_at_or_better("bid", 0.10) == 18.0
+
+    def test_apply_snapshot_handles_real_polymarket_object_shaped_levels(self):
+        """Direct regression test for a live-confirmed bug: Polymarket
+        represents each level as {"price": ..., "size": ...} (often as
+        strings), NOT a [price, size] pair. An earlier version did
+        `for p, s in bids`, which -- since unpacking a dict binds its KEYS
+        -- silently bound p="price", s="size" and then crashed on
+        float("size")."""
+        book = BookState(token_id="t")
+        book.apply_snapshot(
+            bids=[{"price": "0.20", "size": "10"}, {"price": "0.19", "size": "5"},
+                  {"price": "0.18", "size": "0"}],
+            asks=[{"price": "0.22", "size": "7"}, {"price": "0.25", "size": "3"}],
+        )
+        assert book.best_bid == 0.20
+        assert book.best_ask == 0.22
+        assert book.bids == [(0.20, 10.0), (0.19, 5.0)]
+        assert book.asks == [(0.22, 7.0), (0.25, 3.0)]
 
 
 class TestPriceChange:
@@ -122,3 +142,41 @@ class TestWebSocketMessageRouting:
         client = MarketWebSocketClient(get_book_state=lambda tid: None)
         client.route_message("PONG")
         client.route_message("not json{{{")
+
+
+class TestSubscribeNeverSendsASecondMessageOnALiveConnection:
+    """Direct regression test for a live-confirmed bug: sending an
+    incremental subscribe message on an already-subscribed connection got
+    the connection closed by the server with a plain-text "INVALID
+    OPERATION" response. subscribe() must record new ids and, if already
+    connected, close the connection instead of sending anything more on
+    it -- the next reconnect sends one consolidated message."""
+
+    def test_subscribing_before_connected_just_records_ids(self):
+        client = MarketWebSocketClient(get_book_state=lambda tid: None)
+        asyncio.run(client.subscribe(["a", "b"]))
+        assert client._subscribed_ids == {"a", "b"}
+        assert client._ws is None  # nothing to send to yet, nothing sent
+
+    def test_new_ids_after_connecting_close_instead_of_sending_again(self):
+        client = MarketWebSocketClient(get_book_state=lambda tid: None)
+        fake_ws = AsyncMock()
+        client._ws = fake_ws
+        client._subscribed_ids = {"a"}
+
+        asyncio.run(client.subscribe(["a", "b"]))  # "b" is new
+
+        fake_ws.close.assert_awaited_once()
+        fake_ws.send.assert_not_awaited()
+        assert client._subscribed_ids == {"a", "b"}
+
+    def test_no_new_ids_does_not_touch_the_connection(self):
+        client = MarketWebSocketClient(get_book_state=lambda tid: None)
+        fake_ws = AsyncMock()
+        client._ws = fake_ws
+        client._subscribed_ids = {"a", "b"}
+
+        asyncio.run(client.subscribe(["a", "b"]))  # nothing new
+
+        fake_ws.close.assert_not_awaited()
+        fake_ws.send.assert_not_awaited()

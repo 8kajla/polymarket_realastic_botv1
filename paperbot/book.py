@@ -3,12 +3,16 @@ Order book state per token, fed by the CLOB REST bootstrap and the
 market-channel WebSocket.
 
 The *_apply methods are pure state-mutation logic and are fully unit
-testable without any network access -- the network glue (fetch_book_
-snapshot, fetch_tick_size, MarketWebSocketClient) is verified against
-Polymarket's documented contracts but could not be live-tested from this
-build environment (no outbound network to polymarket.com hosts here).
-Smoke-test the network glue against a live environment before relying on
-it in production.
+testable without any network access. The network glue (fetch_book_
+snapshot, fetch_tick_size, MarketWebSocketClient) was originally
+implemented against documented contracts without live access, and a real
+Railway deployment then surfaced two real bugs in it on the first try:
+book levels arrive as {"price": ..., "size": ...} objects (not [price,
+size] pairs -- see _extract_level), and the market channel accepts only
+one subscription message per connection (see MarketWebSocketClient.
+subscribe's docstring). Both are fixed and covered by tests, but this
+layer's only real validation is that one live deployment -- treat further
+live runs as still-active integration testing, not a fully closed loop.
 """
 from __future__ import annotations
 
@@ -32,6 +36,16 @@ class TradePrint:
     size: float
     side: str
     ts: float
+
+
+def _extract_level(level) -> tuple[float, float]:
+    """Normalize one order-book level to a (price, size) float pair.
+    Accepts Polymarket's real shape -- {"price": "...", "size": "..."} --
+    and, defensively, a bare [price, size] sequence."""
+    if isinstance(level, dict):
+        return float(level["price"]), float(level.get("size", 0))
+    p, s = level
+    return float(p), float(s)
 
 
 @dataclass
@@ -102,10 +116,20 @@ class BookState:
     # -- mutation from WS/REST messages --------------------------------
 
     def apply_snapshot(self, bids: list, asks: list, ts: Optional[float] = None) -> None:
-        """Replace the book entirely (REST bootstrap or WS 'book' message)."""
-        self.bids = sorted(((float(p), float(s)) for p, s in bids if float(s) > 0),
+        """Replace the book entirely (REST bootstrap or WS 'book' message).
+
+        Polymarket represents each level as an object, e.g.
+        {"price": "0.42", "size": "10.5"} -- NOT a [price, size] pair. An
+        earlier version of this method assumed the pair shape and did
+        `for p, s in bids`, which (since a dict unpacks to its keys) bound
+        p="price", s="size" and then crashed on float("size"). Confirmed
+        live on a real deployment. _extract_level below accepts either
+        shape defensively, in case the two feeds (REST /book vs WS "book"
+        snapshots) ever diverge.
+        """
+        self.bids = sorted((lvl for lvl in (_extract_level(l) for l in bids) if lvl[1] > 0),
                             key=lambda x: -x[0])
-        self.asks = sorted(((float(p), float(s)) for p, s in asks if float(s) > 0),
+        self.asks = sorted((lvl for lvl in (_extract_level(l) for l in asks) if lvl[1] > 0),
                             key=lambda x: x[0])
         self.last_update_ts = ts if ts is not None else time.time()
 
@@ -208,10 +232,11 @@ class MarketWebSocketClient:
     across every subscribed token_id, and routes incoming messages to the
     right BookState via `on_message`.
 
-    NOTE: this class talks to a real network endpoint and could not be
-    live-tested from this build environment. The message-routing logic
-    (route_message, below) is exercised directly by the test suite using
-    synthetic payloads shaped per Polymarket's documented schemas.
+    The message-routing logic (route_message, below) is exercised directly
+    by the test suite using synthetic payloads. The connection-management
+    logic (this class's async methods) was live-tested on a real Railway
+    deployment, which is how the one-subscription-message-per-connection
+    behavior documented on `subscribe` was discovered.
     """
 
     def __init__(self, get_book_state: Callable[[str], Optional[BookState]]):
@@ -251,10 +276,25 @@ class MarketWebSocketClient:
                 return
 
     async def subscribe(self, token_ids: list[str]):
+        """
+        Record `token_ids` as wanted. If we're already connected and this
+        adds anything new, force a reconnect rather than sending a second
+        subscription message on the live connection.
+
+        Confirmed live: sending an incremental subscribe message to an
+        already-subscribed connection gets the connection closed with a
+        plain-text "INVALID OPERATION" response (not the documented JSON
+        schema) -- the market channel appears to accept exactly one
+        subscription message per connection. Since 5-minute markets churn
+        constantly, new token ids show up often; the reliable way to add
+        them is to close and let connect_and_run's next pass send ONE
+        message with the complete, updated id set (it already does this
+        automatically on every fresh connect).
+        """
         new_ids = [t for t in token_ids if t not in self._subscribed_ids]
         self._subscribed_ids.update(new_ids)
         if self._ws is not None and new_ids:
-            await self._send_subscription(new_ids)
+            await self._ws.close()
 
     async def _send_subscription(self, token_ids: list[str]):
         msg = {
