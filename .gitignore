@@ -42,3 +42,9 @@ TRADER_PROFILE.md
 *.pem
 *.key
 .aws/
+
+# Local-only ongoing trader-intelligence pipeline (fetch/analysis scripts
+# are fine to keep private-source-controlled on the AWS box itself, but
+# never in this public repo -- same reasoning as TRADER_PROFILE.md above:
+# it's research on a real wallet's behavior, not the bot's own code).
+trader_intel/
