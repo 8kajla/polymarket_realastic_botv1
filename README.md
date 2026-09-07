@@ -736,6 +736,51 @@ symptom, before it could become one:
     regimes). See `trader_intel/recalibrate_asset.py` (generalized from
     `recalibrate_solana.py`) and `trader_intel/README.md`'s status log.
 
+17. **Investigated what triggers the trader's strategy changes (asset
+    add/drop events) -- two plausible-looking hypotheses, both died
+    against a baseline check.** "A losing streak triggers the change":
+    every one of the 7 known add/drop events was preceded by negative
+    10-day PNL -- but so was every one of 6 random non-event 10-day
+    windows sampled for comparison (several *more* negative than the
+    event windows), so negative PNL is just this trader's normal
+    baseline, not a signal. "He only trades while an asset is rising":
+    checked both a micro proxy (this trader's own 5-min market
+    resolution mix, flat ~48-53% Up in every window, no signal) and
+    actual macro price action via news -- and found the opposite of the
+    hypothesis in two places: Bitcoin and Solana were both *added*
+    mid-crash (Solana during its worst stretch on record, "10
+    consecutive down months, unprecedented"), and Solana was *kept*
+    trading continuously through that same historic decline while
+    Dogecoin/Hyperliquid were dropped during a comparable one. Neither
+    hypothesis survived a proper control -- documented in full in
+    `trader_intel/README.md`'s status log rather than presented as
+    confirmed.
+
+    Built this discipline into the automated pipeline rather than
+    leaving it as a one-off manual check: `trader_intel/
+    trigger_angle_miner.py` auto-detects asset add/drop events (seeded
+    with the 7 known ones, picks up future ones on its own), and for
+    each event tests a rotating set of candidate explanations (own PNL,
+    own win rate, asset trend, dual-sided rate, regime mix, entry
+    confidence, activity level) against a distribution of random
+    baseline windows -- a finding only counts as a live candidate if it
+    sits in the extreme 10% tail of that baseline, exactly the check
+    that ruled out both hypotheses above by hand. Tests 3 (event, angle)
+    pairs per 6h cycle (rotation, not a full re-scan every time) so
+    different angles get covered over time instead of the bot only ever
+    re-confirming the same one or two checks; every pair's most recent
+    result -- OUTLIER and WITHIN_NORMAL_RANGE alike -- is kept in
+    `trigger_angle_report.md` for transparency. One streaming pass over
+    the mirror builds small per-(asset, day) aggregates so every window
+    query (event + all baselines, every angle) is answered by summing
+    those buckets rather than re-scanning the trade file -- confirmed
+    live on AWS at ~9s / ~300MB peak. First real run already surfaced a
+    nuance the by-hand check missed: Bitcoin's addition was preceded by
+    a win-RATE cold streak (14.3% vs a 25.7% baseline, outlier-low) even
+    though the $ PNL in that same window was actually *better* than his
+    typical baseline (outlier-high, not low) -- a genuinely mixed
+    signal, logged as such rather than flattened into one story.
+
 ## Provenance
 
 `behavior_config.py`'s tables are calibrated on `trade_behavioral_analysis.json`,
