@@ -49,7 +49,11 @@ Group=paperbot
 WorkingDirectory=/opt/paperbot/app
 Environment=PAPERBOT_DATA_DIR=/opt/paperbot/data
 Environment=QUEUE_SAFETY_FACTOR=0.25
-ExecStart=/opt/paperbot/venv/bin/python -u run_bot.py
+# BNB excluded deliberately: the real trader this bot replicates appears
+# to have stopped trading BNB (last real trade 2026-08-23, zero since,
+# confirmed over 2+ weeks of continuous live monitoring) while continuing
+# all five other assets normally. See "Deliberately excluded: BNB" below.
+ExecStart=/opt/paperbot/venv/bin/python -u run_bot.py --assets Bitcoin Ethereum Solana Dogecoin Hyperliquid
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

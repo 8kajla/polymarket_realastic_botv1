@@ -672,6 +672,21 @@ symptom, before it could become one:
     that tool's README for the full diagnostic (regime-level win rate
     vs. both the live real trader and their full historical numbers).
 
+14. **Deliberately excluded: BNB.** The real trader this bot replicates
+    appears to have stopped trading BNB -- last real BNB trade
+    2026-08-23, zero since, confirmed over 2+ weeks of continuous live
+    monitoring while all five other assets continued trading normally
+    (see `trader_intel/README.md`'s status log for the full verification
+    -- ruled out as a data-gap artifact). The bot is now deployed with
+    `--assets Bitcoin Ethereum Solana Dogecoin Hyperliquid` (both the
+    live systemd unit and `deploy/aws/user-data.sh`) rather than the
+    default all-six. `behavior_config.py`'s BNB calibration tables are
+    left in place (not deleted) in case the real trader resumes -- an
+    automated watch (`trader_intel/fetch_trades.py`'s
+    `check_dormant_asset_resumption`) flags any new BNB trade the moment
+    it reappears in the live mirror, at which point re-enabling BNB here
+    would just mean removing it from `--assets`.
+
 ## Provenance
 
 `behavior_config.py`'s tables are calibrated on `trade_behavioral_analysis.json`,
