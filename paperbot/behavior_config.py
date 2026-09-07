@@ -65,7 +65,19 @@ ASSET_TICKERS = {
 # ---------------------------------------------------------------------------
 ASSET_REGIME_DISTRIBUTION_PCT = {
     "Bitcoin":     {"CHEAP": 33.4, "MID": 39.9, "CORE": 16.4, "HIGH": 10.2},
-    "Solana":      {"CHEAP": 58.2, "MID": 24.6, "CORE": 9.2,  "HIGH": 8.1},
+    # Solana RECALIBRATED 2026-09-08 from post-data-gap live data (n=1,929
+    # trades, well-supported across all four cells) -- the original
+    # 58.2/24.6/9.2/8.1 was measured on the full 778k-trade historical
+    # dataset, but Solana's OWN recent behavior has drifted meaningfully
+    # away from it (confirmed real, not noise: CHEAP -12.5pp is ~11
+    # standard errors from zero at this sample size), while Bitcoin and
+    # Ethereum's own regime distributions stayed close to their historical
+    # calibration over the same period -- this is a Solana-specific
+    # change, not evidence the whole calibration approach is broken. See
+    # trader_intel/README.md's status log for the full investigation
+    # (including why NOT to blame this on the BNB/Dogecoin/Hyperliquid
+    # exclusion -- that's a separate, only partially-overlapping effect).
+    "Solana":      {"CHEAP": 45.7, "MID": 26.2, "CORE": 13.7, "HIGH": 14.4},
     "Dogecoin":    {"CHEAP": 85.9, "MID": 8.6,  "CORE": 1.8,  "HIGH": 3.7},
     "Hyperliquid": {"CHEAP": 75.6, "MID": 14.6, "CORE": 5.5,  "HIGH": 4.2},
     "Ethereum":    {"CHEAP": 59.9, "MID": 21.6, "CORE": 8.9,  "HIGH": 9.6},
@@ -92,6 +104,13 @@ ENTRY_SIZING_USD = {
         "CORE":  {"first": 9.148, "2nd_3rd": 7.677, "4th_plus": 6.381},
         "HIGH":  {"first": 28.292, "2nd_3rd": 26.758, "4th_plus": 19.380},
     },
+    # Solana CHECKED for recalibration 2026-09-08, left at historical
+    # values -- every (regime, position) cell's recent sample is below
+    # the n>=500 trust threshold (ranged n=25 to n=411), so recent medians
+    # here (some higher, some lower than historical, no clean directional
+    # story) are more plausibly noise than a real shift. Revisit once more
+    # post-gap data has accumulated. See ASSET_REGIME_DISTRIBUTION_PCT's
+    # Solana comment for what WAS recalibrated in this same pass.
     "Solana": {
         "CHEAP": {"first": 1.097, "2nd_3rd": 0.805, "4th_plus": 0.490},
         "MID":   {"first": 2.850, "2nd_3rd": 2.597, "4th_plus": 2.387},
@@ -128,7 +147,10 @@ ENTRY_SIZING_USD = {
 SIDE_PERSISTENCE = {
     "Bitcoin": 0.9117,
     "Ethereum": 0.9057,
-    "Solana": 0.8634,
+    # RECALIBRATED 2026-09-08 from post-gap live data (n=1,607, trusted
+    # sample) -- 86.34% -> 81.64%. See ASSET_REGIME_DISTRIBUTION_PCT's
+    # Solana comment for the full context.
+    "Solana": 0.8164,
     "Dogecoin": 0.9152,
     "Hyperliquid": 0.8512,
     "BNB": 0.8085,
@@ -146,7 +168,11 @@ SIDE_PERSISTENCE = {
 GRADIENT_BIAS_PCT = {
     "Bitcoin":     {"CHEAP_follows_drop": 51.16, "HIGH_follows_rise": 55.40},
     "Ethereum":    {"CHEAP_follows_drop": 51.07, "HIGH_follows_rise": 51.94},
-    "Solana":      {"CHEAP_follows_drop": 58.12, "HIGH_follows_rise": 62.71},
+    # CHEAP_follows_drop RECALIBRATED 2026-09-08 (n=766, trusted) ->
+    # 62.14%. HIGH_follows_rise left at the historical value -- recent
+    # sample (n=251) is below the n>=500 trust threshold used for this
+    # recalibration pass, and this is only ever a soft tiebreak anyway.
+    "Solana":      {"CHEAP_follows_drop": 62.14, "HIGH_follows_rise": 62.71},
     "Dogecoin":    {"CHEAP_follows_drop": 51.42, "HIGH_follows_rise": 76.89},
     "Hyperliquid": {"CHEAP_follows_drop": 56.16, "HIGH_follows_rise": 65.01},
     "BNB":         {"CHEAP_follows_drop": 57.09, "HIGH_follows_rise": 53.10},
@@ -200,7 +226,11 @@ FLOOR_LOT_PROBABILITY = {
         "CHEAP": 0.0854, "MID": 0.0987, "CORE": 0.1030, "HIGH": 0.0428,
     },
     "Solana": {
-        "CHEAP": 0.1704, "MID": 0.2213, "CORE": 0.2055, "HIGH": 0.0964,
+        # CHEAP/MID RECALIBRATED 2026-09-08 (n=881/505, both trusted) --
+        # 0.1704->0.2452, 0.2213->0.2376. CORE/HIGH left at historical
+        # values -- recent samples (n=265/278) are below the n>=500 trust
+        # threshold used for this pass.
+        "CHEAP": 0.2452, "MID": 0.2376, "CORE": 0.2055, "HIGH": 0.0964,
     },
     "Dogecoin": {
         "CHEAP": 0.1520, "MID": 0.1986, "CORE": 0.2209, "HIGH": 0.0923,
@@ -286,6 +316,12 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
 # side's cumulative cost so far (not the position-count sizing curve --
 # hedge sizing scales with what it's protecting, not with entry index).
 # ---------------------------------------------------------------------------
+# Solana's hedge tables were NOT recalibrated in the 2026-09-08 pass (see
+# ASSET_REGIME_DISTRIBUTION_PCT's Solana comment for what WAS) -- these
+# need a MARKET-level breakdown by first-entry regime, and the post-gap
+# sample is only 322 Solana markets total, split across 4 regimes -- far
+# too thin for CORE/HIGH first-entries specifically to trust at all.
+# Left at historical values; revisit once more data has accumulated.
 HEDGE_TRIGGER_PROBABILITY = {
     "Bitcoin":     {"CHEAP": 0.6242, "MID": 0.6697, "CORE": 0.4754, "HIGH": 0.2967},
     "Ethereum":    {"CHEAP": 0.4006, "MID": 0.6562, "CORE": 0.5064, "HIGH": 0.2971},

@@ -694,6 +694,25 @@ symptom, before it could become one:
     reappears in the live mirror, at which point re-enabling it here
     would just mean adding it back to `--assets`.
 
+15. **Solana-specific recalibration.** Comparing the real trader's
+    RECENT (post-data-gap) behavior against `behavior_config.py`'s
+    historical calibration found Bitcoin and Ethereum's own regime
+    distributions still close to their historical numbers, but Solana's
+    meaningfully drifted (CHEAP -12.5pp, HIGH +6.3pp -- confirmed real
+    at this sample size, not noise). Recalibrated only the well-supported
+    parameters (n>=500 per cell): `ASSET_REGIME_DISTRIBUTION_PCT`,
+    `SIDE_PERSISTENCE` (86.34%->81.64%), `GRADIENT_BIAS_PCT`'s
+    `CHEAP_follows_drop` (58.12%->62.14%), and `FLOOR_LOT_PROBABILITY`'s
+    CHEAP/MID cells. Deliberately did NOT touch `ENTRY_SIZING_USD`,
+    `HEDGE_TRIGGER_PROBABILITY`/`HEDGE_SIZE_RATIO`, or CORE/HIGH-specific
+    floor-lot/gradient values for Solana -- every one of those needs a
+    finer breakdown (regime x position-tier, or market-level dual-sided
+    counts) where the post-gap sample is still too thin to trust (some
+    cells as low as n=25). This was a scoped, partial recalibration, not
+    a wholesale one -- see `trader_intel/recalibrate_solana.py` and
+    `trader_intel/README.md`'s status log for the full per-parameter
+    breakdown and trust thresholds used.
+
 ## Provenance
 
 `behavior_config.py`'s tables are calibrated on `trade_behavioral_analysis.json`,
