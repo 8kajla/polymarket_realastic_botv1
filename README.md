@@ -672,20 +672,27 @@ symptom, before it could become one:
     that tool's README for the full diagnostic (regime-level win rate
     vs. both the live real trader and their full historical numbers).
 
-14. **Deliberately excluded: BNB.** The real trader this bot replicates
-    appears to have stopped trading BNB -- last real BNB trade
-    2026-08-23, zero since, confirmed over 2+ weeks of continuous live
-    monitoring while all five other assets continued trading normally
-    (see `trader_intel/README.md`'s status log for the full verification
-    -- ruled out as a data-gap artifact). The bot is now deployed with
-    `--assets Bitcoin Ethereum Solana Dogecoin Hyperliquid` (both the
-    live systemd unit and `deploy/aws/user-data.sh`) rather than the
-    default all-six. `behavior_config.py`'s BNB calibration tables are
-    left in place (not deleted) in case the real trader resumes -- an
-    automated watch (`trader_intel/fetch_trades.py`'s
-    `check_dormant_asset_resumption`) flags any new BNB trade the moment
-    it reappears in the live mirror, at which point re-enabling BNB here
-    would just mean removing it from `--assets`.
+14. **Deliberately excluded: BNB, Dogecoin, and Hyperliquid.** First
+    found for BNB alone (last real trade 2026-08-23) and deployed as
+    `--assets Bitcoin Ethereum Solana Dogecoin Hyperliquid` -- but that
+    was based on checking only BNB's own last-trade timestamp, not all
+    six assets'. **Corrected the same day** after actually checking
+    every asset: Dogecoin and Hyperliquid stopped even earlier than BNB
+    (both 2026-08-06, 17 days before BNB) -- a progressive narrowing from
+    six assets down to three, not a single BNB-specific event. Confirmed
+    real, not a mirror artifact (per-asset trade counts all exceed their
+    historical totals from continued earlier activity, they just stopped
+    accumulating new trades after their respective last dates -- see
+    `trader_intel/README.md`'s status log for the full verification).
+    The bot is now deployed with `--assets Bitcoin Ethereum Solana`
+    (both the live systemd unit and `deploy/aws/user-data.sh`).
+    `behavior_config.py`'s tables for all three dormant assets are left
+    in place (not deleted) in case the real trader resumes any of them
+    -- an automated watch (`trader_intel/fetch_trades.py`'s
+    `check_dormant_asset_resumption`, now covering `bnb`, `doge`, `hype`)
+    flags any new trade on a watched-dormant asset the moment it
+    reappears in the live mirror, at which point re-enabling it here
+    would just mean adding it back to `--assets`.
 
 ## Provenance
 
