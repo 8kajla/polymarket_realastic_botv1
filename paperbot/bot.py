@@ -287,11 +287,27 @@ class PaperBot:
         markets attempted per call; and a hard give-up after
         RESOLUTION_MAX_AGE_SECONDS so a persistently-broken lookup can't grow
         the backlog (and therefore the request rate) forever.
+
+        Iterates in least-recently-attempted order, NOT dict/insertion
+        order. Confirmed live: with insertion-order iteration, a handful of
+        persistently-indecisive OLD markets sit at the front of the dict
+        forever (nothing ever removes them except eventual resolution or
+        the 2h abandon) and win the attempt budget every single tick,
+        starving every market retired after them of ANY attempts at all --
+        settled_trades sat frozen for 20+ minutes while pending_resolution
+        grew unbounded and a cluster of newer markets hit ABANDONED without
+        ever having been checked. Sorting by last-attempt time each tick
+        means every market gets fair rotation through the budget regardless
+        of backlog size or how long any one entry has been stuck.
         """
         now = now if now is not None else time.time()
         attempted = 0
 
-        for cid, market in list(self.pending_resolution.items()):
+        ordered = sorted(
+            self.pending_resolution.items(),
+            key=lambda kv: self._resolution_last_attempt.get(kv[0], 0.0),
+        )
+        for cid, market in ordered:
             if attempted >= config.RESOLUTION_MAX_ATTEMPTS_PER_TICK:
                 break
 
@@ -334,6 +350,13 @@ class PaperBot:
 
             self._resolution_failure_count.pop(cid, None)
             if raw is None:
+                # Distinct from "found it, not decisive yet" -- Gamma
+                # returned nothing for this slug at all (possibly archived
+                # out of this query once fully settled). Logged explicitly
+                # since this was previously silent and indistinguishable
+                # from ordinary pending-resolution noise.
+                logger.info("resolution check market=%s: no market returned by Gamma "
+                            "(possibly archived)", market.slug)
                 continue
 
             winning_side = parse_resolution(raw)

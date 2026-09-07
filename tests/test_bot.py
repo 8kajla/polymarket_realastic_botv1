@@ -407,6 +407,53 @@ class TestResolutionThrottling:
         assert cid not in bot.pending_resolution
         assert call_count["n"] == 0, "should give up before even attempting a fetch past max age"
 
+    def test_persistently_indecisive_old_markets_do_not_starve_newer_ones(self, monkeypatch):
+        """Direct regression test for a live-confirmed starvation bug:
+        iterating pending_resolution in insertion order meant a handful of
+        persistently-indecisive OLD markets sat at the front of the dict
+        forever and won the attempt budget every tick, so every market
+        retired after them got zero attempts -- settled_trades froze while
+        pending_resolution grew unbounded, and newer markets hit ABANDONED
+        without ever having been checked once. Fixed by ordering each
+        tick's candidates by least-recently-attempted instead."""
+        bot = PaperBot(assets=["Bitcoin"], seed=6)
+        cap = config.RESOLUTION_MAX_ATTEMPTS_PER_TICK
+
+        # `cap` old markets that NEVER resolve (always "not decisive").
+        stubborn_cids = []
+        for i in range(cap):
+            cid, market = make_pending_market(i)
+            bot.pending_resolution[cid] = market
+            stubborn_cids.append(cid)
+
+        # One newer market, retired after the stubborn ones.
+        new_cid, new_market = make_pending_market(cap)
+        bot.pending_resolution[new_cid] = new_market
+
+        def always_indecisive(slug, session=None, timeout=10.0):
+            return None  # "found it, not decisive yet" -- never resolves
+
+        monkeypatch.setattr(botmod, "fetch_market_by_slug", always_indecisive)
+
+        # Tick 1: with `cap` stubborn markets exactly filling the budget,
+        # the insertion-order bug would let them win every single tick.
+        asyncio.run(bot.resolution_tick(now=1000.0))
+        for cid in stubborn_cids:
+            assert bot._resolution_last_attempt[cid] == 1000.0
+        assert new_cid not in bot._resolution_last_attempt, (
+            "new market correctly not reached yet -- budget was full this tick"
+        )
+
+        # Tick 2, after the cooldown elapses for everyone: the new market
+        # must now get a turn precisely BECAUSE it's least-recently-attempted
+        # (never), even though the stubborn markets are technically eligible
+        # again too.
+        t2 = 1000.0 + config.RESOLUTION_RETRY_COOLDOWN_SECONDS + 1
+        asyncio.run(bot.resolution_tick(now=t2))
+        assert bot._resolution_last_attempt[new_cid] == t2, (
+            "the previously-starved market must be attempted once its turn comes"
+        )
+
     def test_successful_resolution_settles_filled_orders_and_logs_pnl(self, monkeypatch):
         bot = PaperBot(assets=["Bitcoin"], seed=5)
         cid, market = make_pending_market(0)

@@ -67,7 +67,7 @@ paperbot/
   fill_simulation.py   the paper fill model (queueing, drift, expiry)
   ledger.py            settlement + realized P&L (recomputed, never cached)
   bot.py               main loop wiring it all together
-tests/                 149 tests covering the above
+tests/                 150 tests covering the above
 run_bot.py             CLI entry point
 deep_analysis.py       standalone script: win/loss economics + hedge
                         behavior analysis on trade.jsonl (not part of the
@@ -205,7 +205,7 @@ end:
 
 ## What the test suite covers
 
-149 tests, `python3 -m pytest tests/ -v`:
+150 tests, `python3 -m pytest tests/ -v`:
 
 - **Band classification** at the exact 0.30/0.70/0.90 boundaries.
 - **Per-asset sizing curves are genuinely distinct** -- a test that fails
@@ -536,6 +536,34 @@ which is what led to finding this:
     performance. Anyone reviewing this bot's historical paper P&L should
     treat everything settled before this fix's deploy timestamp as
     unreliable for that reason.
+
+**Deploy 7: the hedge feature deployed cleanly and confirmed firing live**
+(`hedge=True` orders observed across four assets, correctly gated to
+exactly the market's second entry) -- **and running long enough (~90
+minutes) surfaced a real resolution-throughput bug that only shows up at
+scale**:
+
+11. **`resolution_tick` iterated its backlog in dict/insertion order,
+    which meant a handful of persistently-indecisive OLD markets --
+    nothing had ever removed them except eventual resolution or the 2h
+    abandon -- sat at the front of the dict forever and won the
+    `RESOLUTION_MAX_ATTEMPTS_PER_TICK` budget every single tick.** Every
+    market retired after them got starved of attempts entirely.
+    Confirmed live: `settled_trades` sat frozen at 355 for 20+ minutes
+    while `pending_resolution` grew from 54 to 70, and a cluster of newer
+    markets hit `ABANDONED` without ever having been checked once.
+
+    **Fix:** each tick now sorts candidates by least-recently-attempted
+    (never-attempted counts as oldest) instead of dict order, so every
+    market gets fair rotation through the budget regardless of backlog
+    size or how long any single entry has been stuck. Also added explicit
+    logging for the previously-silent "Gamma returned nothing for this
+    slug" case (distinct from "found it, not decisive yet") -- possibly
+    relevant if archived markets stop appearing in this query once fully
+    settled, though that's not confirmed, just now visible if it's
+    happening. Covered by
+    `test_persistently_indecisive_old_markets_do_not_starve_newer_ones`.
+    150 tests passing.
 
 ## Provenance
 
