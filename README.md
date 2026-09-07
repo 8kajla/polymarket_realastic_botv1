@@ -713,6 +713,29 @@ symptom, before it could become one:
     `trader_intel/README.md`'s status log for the full per-parameter
     breakdown and trust thresholds used.
 
+16. **Closed the blind spot from #15: checked Bitcoin and Ethereum the
+    same rigorous way**, rather than trusting the earlier "their coarse
+    regime distribution looked close enough" read. Found a real, smaller
+    shift in both -- not as large as Solana's, but genuine, not noise
+    (large samples: Bitcoin n=9,248, Ethereum n=2,998 post-gap).
+    Recalibrated: both assets' `ASSET_REGIME_DISTRIBUTION_PCT`; Bitcoin's
+    `ENTRY_SIZING_USD` 4th_plus cell for all four regimes (a real,
+    substantial drop -- CORE -32%, HIGH -37% -- verified NOT a grouping
+    bug despite CORE's first/2nd_3rd/4th_plus recent medians briefly
+    looking suspiciously identical, traced to heavy value-duplication in
+    the raw trade-size data, not a code issue); Ethereum's CHEAP 4th_plus
+    cell; Bitcoin's `SIDE_PERSISTENCE` (91.17%->93.48% -- notably the
+    OPPOSITE direction from Solana's, which dropped -- confirms this
+    isn't one uniform market-wide trend); both assets' `GRADIENT_BIAS_PCT`;
+    Ethereum's `FLOOR_LOT_PROBABILITY` CHEAP/MID cells (one increased, one
+    decreased -- also not uniform). Left alone where checked-but-thin:
+    Bitcoin/Ethereum's first/2nd_3rd entry-sizing cells, Ethereum's
+    persistence (barely moved, not worth touching), most CORE/HIGH-
+    specific cells, and hedge tables for all three active assets (even
+    Bitcoin only has ~340 post-gap markets -- too thin split across 4
+    regimes). See `trader_intel/recalibrate_asset.py` (generalized from
+    `recalibrate_solana.py`) and `trader_intel/README.md`'s status log.
+
 ## Provenance
 
 `behavior_config.py`'s tables are calibrated on `trade_behavioral_analysis.json`,
