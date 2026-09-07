@@ -294,6 +294,36 @@ class FillSimulator:
             new_raw_queue, order.queue_ahead_discounted,
         )
 
+    # -- lifecycle cleanup ---------------------------------------------------
+
+    def remove_orders_for_condition(self, condition_id: str) -> int:
+        """
+        Prune every order belonging to one market. Without this, self.orders
+        grows unbounded for the lifetime of the process -- fine for a
+        Railway deploy that gets restarted every push, but a real problem
+        for a long-running AWS deployment meant to stay up for weeks.
+
+        Only call this once bot.py's resolution_tick is DONE with a
+        condition_id (settled or abandoned) -- by the time a market
+        retires, every one of its orders is already terminal (this bot's
+        90-second expiry cutoff always runs before a market can retire),
+        so there's nothing further fill simulation could still do with
+        them, and settlement has already happened by this point.
+
+        Trade-off, documented rather than silent: stats_by_asset_regime()
+        below becomes a rolling/recent view instead of a lifetime one,
+        since pruned orders no longer contribute to it. It isn't wired
+        into any live logging today (only exercised directly in tests),
+        so this is a reasonable trade for bounded memory; if lifetime
+        fill-rate/expiry-rate tracking is wanted later, aggregate into a
+        small persistent counter at settlement time instead of relying on
+        raw order objects staying around forever.
+        """
+        ids_to_remove = [oid for oid, o in self.orders.items() if o.condition_id == condition_id]
+        for oid in ids_to_remove:
+            del self.orders[oid]
+        return len(ids_to_remove)
+
     # -- reporting ---------------------------------------------------------
 
     def stats_by_asset_regime(self) -> dict:

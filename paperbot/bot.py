@@ -87,7 +87,6 @@ class PaperBot:
         self.halted_conditions: set[str] = set()
         self.pending_resolution: dict[str, Market] = {}
         self.last_price_by_token: dict[str, float] = {}
-        self._last_price_delta: dict[str, float] = {}
         self._resolution_last_attempt: dict[str, float] = {}
         self._resolution_failure_count: dict[str, int] = {}
         self._resolution_first_seen: dict[str, float] = {}
@@ -177,6 +176,16 @@ class PaperBot:
         self.pending_resolution[market.condition_id] = market
         self.book_states.pop(market.token_id_up, None)
         self.book_states.pop(market.token_id_down, None)
+        # Bounded-memory cleanup for a long-running process: none of this
+        # per-market state is needed again once a market is no longer in
+        # markets_by_condition -- strategy_tick will never evaluate it
+        # again. (fill_sim.orders for this market is pruned separately, in
+        # resolution_tick, once settlement/abandonment is actually done
+        # with them -- not here, since some may still be open at retire
+        # time for a few ticks while expiry catches up.)
+        self.activity.pop(market.condition_id, None)
+        self.last_price_by_token.pop(market.token_id_up, None)
+        self.halted_conditions.discard(market.condition_id)
 
     # -- strategy ------------------------------------------------------
 
@@ -321,6 +330,7 @@ class PaperBot:
                 )
                 del self.pending_resolution[cid]
                 self._forget_resolution_tracking(cid)
+                self.fill_sim.remove_orders_for_condition(cid)
                 continue
 
             fails = self._resolution_failure_count.get(cid, 0)
@@ -395,6 +405,7 @@ class PaperBot:
             )
             del self.pending_resolution[cid]
             self._forget_resolution_tracking(cid)
+            self.fill_sim.remove_orders_for_condition(cid)
 
     def log_pnl_summary(self, now: float | None = None) -> None:
         """Periodic heartbeat, independent of any individual settlement, so
@@ -492,8 +503,10 @@ def main() -> None:
     args = parser.parse_args()
 
     # stream=sys.stdout (rather than logging's default stderr) so this
-    # reads cleanly in Railway's log viewer, which surfaces both but
-    # orders/labels stdout more predictably for a single-process worker.
+    # reads cleanly in whatever's capturing it -- Railway's log viewer,
+    # or journald under a systemd unit (StandardOutput=journal /
+    # StandardError=journal captures both either way, but stdout orders
+    # more predictably for a single-process worker on both).
     logging.basicConfig(level=args.log_level, stream=sys.stdout,
                          format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 

@@ -27,6 +27,31 @@ def make_intent(price=0.20, size_shares=10.0, regime="CHEAP", position_tier="fir
     )
 
 
+class TestRemoveOrdersForCondition:
+    """Direct regression tests for a bounded-memory fix: self.orders grew
+    unbounded for the lifetime of the process, fine for a Railway deploy
+    restarted on every push, a real problem for an AWS deployment meant to
+    stay up for weeks."""
+
+    def test_removes_only_orders_for_the_given_condition(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=0.0)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        o1 = sim.place_order(make_intent(condition_id="c1"), book, now=0.0)
+        o2 = sim.place_order(make_intent(condition_id="c1"), book, now=0.0)
+        o3 = sim.place_order(make_intent(condition_id="c2"), book, now=0.0)
+
+        removed = sim.remove_orders_for_condition("c1")
+
+        assert removed == 2
+        assert o1.order_id not in sim.orders
+        assert o2.order_id not in sim.orders
+        assert o3.order_id in sim.orders
+
+    def test_removing_a_condition_with_no_orders_is_a_safe_no_op(self):
+        sim = FillSimulator(queue_safety_factor=0.25)
+        assert sim.remove_orders_for_condition("nonexistent") == 0
+
+
 class TestQueueSafetyFactorDiscount:
     """Explicit regression test for the real prior bug: an un-discounted
     (factor=1.0) queue-ahead value silently produces near-zero fill rates.

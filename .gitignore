@@ -37,3 +37,8 @@ trade.jsonl
 # own calibration and are meant to be public), this file exists purely as
 # private reference material, per explicit request.
 TRADER_PROFILE.md
+
+# Private keys / credentials -- never commit these, regardless of name
+*.pem
+*.key
+.aws/

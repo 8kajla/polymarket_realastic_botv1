@@ -523,3 +523,63 @@ class TestPnlSummaryLogging:
 
         assert any("PNL_SUMMARY" in r.message for r in caplog.records)
         assert any("realized_total=" in r.message for r in caplog.records)
+
+
+class TestBoundedMemoryForLongRunningDeployment:
+    """Direct regression tests for a real unbounded-growth audit: several
+    per-market dicts (activity, last_price_by_token, halted_conditions)
+    and fill_sim.orders were never cleaned up, fine for a Railway deploy
+    that gets restarted on every push (which accidentally masked this),
+    a real problem for an AWS deployment meant to run for weeks."""
+
+    def test_retire_cleans_up_activity_and_price_tracking_and_halted(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market(condition_id="cond-x")
+        wire_market(bot, market)
+        bot.halted_conditions.add(market.condition_id)
+        bot.last_price_by_token[market.token_id_up] = 0.42
+        assert market.condition_id in bot.activity
+
+        asyncio.run(bot._retire_market(market))
+
+        assert market.condition_id not in bot.activity
+        assert market.token_id_up not in bot.last_price_by_token
+        assert market.condition_id not in bot.halted_conditions
+        # retiring still does its original job
+        assert market.condition_id in bot.pending_resolution
+
+    def test_resolved_market_prunes_its_orders_from_fill_sim(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=2)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        order = make_filled_order(cid, order_id=1, side="Up", price=0.3, size=5.0)
+        bot.fill_sim.orders[order.order_id] = order
+
+        monkeypatch.setattr(
+            botmod, "fetch_market_by_slug",
+            lambda slug, session=None, timeout=10.0: {
+                "closed": True, "outcomes": '["Up", "Down"]', "outcomePrices": '["1", "0"]'
+            },
+        )
+
+        asyncio.run(bot.resolution_tick(now=1000.0))
+
+        assert order.order_id not in bot.fill_sim.orders
+        # settlement still happened before the prune
+        assert bot.ledger.realized_pnl() == pytest.approx(5.0 * 1.0 - 5.0 * 0.3)
+
+    def test_abandoned_market_also_prunes_its_orders(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=3)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        bot._resolution_first_seen[cid] = 0.0  # first seen at t=0, so it's already stale
+        order = make_filled_order(cid, order_id=1, side="Up", price=0.3, size=5.0)
+        bot.fill_sim.orders[order.order_id] = order
+
+        monkeypatch.setattr(botmod, "fetch_market_by_slug",
+                             lambda slug, session=None, timeout=10.0: None)
+
+        asyncio.run(bot.resolution_tick(now=config.RESOLUTION_MAX_AGE_SECONDS + 1))
+
+        assert cid not in bot.pending_resolution
+        assert order.order_id not in bot.fill_sim.orders

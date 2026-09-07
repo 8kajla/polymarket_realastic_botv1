@@ -67,7 +67,7 @@ paperbot/
   fill_simulation.py   the paper fill model (queueing, drift, expiry)
   ledger.py            settlement + realized P&L (recomputed, never cached)
   bot.py               main loop wiring it all together
-tests/                 150 tests covering the above
+tests/                 155 tests covering the above
 run_bot.py             CLI entry point
 deep_analysis.py       standalone script: win/loss economics + hedge
                         behavior analysis on trade.jsonl (not part of the
@@ -125,6 +125,43 @@ fine -- it just starts its realized-P&L history over on every redeploy.
 **Graceful shutdown:** `run_forever()` installs SIGTERM/SIGINT handlers
 and saves the ledger before exiting, so a Railway redeploy's stop signal
 doesn't lose recent settlements.
+
+## Deploying on AWS EC2
+
+`deploy/aws/user-data.sh` is the exact cloud-init bootstrap used to set
+this up: installs Python + git on a bare Ubuntu 24.04 LTS AMI, clones
+this repo, creates a venv, and runs the bot under a systemd unit with
+`Restart=on-failure` -- the AWS-side equivalent of Railway's
+`restartPolicyType`.
+
+```
+aws ec2 run-instances \
+  --image-id <latest Ubuntu 24.04 amd64 AMI for your region> \
+  --instance-type t3.micro \
+  --key-name <your key pair> \
+  --security-group-ids <sg allowing 22/tcp> \
+  --subnet-id <a subnet in your VPC> \
+  --user-data file://deploy/aws/user-data.sh \
+  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":10,"VolumeType":"gp3"}}]'
+```
+
+- **Persistence is automatic here**, unlike Railway: an EC2 instance's
+  root EBS volume survives stop/start/reboot on its own (just never
+  *terminate* it) -- no separate volume-attachment step needed for
+  `PAPERBOT_DATA_DIR` to persist across restarts.
+- **Access**: no inbound port is required for the bot itself (outbound-
+  only, same as always); this setup opens 22/tcp for SSH management,
+  restricted to key-based auth. [AWS Systems Manager Session
+  Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager.html)
+  is a good alternative if you'd rather not open any inbound port at all
+  -- swap the security group for an IAM instance profile with
+  `AmazonSSMManagedInstanceCore` instead.
+- **Logs**: `journalctl -u paperbot -f` (systemd captures both stdout
+  and stderr into the journal, same effect as Railway's log viewer).
+- **Redeploying a code change**: SSH in, `cd /opt/paperbot/app && git
+  pull && systemctl restart paperbot` -- there's no auto-deploy-on-push
+  wired up the way Railway's GitHub integration provides; either re-run
+  that manually or set up your own CI hook if you want one.
 
 ## Safety
 
@@ -205,7 +242,7 @@ end:
 
 ## What the test suite covers
 
-150 tests, `python3 -m pytest tests/ -v`:
+155 tests, `python3 -m pytest tests/ -v`:
 
 - **Band classification** at the exact 0.30/0.70/0.90 boundaries.
 - **Per-asset sizing curves are genuinely distinct** -- a test that fails
@@ -564,6 +601,39 @@ scale**:
     happening. Covered by
     `test_persistently_indecisive_old_markets_do_not_starve_newer_ones`.
     150 tests passing.
+
+**Pre-emptive: an unbounded-memory audit before moving off Railway.**
+Railway's frequent restarts (redeploy on every push, plus the trial-plan
+restarts observed in deploy 7) accidentally masked a real class of bug:
+several structures were never cleaned up as markets came and went, fine
+for a process that gets restarted often, a real problem for a
+deployment meant to stay up for weeks (the whole point of moving to a
+platform with a real persistent disk). Found by audit, not by a live
+symptom, before it could become one:
+
+12. **`self.activity`, `self.last_price_by_token`, and
+    `self.halted_conditions` in `bot.py` grew by one entry per market
+    forever** -- nothing ever removed a market's entries once it retired.
+    **`FillSimulator.orders` grew by one entry per order placed, forever**
+    -- nothing ever removed a terminal (filled/expired/cancelled) order
+    once its market was fully settled or abandoned. At the trading volume
+    seen in earlier live deploys (hundreds of orders/hour), this would
+    accumulate into a real memory problem over weeks of uptime, not hours.
+
+    **Fix:** `_retire_market` now cleans up the three per-market dicts the
+    moment a market leaves `markets_by_condition` (none of it is needed
+    again -- `strategy_tick` will never evaluate that market again).
+    `FillSimulator.remove_orders_for_condition()` prunes a market's
+    orders once `resolution_tick` is actually done with them (settled or
+    abandoned) -- not at retire time, since a resting order can still be
+    open for a few ticks while expiry catches up. Documented trade-off:
+    `stats_by_asset_regime()` (not currently wired into any live logging)
+    becomes a rolling view instead of a lifetime one, since it iterates
+    `self.orders` directly. Also removed `self._last_price_delta`, a
+    duplicate, entirely-unused leftover of `self.last_price_by_token`
+    caught by the same audit. Covered by
+    `TestBoundedMemoryForLongRunningDeployment` and
+    `TestRemoveOrdersForCondition`. 155 tests passing.
 
 ## Provenance
 
