@@ -251,18 +251,43 @@ class PaperBot:
     def manage_orders_tick(self, now: float | None = None) -> None:
         now = now if now is not None else time.time()
 
-        # Drain WS-delivered trade prints into the fill simulator.
+        # Drift/cancel-out-of-band FIRST, trade-print draining SECOND --
+        # deliberately, not incidentally. book.best_bid is updated
+        # immediately by book/price_change WS events, independent of
+        # pending_trades (apply_last_trade_price never touches best_bid),
+        # so by the time this tick runs, best_bid already reflects the
+        # latest book state either way. Running manage_open_orders first
+        # means an order whose price has already left its target regime
+        # band gets CANCELLED before this same tick's trade prints get a
+        # chance to fill it. The old order (drain first, manage second)
+        # let a fast intra-tick price move do real damage: on a CORE/HIGH
+        # order (resting at e.g. 0.95), on_trade_print's eligibility check
+        # is only `trade.price <= order.price` -- deliberately permissive,
+        # since a real resting bid legitimately fills against any trade at
+        # or below it (price-time priority) -- but that means a single
+        # trade print reflecting a much LOWER, unrelated price level
+        # (the market having already moved on, not a continuous sweep
+        # through our level) could fill a stale HIGH-confidence order
+        # using a price that no longer reflects anything close to
+        # certainty, one tick before that same order would have been
+        # cancelled for having left its band. Confirmed as the likely
+        # driver of the CORE win rate=62%/HIGH win rate=72% found live
+        # against the real trader's 91%/98% in the same window (see
+        # trader_intel/README.md status log) -- those regimes' entire
+        # edge depends on NOT holding a stale resting order into a
+        # reversal, and cancelling before draining closes that specific
+        # same-tick race.
+        seconds_remaining = {
+            cid: m.seconds_remaining(now) for cid, m in self.markets_by_condition.items()
+        }
+        self.fill_sim.manage_open_orders(self.book_states, seconds_remaining, now=now)
+
         for token_id, book in self.book_states.items():
             for trade in book.drain_pending_trades():
                 try:
                     self.fill_sim.on_trade_print(token_id, trade)
                 except Exception:
                     logger.exception("error consuming trade print for token %s", token_id)
-
-        seconds_remaining = {
-            cid: m.seconds_remaining(now) for cid, m in self.markets_by_condition.items()
-        }
-        self.fill_sim.manage_open_orders(self.book_states, seconds_remaining, now=now)
 
         # Unconditional sweep rather than only reacting to manage_open_orders'
         # `changed` list: an order can also stop being open because a trade

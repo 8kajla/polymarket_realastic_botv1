@@ -511,6 +511,62 @@ class TestResolutionThrottling:
         assert cid in bot.pending_resolution  # still waiting, correctly
 
 
+class TestDriftCancelRunsBeforeTradePrintDrain:
+    """
+    Regression test for the CORE/HIGH win-rate gap found by comparing the
+    live bot's ledger against the real trader over the same window (see
+    trader_intel/README.md): bot CORE=62%/HIGH=72% vs the real trader's
+    91%/98% in the identical window.
+
+    manage_orders_tick used to drain trade prints into on_trade_print
+    BEFORE calling manage_open_orders (drift/cancel). on_trade_print's
+    eligibility check is deliberately permissive (`trade.price <=
+    order.price`, matching real price-time priority for a resting bid),
+    so a single trade print at a much lower, unrelated price level could
+    fill a stale HIGH/CORE order in the same tick its price had already
+    left the target regime band -- one tick before manage_open_orders
+    would have cancelled it instead. Fixed by reordering: cancel-on-
+    band-exit now runs first, using the book's best_bid (already current
+    independent of trade-print draining -- apply_last_trade_price never
+    touches best_bid), so a same-tick stale fill can no longer race ahead
+    of the cancellation that should have preempted it.
+    """
+
+    def test_order_that_left_its_band_is_cancelled_not_filled_by_a_same_tick_print(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=7)
+        market = make_bitcoin_market()
+        book = wire_market(bot, market, bid=0.95, ask=0.96, depth=50.0)
+        bot.markets_by_condition[market.condition_id] = market
+
+        order = SimulatedOrder(
+            order_id=1, condition_id=market.condition_id, token_id=market.token_id_up,
+            asset="Bitcoin", regime="HIGH", position_tier="first", side="Up", price=0.95,
+            original_size=10.0, is_floor_lot=False, placed_at=1000.0,
+            remaining_size=10.0, queue_ahead_raw=0.0, queue_ahead_discounted=0.0,
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        bot.resting_order_id[market.condition_id] = order.order_id
+
+        # Price craters out of HIGH into MID before this tick -- book state
+        # (best_bid/best_ask) is already current, exactly as it would be
+        # from a real price_change event landing ahead of this tick.
+        book.apply_snapshot(bids=[(0.50, 50.0)], asks=[(0.51, 50.0)])
+        # A same-tick trade print at a price within [0.50, 0.95] that
+        # WOULD have filled this order under the old (drain-first)
+        # ordering, since trade.price(0.60) <= order.price(0.95).
+        book.apply_last_trade_price(price=0.60, size=order.original_size, side="SELL", ts=1001.0)
+
+        bot.manage_orders_tick(now=1001.0)
+
+        assert order.status.value == "CANCELLED", (
+            f"expected the order to be cancelled for leaving its HIGH band, "
+            f"got status={order.status.value} -- a same-tick trade print at "
+            f"a stale, out-of-band price must not be able to fill an order "
+            f"that should have already been cancelled"
+        )
+        assert order.filled_size == 0.0
+
+
 class TestPnlSummaryLogging:
     def test_log_pnl_summary_does_not_raise_and_reports_totals(self, caplog):
         bot = PaperBot(assets=["Bitcoin"], seed=6)

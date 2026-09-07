@@ -67,7 +67,7 @@ paperbot/
   fill_simulation.py   the paper fill model (queueing, drift, expiry)
   ledger.py            settlement + realized P&L (recomputed, never cached)
   bot.py               main loop wiring it all together
-tests/                 155 tests covering the above
+tests/                 156 tests covering the above
 run_bot.py             CLI entry point
 deep_analysis.py       standalone script: win/loss economics + hedge
                         behavior analysis on trade.jsonl (not part of the
@@ -242,7 +242,7 @@ end:
 
 ## What the test suite covers
 
-155 tests, `python3 -m pytest tests/ -v`:
+156 tests, `python3 -m pytest tests/ -v`:
 
 - **Band classification** at the exact 0.30/0.70/0.90 boundaries.
 - **Per-asset sizing curves are genuinely distinct** -- a test that fails
@@ -634,6 +634,43 @@ symptom, before it could become one:
     caught by the same audit. Covered by
     `TestBoundedMemoryForLongRunningDeployment` and
     `TestRemoveOrdersForCondition`. 155 tests passing.
+
+13. **Found by a live vs. real-trader comparison, not a symptom in
+    isolation: `manage_orders_tick` drained trade prints into
+    `on_trade_print` BEFORE calling `manage_open_orders` (drift/cancel).**
+    A same-window comparison against the real trader's own trades (see
+    `trader_intel/`) surfaced a stark gap: the paperbot's CORE-regime win
+    rate was 62% and HIGH-regime was 72%, vs. the real trader's 91%/98%
+    in the *identical* time window (and 93%/99.7% historically) --
+    CORE/HIGH's entire edge in the real strategy is a win rate far above
+    what the entry price implies, so a >15pp shortfall there isn't
+    variance, it's a real problem, and it was costing real (simulated)
+    money: -$715 realized total after ~5h uptime, with Bitcoin alone at
+    -$693 across all four regimes.
+
+    Root cause: `on_trade_print`'s eligibility check
+    (`trade.price <= order.price`) is deliberately permissive -- a
+    resting bid legitimately fills against any trade at or below it,
+    matching real price-time priority. But `book.best_bid` is updated
+    immediately and independently by `book`/`price_change` WS events
+    (`apply_last_trade_price` never touches it), so by the time a tick
+    runs, the book already reflects the latest state either way -- and
+    draining trade prints *before* checking whether price had already
+    left the order's target regime band meant a stale HIGH/CORE order
+    (e.g. resting at 0.95) could get filled by a same-tick trade print
+    reflecting a much lower, unrelated price level one tick before
+    `manage_open_orders` would have cancelled it for having left its
+    band. Fixed by reordering: cancel-on-band-exit now runs first, using
+    the already-current book state, closing the same-tick race.
+    Regression test (`TestDriftCancelRunsBeforeTradePrintDrain`)
+    constructs the exact race and confirms it fails under the old
+    ordering (order ends up FILLED) and passes under the new one (order
+    ends up CANCELLED). 156 tests passing.
+
+    This was the highest-priority fix from the direct real-trader
+    comparison built in `trader_intel/compare_bot_vs_trader.py` -- see
+    that tool's README for the full diagnostic (regime-level win rate
+    vs. both the live real trader and their full historical numbers).
 
 ## Provenance
 
