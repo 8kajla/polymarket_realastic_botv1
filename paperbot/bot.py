@@ -105,6 +105,15 @@ class PaperBot:
         # is set; see resolution_tick's ABANDONED branch and
         # available_cash()'s docstring for why this exists.
         self._abandoned_filled_costs: list[float] = []
+        # A high-water mark, NOT the kind of running total the rest of
+        # this file avoids (realized_pnl, available_cash -- both always
+        # recomputed from source). There's no persisted history of past
+        # committed_capital() readings to recompute a max from; a peak is
+        # inherently a streaming ratchet (`max(peak, current)` every
+        # cycle), the same category as a chart's y-axis high, not a
+        # balance that could silently drift out of sync with ground
+        # truth. See log_pnl_summary and committed_capital()'s docstring.
+        self._peak_committed_capital: float = 0.0
 
         self.ws_client = MarketWebSocketClient(get_book_state=self.book_states.get)
 
@@ -314,14 +323,36 @@ class PaperBot:
         """
         if config.BANKROLL_USD is None:
             return None
+        written_off = sum(self._abandoned_filled_costs)
+        return (config.BANKROLL_USD + self.ledger.realized_pnl()
+                - self.committed_capital() - written_off)
+
+    def committed_capital(self) -> float:
+        """
+        Dollars currently tied up in unsettled orders, right now -- the
+        "open amount" this instant. Split out of available_cash() (which
+        only means something when config.BANKROLL_USD is set) so it's
+        usable UNCONSTRAINED too: the main bot has no bankroll cap, so
+        whatever it naturally commits at any moment is exactly the real
+        capital a live account would need to never be constrained by cash
+        -- a direct, measured answer to "what's the minimum bankroll this
+        strategy needs", rather than guessing and sweeping BANKROLL_USD
+        values to find where starvation stops. See log_pnl_summary, which
+        logs this every cycle alongside a running peak.
+
+        Same two components as available_cash()'s old inline version: the
+        unfilled portion of any still-open resting order (remaining_size *
+        price -- a real resting limit order ties up buying power even
+        before it fills), plus the filled-but-not-yet-settled portion of
+        any order still waiting on resolution_tick.
+        """
         committed = 0.0
         for order in self.fill_sim.orders.values():
             if order.filled_size > 0 and not self.ledger.is_settled(order.order_id):
                 committed += order.filled_size * order.price
             if order.is_open():
                 committed += order.remaining_size * order.price
-        written_off = sum(self._abandoned_filled_costs)
-        return config.BANKROLL_USD + self.ledger.realized_pnl() - committed - written_off
+        return committed
 
     # -- order management -------------------------------------------------
 
@@ -551,13 +582,24 @@ class PaperBot:
         by_asset = {a: round(v, 4) for a, v in self.ledger.realized_pnl_by_asset().items()}
         open_orders = sum(1 for o in self.fill_sim.orders.values() if o.is_open())
         hedge = self.ledger.hedge_summary()
+        # "open amount" -- see committed_capital()'s docstring. Logged
+        # unconditionally (not just when config.BANKROLL_USD is set):
+        # on the main (unconstrained) bot, this is a direct, MEASURED
+        # answer to "what's the minimum bankroll this strategy needs",
+        # since it never gets throttled by a cash ceiling -- watch
+        # peak_committed_capital over enough hours instead of guessing
+        # and sweeping BANKROLL_USD values to find where starvation stops.
+        committed_now = self.committed_capital()
+        if committed_now > self._peak_committed_capital:
+            self._peak_committed_capital = committed_now
         logger.info(
             "PNL_SUMMARY realized_total=%.4f settled_trades=%d open_orders=%d "
             "pending_resolution=%d by_asset=%s hedge_trades=%d hedge_pnl=%.4f "
-            "normal_trades=%d normal_pnl=%.4f",
+            "normal_trades=%d normal_pnl=%.4f committed_capital=%.4f peak_committed_capital=%.4f",
             self.ledger.realized_pnl(), len(self.ledger.records), open_orders,
             len(self.pending_resolution), by_asset,
             hedge["hedge_trades"], hedge["hedge_pnl"], hedge["normal_trades"], hedge["normal_pnl"],
+            committed_now, self._peak_committed_capital,
         )
 
     # -- main loop -----------------------------------------------------

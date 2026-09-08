@@ -612,6 +612,82 @@ class TestPnlSummaryLogging:
         assert any("realized_total=" in r.message for r in caplog.records)
 
 
+class TestCommittedCapitalTracking:
+    """committed_capital() and its logged peak -- the "open amount" this
+    session asked for, so the main (unconstrained) bot's own natural
+    concurrent exposure gives a MEASURED answer to the minimum-bankroll
+    question instead of guessing and sweeping BANKROLL_USD values."""
+
+    def test_unfilled_open_order_counts_as_committed(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-x", token_id="cond-x-up", asset="Bitcoin",
+            regime="MID", position_tier="first", side="Up", price=0.40,
+            original_size=10.0, is_floor_lot=False, placed_at=0.0, remaining_size=10.0,
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        assert bot.committed_capital() == pytest.approx(10.0 * 0.40)
+
+    def test_available_and_committed_agree_when_bankroll_is_set(self, monkeypatch):
+        """committed_capital() must be the exact same number available_cash()
+        subtracts -- they were split from one implementation, not two."""
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-x", token_id="cond-x-up", asset="Bitcoin",
+            regime="MID", position_tier="first", side="Up", price=0.40,
+            original_size=10.0, is_floor_lot=False, placed_at=0.0, remaining_size=10.0,
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        assert bot.available_cash() == pytest.approx(100.0 - bot.committed_capital())
+
+    def test_committed_capital_works_without_a_bankroll_cap(self):
+        """The whole point: usable on the main, unconstrained bot too --
+        available_cash() returns None there, committed_capital() must not."""
+        assert config.BANKROLL_USD is None
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-x", token_id="cond-x-up", asset="Bitcoin",
+            regime="HIGH", position_tier="first", side="Up", price=0.95,
+            original_size=20.0, is_floor_lot=False, placed_at=0.0, remaining_size=20.0,
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        assert bot.available_cash() is None
+        assert bot.committed_capital() == pytest.approx(20.0 * 0.95)
+
+    def test_peak_committed_capital_ratchets_up_and_never_down(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        big_order = SimulatedOrder(
+            order_id=1, condition_id="cond-x", token_id="cond-x-up", asset="Bitcoin",
+            regime="HIGH", position_tier="first", side="Up", price=0.90,
+            original_size=50.0, is_floor_lot=False, placed_at=0.0, remaining_size=50.0,
+        )
+        bot.fill_sim.orders[big_order.order_id] = big_order
+        bot.log_pnl_summary(now=1000.0)
+        assert bot._peak_committed_capital == pytest.approx(45.0)
+
+        # Exposure drops (order settles) -- peak must NOT drop with it.
+        del bot.fill_sim.orders[big_order.order_id]
+        bot.log_pnl_summary(now=1001.0)
+        assert bot._peak_committed_capital == pytest.approx(45.0)
+
+    def test_log_pnl_summary_reports_committed_capital(self, caplog):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-x", token_id="cond-x-up", asset="Bitcoin",
+            regime="MID", position_tier="first", side="Up", price=0.40,
+            original_size=10.0, is_floor_lot=False, placed_at=0.0, remaining_size=10.0,
+        )
+        bot.fill_sim.orders[order.order_id] = order
+
+        with caplog.at_level("INFO"):
+            bot.log_pnl_summary(now=1000.0)
+
+        assert any("committed_capital=4.0000" in r.message for r in caplog.records)
+        assert any("peak_committed_capital=4.0000" in r.message for r in caplog.records)
+
+
 class TestBoundedMemoryForLongRunningDeployment:
     """Direct regression tests for a real unbounded-growth audit: several
     per-market dicts (activity, last_price_by_token, halted_conditions)
