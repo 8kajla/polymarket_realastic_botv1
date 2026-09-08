@@ -860,6 +860,43 @@ symptom, before it could become one:
     the order-lifecycle funnel numbers, the regime-conditional
     persistence table) is in `trader_intel/README.md`'s status log.
 
+19. **Extended the baseline-controlled "crackdown" methodology from
+    strategy-CHANGE events down to individual trade entries** (per user
+    request: "can this kind of crackdown be done on live trades so we
+    can find the hidden trigger"). `trigger_angle_miner.py` already did
+    this for the 7 asset add/drop events; `trader_intel/live_trigger_miner.py`
+    (new) does it for "why this market, this moment, this side" --
+    formalizing `trigger_hunt.py`'s timing/momentum work (which only
+    ever reported raw means, no baseline test) plus new angles:
+    entry-burst clustering (observed 82.9% of gaps between consecutive
+    entries fall under 10s, vs. 60.0% predicted by a same-average-rate
+    Poisson process -- confirmed significant, n=797,153), liquidity vs.
+    hedging (dual-sided markets show meaningfully higher snapshotted
+    liquidity than single-sided ones, $8,960 vs $7,027 -- significant
+    but still an early read, n=225/111, since snapshotting only started
+    2026-09-07), and a paired spot-momentum test (each sampled entry's
+    Coinbase momentum vs. a matched random non-entry moment on the same
+    asset, accumulating across runs).
+
+    A fifth angle (cross-asset momentum -- does a move in Ethereum/Solana
+    predict the side of a Bitcoin entry) was built, deployed, and removed
+    within the same pass after its first live run produced physically
+    impossible ~200% "momentum" values: it had bucketed trades.jsonl's
+    own `price` field as if it were a continuous per-asset spot-price
+    series, but that field is each 5-minute market's OWN independent
+    outcome-token probability (0-1), not a continuous underlying price --
+    stitching together unrelated markets' probability series across the
+    bucket boundary between them produced nonsense. Caught before being
+    reported as a finding, documented in the code rather than silently
+    deleted so the same mistake isn't repeated. Would need a real
+    continuous spot-price source (Coinbase, like the paired-momentum
+    angle) to redo properly -- not rebuilt in this pass.
+
+    Wired into the same 6h cadence as `trigger_angle_miner.py`
+    (`live_poller.py`), ~20s / ~310MB peak, confirmed running clean on
+    AWS. See `trader_intel/README.md` for the full build and bug-catch
+    trail.
+
 ## Provenance
 
 `behavior_config.py`'s tables are calibrated on `trade_behavioral_analysis.json`,
