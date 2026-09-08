@@ -83,7 +83,16 @@ ASSET_REGIME_DISTRIBUTION_PCT = {
     # trader_intel/README.md's status log for the full investigation
     # (including why NOT to blame this on the BNB/Dogecoin/Hyperliquid
     # exclusion -- that's a separate, only partially-overlapping effect).
-    "Solana":      {"CHEAP": 45.7, "MID": 26.2, "CORE": 13.7, "HIGH": 14.4},
+    # RECALIBRATED AGAIN 2026-09-08 (later pass, last-14-days only,
+    # n=4,093, every cell well above trust threshold): moved further
+    # still, beyond the post-data-gap value directly above -- MID
+    # 26.2->34.5 (+8.3pp, the single biggest shift of any cell checked in
+    # this pass), CHEAP 45.7->41.3 (-4.4pp), HIGH 14.4->11.7 (-2.7pp),
+    # CORE roughly steady (13.7->12.5, not significant at this n). Bitcoin
+    # and Ethereum were checked the same way and left unchanged -- their
+    # 14-day gaps were all under 2pp, statistically "significant" only
+    # because of the huge sample size, not practically meaningful.
+    "Solana":      {"CHEAP": 41.3, "MID": 34.5, "CORE": 12.5, "HIGH": 11.7},
     "Dogecoin":    {"CHEAP": 85.9, "MID": 8.6,  "CORE": 1.8,  "HIGH": 3.7},
     "Hyperliquid": {"CHEAP": 75.6, "MID": 14.6, "CORE": 5.5,  "HIGH": 4.2},
     # RECALIBRATED 2026-09-08 (n=2,998, all cells well-supported) --
