@@ -201,9 +201,23 @@ SIDE_PERSISTENCE = {
     # "switches more at extremes" or "switches more in the middle" rule
     # holds across all three, which is exactly why this needed real
     # per-(asset,regime) data rather than a hand-picked rule.
-    "Bitcoin": {"CHEAP": 0.8832, "MID": 0.9295, "CORE": 0.9309, "HIGH": 0.9167},
+    # RECALIBRATED AGAIN 2026-09-08 (later pass, last-14-days only, same
+    # drift check already applied to ENTRY_SIZING_USD and
+    # ASSET_REGIME_DISTRIBUTION_PCT): Bitcoin drifted UP a modest but real
+    # amount across three of four regimes -- CHEAP 0.8832->0.9076 (n=4,255,
+    # +2.4pp), CORE 0.9309->0.9511 (n=3,027, +2.0pp), HIGH 0.9167->0.9448
+    # (n=1,577, +2.8pp). MID's +0.7pp gap wasn't significant, left as-is.
+    "Bitcoin": {"CHEAP": 0.9076, "MID": 0.9295, "CORE": 0.9511, "HIGH": 0.9448},
     "Ethereum": {"CHEAP": 0.9179, "MID": 0.8948, "CORE": 0.8710, "HIGH": 0.8842},
-    "Solana": {"CHEAP": 0.8797, "MID": 0.8616, "CORE": 0.7917, "HIGH": 0.8120},
+    # RECALIBRATED AGAIN 2026-09-08, same later pass: CHEAP dropped
+    # substantially, 0.8797->0.8065 (n=1,504, -7.3pp, the largest
+    # persistence shift found in this asset/regime sweep). CORE and HIGH
+    # both show bigger apparent swings (+5.5pp / +3.0pp) but their
+    # last-14-days samples (n=436 / n=297) stay below the n>=500 trust
+    # bar this file uses everywhere else -- left at historical values
+    # rather than chasing a thin-sample number. MID's +0.9pp gap wasn't
+    # significant either.
+    "Solana": {"CHEAP": 0.8065, "MID": 0.8616, "CORE": 0.7917, "HIGH": 0.8120},
     # Dogecoin/Hyperliquid/BNB are dormant (see ASSET_REGIME_DISTRIBUTION_PCT's
     # comment) -- not worth the same rigor while untraded. Kept at their old
     # single blended value, just reshaped to the same per-regime dict shape
