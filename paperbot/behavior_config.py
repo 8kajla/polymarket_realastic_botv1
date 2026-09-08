@@ -83,15 +83,18 @@ ASSET_REGIME_DISTRIBUTION_PCT = {
     # trader_intel/README.md's status log for the full investigation
     # (including why NOT to blame this on the BNB/Dogecoin/Hyperliquid
     # exclusion -- that's a separate, only partially-overlapping effect).
-    # RECALIBRATED AGAIN 2026-09-08 (later pass, last-14-days only,
-    # n=4,093, every cell well above trust threshold): moved further
-    # still, beyond the post-data-gap value directly above -- MID
-    # 26.2->34.5 (+8.3pp, the single biggest shift of any cell checked in
-    # this pass), CHEAP 45.7->41.3 (-4.4pp), HIGH 14.4->11.7 (-2.7pp),
-    # CORE roughly steady (13.7->12.5, not significant at this n). Bitcoin
-    # and Ethereum were checked the same way and left unchanged -- their
-    # 14-day gaps were all under 2pp, statistically "significant" only
-    # because of the huge sample size, not practically meaningful.
+    # RECALIBRATED AGAIN 2026-09-08 (later pass, n=4,093, every cell well
+    # above trust threshold -- and see ENTRY_SIZING_USD's CORRECTION
+    # note: the "last 14 days" query window is really ~2.3 days of real
+    # trading since a previously unknown 13.6-day total silence ended
+    # 2026-09-06 14:21 UTC): moved further still, beyond the post-data-gap
+    # value directly above -- MID 26.2->34.5 (+8.3pp, the single biggest
+    # shift of any cell checked in this pass), CHEAP 45.7->41.3 (-4.4pp),
+    # HIGH 14.4->11.7 (-2.7pp), CORE roughly steady (13.7->12.5, not
+    # significant at this n). Bitcoin and Ethereum were checked the same
+    # way and left unchanged -- their gaps were all under 2pp,
+    # statistically "significant" only because of the huge sample size,
+    # not practically meaningful.
     "Solana":      {"CHEAP": 41.3, "MID": 34.5, "CORE": 12.5, "HIGH": 11.7},
     "Dogecoin":    {"CHEAP": 85.9, "MID": 8.6,  "CORE": 1.8,  "HIGH": 3.7},
     "Hyperliquid": {"CHEAP": 75.6, "MID": 14.6, "CORE": 5.5,  "HIGH": 4.2},
@@ -114,14 +117,35 @@ ENTRY_SIZING_USD = {
     # this time -- not "is the full-history median still right" but "has
     # his CURRENT sizing drifted away from the full-history calibration
     # this table was originally built from". It has, a lot: a controlled
-    # test (Welch's t, last 14 days vs the full ~101-day mirror) found
-    # his mean entry size down 38.8% (Bitcoin), 41.6% (Ethereum), 20.9%
-    # (Solana) recently, all wildly significant (t=34.6/17.9/6.4). Only
-    # cells whose last-14-days sample itself clears the n>=500 trust
-    # threshold were updated here (same bar as every other recalibration
-    # in this file) -- 4th_plus is the tier with enough volume in two
-    # weeks to trust; first/2nd_3rd stay at their (older, full-history)
-    # values, and CORE/HIGH's thinner cells here are Bitcoin-only.
+    # test (Welch's t, queried as "last 14 days" vs the full ~101-day
+    # mirror) found his mean entry size down 38.8% (Bitcoin), 41.6%
+    # (Ethereum), 20.9% (Solana) recently, all wildly significant
+    # (t=34.6/17.9/6.4).
+    #
+    # CORRECTION, found later the same night: "last 14 days" as a QUERY
+    # WINDOW is accurate, but as a description of how much real trading
+    # it contains is not -- a previously unknown 13.6-day TOTAL silence
+    # (2026-08-23 22:53 UTC to 2026-09-06 14:21 UTC, every asset, found
+    # via a direct gap scan of the full mirror) falls almost entirely
+    # inside that window. The 14-day query's cutoff (08-25 22:xx) lands
+    # DURING the silence, before it ends -- so every cell below is
+    # actually measuring only the ~2.3 days of real trading SINCE the
+    # 09-06 resumption, not a natural 14-day sample. The arithmetic
+    # itself is still correct (an empty stretch contributes nothing to a
+    # sum either way, so the computed means/medians are exactly what the
+    # post-resumption data alone produces) -- but treat every n below as
+    # "over ~2.3 days," and treat the recalibration itself as capturing
+    # his IMMEDIATE post-silence posture, not necessarily a settled new
+    # normal: a single trader coming back from 13+ days away trading
+    # smaller and hedging more for their first ~2 days back is at least
+    # as consistent with cautious re-entry as with a permanent shift.
+    # Re-check once more calendar time has passed since the resumption.
+    #
+    # Only cells whose sample itself clears the n>=500 trust threshold
+    # were updated here (same bar as every other recalibration in this
+    # file) -- 4th_plus is the tier with enough volume in ~2.3 days to
+    # trust; first/2nd_3rd stay at their (older, full-history) values,
+    # and CORE/HIGH's thinner cells here are Bitcoin-only.
     # Bitcoin: CHEAP/4th_plus 1.341->1.356 (n=4,058, ~flat), MID/2nd_3rd
     # 3.774->2.226 (n=584, -41%), MID/4th_plus 2.279->2.226 (n=5,282,
     # ~flat), CORE/4th_plus and HIGH/4th_plus unchanged to 3 decimals
@@ -135,9 +159,10 @@ ENTRY_SIZING_USD = {
         "CORE":  {"first": 12.403, "2nd_3rd": 10.989, "4th_plus": 5.396},
         "HIGH":  {"first": 39.009, "2nd_3rd": 39.960, "4th_plus": 16.284},
     },
-    # Ethereum, same later pass: CHEAP/4th_plus 0.843->0.652 (n=2,222,
-    # -23%), MID/4th_plus 2.450->1.920 (n=886, -22%). first/2nd_3rd and
-    # CORE/HIGH stay below n>=500 in a 14-day window for this asset.
+    # Ethereum, same later pass (and same "actually ~2.3 days since the
+    # 09-06 resumption" correction above applies): CHEAP/4th_plus
+    # 0.843->0.652 (n=2,222, -23%), MID/4th_plus 2.450->1.920 (n=886,
+    # -22%). first/2nd_3rd and CORE/HIGH stay below n>=500 for this asset.
     "Ethereum": {
         "CHEAP": {"first": 0.994, "2nd_3rd": 0.750, "4th_plus": 0.652},
         "MID":   {"first": 2.968, "2nd_3rd": 2.600, "4th_plus": 1.920},
@@ -201,19 +226,25 @@ SIDE_PERSISTENCE = {
     # "switches more at extremes" or "switches more in the middle" rule
     # holds across all three, which is exactly why this needed real
     # per-(asset,regime) data rather than a hand-picked rule.
-    # RECALIBRATED AGAIN 2026-09-08 (later pass, last-14-days only, same
-    # drift check already applied to ENTRY_SIZING_USD and
-    # ASSET_REGIME_DISTRIBUTION_PCT): Bitcoin drifted UP a modest but real
-    # amount across three of four regimes -- CHEAP 0.8832->0.9076 (n=4,255,
-    # +2.4pp), CORE 0.9309->0.9511 (n=3,027, +2.0pp), HIGH 0.9167->0.9448
-    # (n=1,577, +2.8pp). MID's +0.7pp gap wasn't significant, left as-is.
+    # RECALIBRATED AGAIN 2026-09-08 (later pass, same drift check already
+    # applied to ENTRY_SIZING_USD and ASSET_REGIME_DISTRIBUTION_PCT --
+    # and see ENTRY_SIZING_USD's CORRECTION note: "last 14 days" as
+    # queried is really ~2.3 days of real trading since a previously
+    # unknown 13.6-day total silence ended 2026-09-06 14:21 UTC, so read
+    # every n/gap below as "since resumption," possibly cautious re-entry
+    # rather than a settled new normal): Bitcoin drifted UP a modest but
+    # real amount across three of four regimes -- CHEAP 0.8832->0.9076
+    # (n=4,255, +2.4pp), CORE 0.9309->0.9511 (n=3,027, +2.0pp), HIGH
+    # 0.9167->0.9448 (n=1,577, +2.8pp). MID's +0.7pp gap wasn't
+    # significant, left as-is.
     "Bitcoin": {"CHEAP": 0.9076, "MID": 0.9295, "CORE": 0.9511, "HIGH": 0.9448},
     "Ethereum": {"CHEAP": 0.9179, "MID": 0.8948, "CORE": 0.8710, "HIGH": 0.8842},
-    # RECALIBRATED AGAIN 2026-09-08, same later pass: CHEAP dropped
+    # RECALIBRATED AGAIN 2026-09-08, same later pass (and same "actually
+    # since the 09-06 resumption" correction applies): CHEAP dropped
     # substantially, 0.8797->0.8065 (n=1,504, -7.3pp, the largest
     # persistence shift found in this asset/regime sweep). CORE and HIGH
     # both show bigger apparent swings (+5.5pp / +3.0pp) but their
-    # last-14-days samples (n=436 / n=297) stay below the n>=500 trust
+    # post-resumption samples (n=436 / n=297) stay below the n>=500 trust
     # bar this file uses everywhere else -- left at historical values
     # rather than chasing a thin-sample number. MID's +0.9pp gap wasn't
     # significant either.
@@ -458,14 +489,18 @@ def side_persistence_for(asset: str, held_side_regime: str) -> float:
 # side's cumulative cost so far (not the position-count sizing curve --
 # hedge sizing scales with what it's protecting, not with entry index).
 # ---------------------------------------------------------------------------
-# RECALIBRATED AGAIN 2026-09-08 (later pass, last-14-days only, same drift
-# check already applied to ENTRY_SIZING_USD/ASSET_REGIME_DISTRIBUTION_PCT/
-# SIDE_PERSISTENCE this session): a MARKET-level breakdown (not trade-level
-# -- hedge frequency is "did this market ever go dual-sided", one data
-# point per market, so this table's own trust bar is n>=200 MARKETS, much
-# smaller in raw count than the trade-level tables' n>=500 but comparably
-# meaningful given what it's counting). Most cells stayed too thin even in
-# 14 days (as low as 8 markets for Bitcoin/HIGH -- not touched). Two cells
+# RECALIBRATED AGAIN 2026-09-08 (later pass, same drift check already
+# applied to ENTRY_SIZING_USD/ASSET_REGIME_DISTRIBUTION_PCT/
+# SIDE_PERSISTENCE this session -- and see ENTRY_SIZING_USD's CORRECTION
+# note: "last 14 days" as queried is really ~2.3 days of real trading
+# since a previously unknown 13.6-day total silence ended 2026-09-06
+# 14:21 UTC): a MARKET-level breakdown (not trade-level -- hedge
+# frequency is "did this market ever go dual-sided", one data point per
+# market, so this table's own trust bar is n>=200 MARKETS, much smaller
+# in raw count than the trade-level tables' n>=500 but comparably
+# meaningful given what it's counting). Most cells stayed too thin even
+# over the post-resumption span (as low as 8 markets for Bitcoin/HIGH --
+# not touched). Two cells
 # cleared both the market-count bar and a genuine, large, significant gap:
 #   Bitcoin/MID:  0.6697 -> 0.8018 (n=328 markets, +13.2pp)
 #   Ethereum/CHEAP: 0.4006 -> 0.5336 (n=223 markets, +13.3pp)
