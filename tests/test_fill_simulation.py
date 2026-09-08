@@ -257,6 +257,36 @@ class TestReprice:
         assert order.status == OrderStatus.CANCELLED
         assert not order.is_open()
 
+    def test_drift_out_of_band_after_a_partial_fill_preserves_settlement_eligibility(self):
+        """Direct regression test for a confirmed live bug (2026-09-08,
+        found via the RESOLUTION_GAP diagnostic in bot.py): overwriting
+        status to CANCELLED unconditionally -- even for an order with real
+        fills already recorded -- silently dropped those fills from ever
+        settling, since CANCELLED isn't in settle_order()'s allowed-status
+        set (only FILLED/PARTIALLY_FILLED are). The already-filled portion
+        must stay just as settleable as one that survives the 90-second
+        timing cutoff (see the EXPIRED/expired_remainder case just above)."""
+        book = make_book(best_bid=0.20, bid_depth_at_best=4.0, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=0.25)  # queue_ahead_discounted = 1.0
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0, regime="CHEAP"), book, now=0.0)
+
+        # Partially fill it first: 1.0 drains the queue, 2.0 fills the order.
+        sim.on_trade_print("tok-up", TradePrint(price=0.20, size=3.0, side="SELL", ts=1.0))
+        assert order.status == OrderStatus.PARTIALLY_FILLED
+        assert order.filled_size == pytest.approx(2.0)
+
+        # Then price jumps into MID band entirely.
+        book.apply_snapshot(bids=[(0.45, 20.0)], asks=[(0.47, 20.0)])
+        seconds_remaining = {"cond-1": 1000}
+        sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=10.0)
+
+        assert not order.is_open(), "must stop being open (no more fills against a stale price)"
+        assert order.status == OrderStatus.PARTIALLY_FILLED, (
+            "status must NOT be overwritten to CANCELLED -- that would make "
+            "settle_order() silently refuse to settle this order's real 2.0-share fill"
+        )
+        assert order.filled_size == pytest.approx(2.0), "the real fill must survive intact"
+
 
 class TestPostOnlyNeverCrossesSpread:
     def test_would_cross_spread_detects_marketable_price(self):

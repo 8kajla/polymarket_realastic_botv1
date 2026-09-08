@@ -99,6 +99,14 @@ class SimulatedOrder:
     expired_remainder: bool = False  # cutoff hit after a partial fill; the
                                       # unfilled remainder was cancelled but
                                       # the filled portion still settles.
+    cancelled_remainder: bool = False  # price left the target band after a
+                                        # partial fill; same idea as
+                                        # expired_remainder above -- status
+                                        # stays PARTIALLY_FILLED (not
+                                        # overwritten to CANCELLED) so the
+                                        # already-filled portion still
+                                        # settles. See manage_open_orders'
+                                        # drift-cancel branch.
 
     def __post_init__(self):
         if self.remaining_size is None:
@@ -119,7 +127,7 @@ class SimulatedOrder:
         return self.first_fill_at - self.placed_at
 
     def is_open(self) -> bool:
-        if self.expired_remainder:
+        if self.expired_remainder or self.cancelled_remainder:
             return False
         return self.status in (OrderStatus.PENDING, OrderStatus.PARTIALLY_FILLED)
 
@@ -297,12 +305,29 @@ class FillSimulator:
                     self._reprice(order, book, now)
                     changed.append(order)
                 else:
-                    # price left our target band entirely -- not our trade anymore
-                    order.status = OrderStatus.CANCELLED
+                    # price left our target band entirely -- not our trade
+                    # anymore. CONFIRMED LIVE (2026-09-08, via the
+                    # RESOLUTION_GAP diagnostic in bot.py): unconditionally
+                    # overwriting status to CANCELLED here -- even for an
+                    # order with real fills already recorded -- silently
+                    # dropped those fills from ever settling, since
+                    # CANCELLED isn't in settle_order()'s allowed-status
+                    # set (only FILLED/PARTIALLY_FILLED are). A partial
+                    # fill's already-filled portion is exactly as real and
+                    # exactly as settleable as one that survives the
+                    # 90-second timing cutoff (see expired_remainder right
+                    # above) -- only the STILL-UNFILLED remainder is what's
+                    # actually being cancelled here.
+                    if order.filled_size > 0:
+                        order.cancelled_remainder = True
+                    else:
+                        order.status = OrderStatus.CANCELLED
                     order.final_at = now
                     logger.info(
-                        "CANCELLED order=%d asset=%s regime=%s: price left target band",
+                        "CANCELLED order=%d asset=%s regime=%s filled=%.6f/%.6f: "
+                        "price left target band",
                         order.order_id, order.asset, order.regime,
+                        order.filled_size, order.original_size,
                     )
                     changed.append(order)
 
@@ -370,7 +395,8 @@ class FillSimulator:
             total = len(orders)
             filled = [o for o in orders if o.status == OrderStatus.FILLED]
             expired = [o for o in orders if o.status == OrderStatus.EXPIRED_UNFILLED]
-            partial = [o for o in orders if o.status == OrderStatus.PARTIALLY_FILLED and o.expired_remainder]
+            partial = [o for o in orders if o.status == OrderStatus.PARTIALLY_FILLED
+                       and (o.expired_remainder or o.cancelled_remainder)]
             times = [o.time_to_fill for o in filled if o.time_to_fill is not None]
             out[(asset, regime)] = {
                 "n": total,
