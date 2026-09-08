@@ -131,6 +131,32 @@ QUEUE_SAFETY_FACTOR = float(os.environ.get("QUEUE_SAFETY_FACTOR", "0.25"))
 # re-place at the new price rather than leaving a stale order unmanaged.
 DRIFT_REPRICE_TICKS = 3
 
+# How many resting orders this bot will hold OPEN SIMULTANEOUSLY in the same
+# market. CONFIRMED LIVE (2026-09-08): with this at its old implicit value of
+# 1 (a market was skipped entirely in strategy_tick once it had any resting
+# order at all), the bot averaged 3.0 entries/market in an 8h live window
+# vs. the real trader's 18.5 average / 13.5 median / 105 max in the same
+# window -- a ~6x gap, the dominant driver (bigger than market-participation
+# rate) of the bot trading far fewer total positions than the trader.
+#
+# Raising this to >1 lets strategy_tick keep placing new orders in a market
+# that already has one resting, rather than waiting for it to fill/cancel/
+# expire first. MarketActivityState already tracks entry_count/last_side/
+# cost_by_side at PLACEMENT time (not fill time), so decide_side/decide_hedge/
+# decide_size treat a second concurrent order exactly like a second
+# sequential one -- no special-casing needed there.
+#
+# Deliberately conservative, not an attempt to match the trader's 13.5-
+# median/105-max directly: trade.jsonl only has fill TIMESTAMPS, not order
+# placement times, so there's no way to independently confirm how many of
+# the trader's own entries were genuinely concurrent (multiple resting
+# orders at once) vs. fast sequential re-entries after quick fills -- that
+# distinction matters a lot for how high this should safely go, and isn't
+# measurable from the data this project has. Start small, watch the live
+# entries/market number after deploying, raise later with real evidence
+# rather than guessing straight to the trader's own ceiling.
+MAX_OPEN_ORDERS_PER_MARKET = int(os.environ.get("MAX_OPEN_ORDERS_PER_MARKET", "3"))
+
 # ---------------------------------------------------------------------------
 # Floor-lot "probe" tier (see behavior_config.py)
 # ---------------------------------------------------------------------------

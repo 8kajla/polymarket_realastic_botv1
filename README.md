@@ -781,6 +781,85 @@ symptom, before it could become one:
     typical baseline (outlier-high, not low) -- a genuinely mixed
     signal, logged as such rather than flattened into one story.
 
+18. **"Why does the bot place so many fewer trades than the trader?"
+    Investigated end to end, found three separate causes, fixed all
+    three.** A same-window comparison showed the bot placing ~14x fewer
+    trades than the real trader (332 vs 4,762 in one clean 8h window).
+    Broke that down into markets touched (2.3x fewer) and entries per
+    market (6.2x fewer, avg 3.0 vs 18.5) -- then dug into the order
+    lifecycle itself rather than stopping at that split:
+
+    - **Root cause of "fewer markets touched": a Gamma resolution
+      reliability bug, not a trading-behavior gap.** Order placement/fill
+      was already healthy (48.7% of placed orders filled). The real leak
+      was downstream: `fetch_market_by_slug`'s unfiltered `/markets?
+      slug=X` query stops returning a market a few minutes after its
+      window closes -- confirmed live via direct curl against
+      gamma-api.polymarket.com on real stuck slugs -- well before Gamma
+      internally flags it `closed=true` (which can take 30+ minutes).
+      That left a real gap where a market was invisible to BOTH the
+      unfiltered query (aged out) and an explicit `closed=true` query
+      (not flagged yet) for several minutes, and once a market aged out
+      of the unfiltered listing it NEVER came back -- every retry failed
+      forever until the 2h give-up cutoff. Result: 103 of 333 onboarded
+      markets (31%) were formally `ABANDONED` in one 8h window, silently
+      excluding any real fills there from realized P&L entirely -- which
+      also means every PNL/ROI number reported earlier that session
+      undercounted actual trading activity. **Fixed**: added
+      `fetch_market_for_resolution` (market_discovery.py), which tries
+      the unfiltered query first, then falls back to an explicit
+      `closed=true` query if that comes back empty -- closing the gap
+      between the two without changing the fast-path behavior for
+      markets caught early. 4 new unit tests (`TestFetchMarketForResolution`)
+      cover both branches plus the "still genuinely unresolved" case.
+
+    - **Root cause of "fewer entries per market": a hard cap of 1
+      resting order per market.** `bot.py`'s `strategy_tick` skipped any
+      market that already had a resting order at all, so a new entry
+      only got a chance once the previous one fully resolved (filled,
+      cancelled, or expired) -- nothing like the trader's median 13.5 /
+      max 105 entries in a single 5-minute market. **Fixed**: raised the
+      cap to a configurable `MAX_OPEN_ORDERS_PER_MARKET` (default 3,
+      deliberately conservative -- trade data only has fill timestamps,
+      not order-placement times, so there's no way to independently
+      confirm how many of the trader's own entries were genuinely
+      concurrent vs. fast sequential re-entries, and this project isn't
+      going to guess straight to the trader's own ceiling). Required
+      turning `resting_order_id` (one order per market) into
+      `resting_order_ids` (a set per market) throughout `bot.py`; entry
+      sequencing (position tier, side persistence, hedge eligibility)
+      already keyed off `MarketActivityState`'s placement-time counters,
+      not fill-time ones, so it extends to concurrent orders with no
+      special-casing. New tests (`TestOpenOrderCapPerMarketPolicy`)
+      cover both "places up to the cap then stops" and a cap-of-1
+      regression check reproducing the exact old behavior.
+
+    - **Bonus, from the same investigation: made `SIDE_PERSISTENCE`
+      regime-dependent for Bitcoin/Ethereum/Solana**, closing a follow-up
+      TRADER_PROFILE.md §8 had explicitly flagged but never built ("would
+      need a second full calibration pass"). Computed real P(persist |
+      the currently-held side's own regime) per (asset, regime) from the
+      live mirror (n=7,937-74,500 per cell) -- deliberately conditioned on
+      the regime BEFORE the decision (the currently-held side's price),
+      not the resulting trade's own regime, since that's the only framing
+      knowable at decision time. Genuinely not uniform: Bitcoin's lowest
+      persistence is CHEAP (88.3%), Solana's lowest is CORE (79.2%) -- no
+      single "switches more here" rule holds across assets, confirming
+      this needed real per-cell data rather than a hand-picked rule.
+      `decide_side` now takes the held side's live price (both books
+      already available in `build_order_intent`) and looks up
+      `behavior_config.side_persistence_for(asset, regime)`.
+      Dogecoin/Hyperliquid/BNB reshaped to the same per-regime dict
+      structure for interface consistency but left byte-for-byte
+      unchanged (dormant, same value in all 4 cells) -- not a
+      recalibration for those three, just a type change.
+
+    All three changes are deployed live (156 -> 167 tests passing, no
+    old-format test hardcoded), verified importing and running clean on
+    AWS before the restart. Full diagnostic trail (the curl evidence,
+    the order-lifecycle funnel numbers, the regime-conditional
+    persistence table) is in `trader_intel/README.md`'s status log.
+
 ## Provenance
 
 `behavior_config.py`'s tables are calibrated on `trade_behavioral_analysis.json`,

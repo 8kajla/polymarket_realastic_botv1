@@ -91,14 +91,47 @@ class TestSidePersistence:
         assert side in ("Up", "Down")
 
     def test_strong_bias_toward_previous_side_over_many_draws(self):
+        # No held_side_price given -> falls back to the CHEAP-band rate
+        # (see decide_side's docstring); BNB is dormant and has the same
+        # value in all four regime cells, so this exercises that fallback
+        # path directly against the one rate that applies regardless.
         rng = random.Random(42)
         activity = MarketActivityState(last_side="Up")
         same_count = sum(
             1 for _ in range(2000) if decide_side("BNB", activity, rng) == "Up"
         )
-        expected = bc.SIDE_PERSISTENCE["BNB"]
+        expected = bc.SIDE_PERSISTENCE["BNB"]["CHEAP"]
         observed = same_count / 2000
         assert abs(observed - expected) < 0.03
+
+    def test_persistence_is_regime_dependent_via_held_side_price(self):
+        # Bitcoin's real per-regime rates differ meaningfully (CHEAP 88.3%
+        # vs CORE 93.1%) -- confirm decide_side actually uses whichever
+        # regime the CURRENTLY-HELD side's price falls in, not one fixed
+        # asset-level number.
+        activity = MarketActivityState(last_side="Up")
+        rng_cheap, rng_core = random.Random(1), random.Random(1)
+
+        cheap_same = sum(
+            1 for _ in range(3000)
+            if decide_side("Bitcoin", activity, rng_cheap, held_side_price=0.10) == "Up"
+        ) / 3000
+        core_same = sum(
+            1 for _ in range(3000)
+            if decide_side("Bitcoin", activity, rng_core, held_side_price=0.80) == "Up"
+        ) / 3000
+
+        assert abs(cheap_same - bc.SIDE_PERSISTENCE["Bitcoin"]["CHEAP"]) < 0.03
+        assert abs(core_same - bc.SIDE_PERSISTENCE["Bitcoin"]["CORE"]) < 0.03
+        assert core_same > cheap_same  # Bitcoin's CORE persistence is the higher of the two
+
+    def test_missing_held_side_price_does_not_crash(self):
+        # Defensive fallback: held_side_price=None (shouldn't normally
+        # happen once last_side is set, but must not raise).
+        rng = random.Random(7)
+        activity = MarketActivityState(last_side="Down")
+        side = decide_side("Solana", activity, rng, held_side_price=None)
+        assert side in ("Up", "Down")
 
 
 class TestSizingDecision:
@@ -182,7 +215,8 @@ class TestBuildOrderIntent:
         down_book = make_liquid_book(price=0.04, token_id="down")  # CHEAP band
         activity = MarketActivityState()
 
-        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng: "Down")
+        monkeypatch.setattr(stratmod, "decide_side",
+                             lambda asset, activity, rng, held_side_price=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 

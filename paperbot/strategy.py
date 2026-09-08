@@ -66,15 +66,31 @@ class OrderIntent:
     reason: str = ""
 
 
-def decide_side(asset: str, activity: MarketActivityState, rng: random.Random) -> str:
+def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
+                 held_side_price: Optional[float] = None) -> str:
     """If the market already has an established side, keep it with
-    probability SIDE_PERSISTENCE[asset]; otherwise flip. If this is the
-    first entry in the market, there's no historical parameter for the
-    *initial* side (only persistence of subsequent entries was measured),
-    so we pick uniformly at random -- a documented simplification."""
+    probability side_persistence_for(asset, regime of the currently-held
+    side); otherwise flip. If this is the first entry in the market,
+    there's no historical parameter for the *initial* side (only
+    persistence of subsequent entries was measured), so we pick uniformly
+    at random -- a documented simplification.
+
+    Regime-dependent since 2026-09-08 (see behavior_config.SIDE_PERSISTENCE's
+    docstring): keyed by the CURRENTLY-HELD side's regime specifically,
+    because that's the only regime knowable before this decision is made --
+    what regime persisting or switching actually RESOLVES to is a
+    consequence of the choice, not an input to it. `held_side_price` is the
+    last-known book price for `activity.last_side`; build_order_intent
+    passes it in since it already has both books. Falls back to the
+    asset's CHEAP-band rate if the price isn't available for some reason
+    (should not happen in practice once last_side is set, but avoids a
+    crash over a defensive gap) -- deliberately not a silent 50/50, since
+    that would understate the trader's strong observed persistence in
+    every regime."""
     if activity.last_side is None:
         return rng.choice(["Up", "Down"])
-    persistence = bc.SIDE_PERSISTENCE[asset]
+    held_regime = bc.classify_regime(held_side_price) if held_side_price is not None else "CHEAP"
+    persistence = bc.side_persistence_for(asset, held_regime)
     if rng.random() < persistence:
         return activity.last_side
     return "Down" if activity.last_side == "Up" else "Up"
@@ -190,7 +206,21 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
 
     hedge_side = decide_hedge(market.asset, activity, rng)
     is_hedge = hedge_side is not None
-    side = hedge_side if is_hedge else decide_side(market.asset, activity, rng)
+    if is_hedge:
+        side = hedge_side
+    else:
+        # Regime-dependent persistence needs the CURRENTLY-HELD side's
+        # live price, not a stale one -- both books are already available
+        # here, so look it up fresh rather than threading a cached value
+        # through MarketActivityState. None (not yet an established side,
+        # or its book briefly missing) is handled inside decide_side.
+        held_book = None
+        if activity.last_side == "Up":
+            held_book = up_book
+        elif activity.last_side == "Down":
+            held_book = down_book
+        held_side_price = held_book.best_bid if held_book is not None else None
+        side = decide_side(market.asset, activity, rng, held_side_price=held_side_price)
     side_book = up_book if side == "Up" else down_book
 
     price = side_book.best_bid

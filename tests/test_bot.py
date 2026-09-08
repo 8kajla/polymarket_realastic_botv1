@@ -79,7 +79,7 @@ class TestSessionConnectionPoolSizing:
 class TestHedgeLegEndToEnd:
     """Full-pipeline test: a market's second entry becomes a deliberately-
     sized hedge leg on the opposite side, wired through decide_hedge ->
-    build_order_intent -> place_order -> resting_order_id, matching the
+    build_order_intent -> place_order -> resting_order_ids, matching the
     confirmed historical pattern (dual-sided markets have a dramatically
     better worst-case outcome than single-sided ones)."""
 
@@ -90,8 +90,8 @@ class TestHedgeLegEndToEnd:
 
         # First entry: establishes the primary side and its cost.
         asyncio.run(bot.strategy_tick(now=1000.0))
-        assert market.condition_id in bot.resting_order_id
-        first_order_id = bot.resting_order_id[market.condition_id]
+        assert market.condition_id in bot.resting_order_ids
+        first_order_id = next(iter(bot.resting_order_ids[market.condition_id]))
         first_order = bot.fill_sim.orders[first_order_id]
         activity = bot.activity[market.condition_id]
         assert activity.entry_count == 1
@@ -100,7 +100,7 @@ class TestHedgeLegEndToEnd:
         # Free up the market for a second entry (as if the first got filled).
         first_order.fills.append(Fill(size=first_order.original_size, price=first_order.price, ts=1001.0))
         first_order.status = OrderStatus.FILLED
-        del bot.resting_order_id[market.condition_id]
+        del bot.resting_order_ids[market.condition_id]
 
         # Force the hedge roll to trigger deterministically for this test.
         monkeypatch.setattr(stratmod, "decide_hedge",
@@ -109,8 +109,8 @@ class TestHedgeLegEndToEnd:
 
         asyncio.run(bot.strategy_tick(now=1001.0))
 
-        assert market.condition_id in bot.resting_order_id
-        hedge_order_id = bot.resting_order_id[market.condition_id]
+        assert market.condition_id in bot.resting_order_ids
+        hedge_order_id = next(iter(bot.resting_order_ids[market.condition_id]))
         hedge_order = bot.fill_sim.orders[hedge_order_id]
 
         assert hedge_order.is_hedge is True
@@ -201,22 +201,51 @@ class TestBatchedOnboarding:
         assert good_market.condition_id not in bot.halted_conditions
 
 
-class TestOneOrderPerMarketPolicy:
-    def test_second_strategy_tick_does_not_double_place(self):
+class TestOpenOrderCapPerMarketPolicy:
+    """config.MAX_OPEN_ORDERS_PER_MARKET bounds how many orders the bot
+    holds open in one market at once. Raised from an implicit hard 1
+    (2026-09-08): confirmed live that the old cap-of-1 policy -- skip a
+    market entirely in strategy_tick once it has ANY resting order -- was
+    the dominant driver of the bot averaging 3.0 entries/market against the
+    real trader's 18.5 average / 13.5 median in the same live 8h window.
+    See config.MAX_OPEN_ORDERS_PER_MARKET's docstring for the full context
+    and why the new default (3) is a deliberately conservative first step,
+    not an attempt to match the trader's own ceiling directly."""
+
+    def test_places_up_to_the_cap_then_stops(self, monkeypatch):
+        monkeypatch.setattr(config, "MAX_OPEN_ORDERS_PER_MARKET", 2)
         bot = PaperBot(assets=["Bitcoin"], seed=1)
         market = make_bitcoin_market()
         wire_market(bot, market)
 
         asyncio.run(bot.strategy_tick(now=1000.0))
-        assert market.condition_id in bot.resting_order_id
-        first_order_id = bot.resting_order_id[market.condition_id]
+        assert len(bot.resting_order_ids[market.condition_id]) == 1
+
+        # Below the cap: a second tick adds a SECOND concurrent order in
+        # the same market, rather than skipping it.
+        asyncio.run(bot.strategy_tick(now=1001.0))
+        assert len(bot.resting_order_ids[market.condition_id]) == 2
+
+        # At the cap: a third tick must NOT place a third order.
+        asyncio.run(bot.strategy_tick(now=1002.0))
+        assert len(bot.resting_order_ids[market.condition_id]) == 2
+
+    def test_cap_of_one_reproduces_the_old_single_order_policy(self, monkeypatch):
+        monkeypatch.setattr(config, "MAX_OPEN_ORDERS_PER_MARKET", 1)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        assert market.condition_id in bot.resting_order_ids
+        first_order_id = next(iter(bot.resting_order_ids[market.condition_id]))
 
         asyncio.run(bot.strategy_tick(now=1001.0))
-        assert bot.resting_order_id[market.condition_id] == first_order_id
+        assert bot.resting_order_ids[market.condition_id] == {first_order_id}
 
 
-class TestRestingOrderIdClearsOnFillViaTradePrint:
-    """Regression test: resting_order_id must clear when an order fills via
+class TestRestingOrderIdsClearsOnFillViaTradePrint:
+    """Regression test: resting_order_ids must clear when an order fills via
     a trade print consumed during manage_orders_tick's drain loop, not only
     when fill_simulation.manage_open_orders reports a change (expiry/
     reprice/cancel). An earlier version of this wiring only swept the
@@ -228,7 +257,7 @@ class TestRestingOrderIdClearsOnFillViaTradePrint:
         book = wire_market(bot, market, bid=0.20, ask=0.21, depth=50.0)
 
         asyncio.run(bot.strategy_tick(now=1000.0))
-        order_id = bot.resting_order_id[market.condition_id]
+        order_id = next(iter(bot.resting_order_ids[market.condition_id]))
         order = bot.fill_sim.orders[order_id]
 
         needed = order.queue_ahead_discounted + order.original_size
@@ -236,14 +265,14 @@ class TestRestingOrderIdClearsOnFillViaTradePrint:
         bot.manage_orders_tick(now=1001.0)
 
         assert order.status.value == "FILLED"
-        assert market.condition_id not in bot.resting_order_id, (
+        assert market.condition_id not in bot.resting_order_ids, (
             "a filled order must not keep blocking new entries in its market"
         )
 
         # And a new entry can now be placed in the same market.
         asyncio.run(bot.strategy_tick(now=1002.0))
-        assert market.condition_id in bot.resting_order_id
-        assert bot.resting_order_id[market.condition_id] != order_id
+        assert market.condition_id in bot.resting_order_ids
+        assert order_id not in bot.resting_order_ids[market.condition_id]
 
 
 class TestTimingGateBlocksLateMarkets:
@@ -253,7 +282,7 @@ class TestTimingGateBlocksLateMarkets:
         wire_market(bot, market)
 
         asyncio.run(bot.strategy_tick(now=1000.0))
-        assert market.condition_id not in bot.resting_order_id
+        assert market.condition_id not in bot.resting_order_ids
 
 
 class TestGracefulShutdownOnSignal:
@@ -301,7 +330,7 @@ class TestHaltingIsolatesOnlyTheFailingMarket:
         asyncio.run(bot.strategy_tick(now=1000.0))
 
         assert bad_market.condition_id in bot.halted_conditions
-        assert good_market.condition_id in bot.resting_order_id
+        assert good_market.condition_id in bot.resting_order_ids
         assert good_market.condition_id not in bot.halted_conditions
 
 
@@ -343,7 +372,7 @@ class TestResolutionThrottling:
             call_count["n"] += 1
             return None  # "still open" -- no resolution yet
 
-        monkeypatch.setattr(botmod, "fetch_market_by_slug", fake_fetch)
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", fake_fetch)
 
         asyncio.run(bot.resolution_tick(now=1000.0))
 
@@ -356,7 +385,7 @@ class TestResolutionThrottling:
         bot.pending_resolution[cid] = market
 
         call_count = {"n": 0}
-        monkeypatch.setattr(botmod, "fetch_market_by_slug",
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution",
                              lambda slug, session=None, timeout=10.0: call_count.update(n=call_count["n"] + 1) or None)
 
         asyncio.run(bot.resolution_tick(now=1000.0))
@@ -380,7 +409,7 @@ class TestResolutionThrottling:
             resp.status_code = 429
             raise requests.HTTPError("429", response=resp)
 
-        monkeypatch.setattr(botmod, "fetch_market_by_slug", always_fails)
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", always_fails)
 
         asyncio.run(bot.resolution_tick(now=0.0))
         assert bot._resolution_failure_count[cid] == 1
@@ -399,7 +428,7 @@ class TestResolutionThrottling:
         bot._resolution_first_seen[cid] = 0.0  # first seen at t=0
 
         call_count = {"n": 0}
-        monkeypatch.setattr(botmod, "fetch_market_by_slug",
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution",
                              lambda slug, session=None, timeout=10.0: call_count.update(n=call_count["n"] + 1) or None)
 
         asyncio.run(bot.resolution_tick(now=config.RESOLUTION_MAX_AGE_SECONDS + 1))
@@ -433,7 +462,7 @@ class TestResolutionThrottling:
         def always_indecisive(slug, session=None, timeout=10.0):
             return None  # "found it, not decisive yet" -- never resolves
 
-        monkeypatch.setattr(botmod, "fetch_market_by_slug", always_indecisive)
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", always_indecisive)
 
         # Tick 1: with `cap` stubborn markets exactly filling the budget,
         # the insertion-order bug would let them win every single tick.
@@ -464,7 +493,7 @@ class TestResolutionThrottling:
         def fake_fetch(slug, session=None, timeout=10.0):
             return {"closed": True, "outcomes": '["Up", "Down"]', "outcomePrices": '["1", "0"]'}
 
-        monkeypatch.setattr(botmod, "fetch_market_by_slug", fake_fetch)
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", fake_fetch)
 
         asyncio.run(bot.resolution_tick(now=1000.0))
 
@@ -488,7 +517,7 @@ class TestResolutionThrottling:
             return {"closed": False, "outcomes": '["Up", "Down"]',
                     "outcomePrices": '["0.9995", "0.0005"]'}
 
-        monkeypatch.setattr(botmod, "fetch_market_by_slug", fake_fetch)
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", fake_fetch)
 
         asyncio.run(bot.resolution_tick(now=1000.0))
 
@@ -504,7 +533,7 @@ class TestResolutionThrottling:
             return {"closed": False, "outcomes": '["Up", "Down"]',
                     "outcomePrices": '["0.6", "0.4"]'}
 
-        monkeypatch.setattr(botmod, "fetch_market_by_slug", fake_fetch)
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", fake_fetch)
 
         asyncio.run(bot.resolution_tick(now=1000.0))
 
@@ -545,7 +574,7 @@ class TestDriftCancelRunsBeforeTradePrintDrain:
             remaining_size=10.0, queue_ahead_raw=0.0, queue_ahead_discounted=0.0,
         )
         bot.fill_sim.orders[order.order_id] = order
-        bot.resting_order_id[market.condition_id] = order.order_id
+        bot.resting_order_ids[market.condition_id] = {order.order_id}
 
         # Price craters out of HIGH into MID before this tick -- book state
         # (best_bid/best_ask) is already current, exactly as it would be
@@ -612,7 +641,7 @@ class TestBoundedMemoryForLongRunningDeployment:
         bot.fill_sim.orders[order.order_id] = order
 
         monkeypatch.setattr(
-            botmod, "fetch_market_by_slug",
+            botmod, "fetch_market_for_resolution",
             lambda slug, session=None, timeout=10.0: {
                 "closed": True, "outcomes": '["Up", "Down"]', "outcomePrices": '["1", "0"]'
             },
@@ -632,7 +661,7 @@ class TestBoundedMemoryForLongRunningDeployment:
         order = make_filled_order(cid, order_id=1, side="Up", price=0.3, size=5.0)
         bot.fill_sim.orders[order.order_id] = order
 
-        monkeypatch.setattr(botmod, "fetch_market_by_slug",
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution",
                              lambda slug, session=None, timeout=10.0: None)
 
         asyncio.run(bot.resolution_tick(now=config.RESOLUTION_MAX_AGE_SECONDS + 1))

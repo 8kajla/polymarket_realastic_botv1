@@ -171,16 +171,64 @@ def fetch_active_markets(session: Optional[requests.Session] = None,
 
 
 def fetch_market_by_slug(slug: str, session: Optional[requests.Session] = None,
-                          timeout: float = 10.0) -> Optional[dict]:
+                          timeout: float = 10.0, closed: Optional[bool] = None) -> Optional[dict]:
     """Look up a single market by slug -- used post-close to check for
-    resolution."""
+    resolution. `closed`, if given, is passed through as Gamma's own
+    `closed` query filter; omitted (None, the default) queries with no
+    filter at all, exactly the previous behavior. See
+    fetch_market_for_resolution for why resolution checks need BOTH
+    forms, not just this one."""
     sess = session or requests
-    resp = sess.get(f"{config.GAMMA_BASE_URL}/markets", params={"slug": slug}, timeout=timeout)
+    params = {"slug": slug}
+    if closed is not None:
+        params["closed"] = "true" if closed else "false"
+    resp = sess.get(f"{config.GAMMA_BASE_URL}/markets", params=params, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
     if isinstance(data, list):
         return data[0] if data else None
     return data
+
+
+def fetch_market_for_resolution(slug: str, session: Optional[requests.Session] = None,
+                                 timeout: float = 10.0) -> Optional[dict]:
+    """
+    Resolution-specific lookup -- use this (not fetch_market_by_slug directly)
+    from resolution_tick.
+
+    CONFIRMED LIVE (2026-09-08, via direct curl against gamma-api.polymarket.com
+    for real stuck slugs): the unfiltered `/markets?slug=X` query stops
+    returning a market a few minutes after that market's own window
+    closes -- well before Gamma has actually flagged it `closed=true`
+    internally (separately confirmed: `closed` can stay False for 30+
+    minutes past a fully decisive outcome, see infer_resolution_from_price's
+    docstring). That leaves a real gap where a market is invisible to
+    BOTH the unfiltered query (already aged out of it) AND an explicit
+    `closed=true` query (Gamma hasn't flagged it yet) for several
+    minutes in between.
+
+    Querying only the unfiltered form (the previous behavior) meant that
+    once a market aged out, every subsequent resolution check returned
+    nothing FOREVER, no matter how many times it was retried -- the
+    confirmed root cause of a 31% market-abandonment rate (103/333
+    markets in one 8h live window) before this fix: any filled orders in
+    an abandoned market are silently excluded from realized P&L. See
+    trader_intel/README.md's status log for the live diagnosis.
+
+    Fix: try the unfiltered query first (catches a market in the first
+    few minutes after close, often resolvable immediately via
+    infer_resolution_from_price even though `closed` isn't set yet). If
+    that comes back empty, retry once with `closed=true` explicitly
+    (catches it once Gamma has since finished flagging it closed). Two
+    requests in the worst case, but resolution_tick's own cooldown/backoff
+    already bounds how often this runs per market -- and closing the gap
+    means far FEWER total retries in aggregate, since markets stop
+    getting stuck for the full 2h abandon window.
+    """
+    raw = fetch_market_by_slug(slug, session=session, timeout=timeout)
+    if raw is not None:
+        return raw
+    return fetch_market_by_slug(slug, session=session, timeout=timeout, closed=True)
 
 
 def parse_resolution(raw: dict) -> Optional[str]:

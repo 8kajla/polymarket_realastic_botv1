@@ -7,6 +7,8 @@ from paperbot.market_discovery import (
     BUCKET_SECONDS,
     _candidate_slugs,
     fetch_active_markets,
+    fetch_market_by_slug,
+    fetch_market_for_resolution,
     infer_resolution_from_price,
     parse_market,
     parse_resolution,
@@ -211,6 +213,76 @@ class TestInferResolutionFromPrice:
 
     def test_malformed_payload_returns_none(self):
         assert infer_resolution_from_price({"closed": False}) is None
+
+
+class ClosedAwareFakeSession:
+    """Keys responses by (slug, closed-param-as-sent) so tests can tell
+    the unfiltered query and the `closed=true` query apart -- unlike
+    FakeSession above (used for discovery, which never sends `closed`),
+    this is specifically for testing fetch_market_for_resolution's
+    two-step fallback."""
+
+    def __init__(self, by_key: dict):
+        self.by_key = by_key  # {(slug, closed_param_or_None): payload_list_or_None}
+        self.calls = []
+
+    def get(self, url, params=None, timeout=None):
+        params = params or {}
+        key = (params.get("slug"), params.get("closed"))
+        self.calls.append(key)
+        payload = self.by_key.get(key)
+        return FakeResponse(200, payload if payload is not None else [])
+
+
+class TestFetchMarketForResolution:
+    """Regression tests for a live-confirmed gap (2026-09-08, direct curl
+    against gamma-api.polymarket.com for real stuck slugs): a market
+    disappears from the unfiltered `/markets?slug=X` query a few minutes
+    after its window closes -- well before Gamma flags it `closed=true`
+    internally. Querying only the unfiltered form meant such a market
+    returned nothing FOREVER once it aged out, which was the confirmed
+    root cause of a 31% market-abandonment rate in production (any
+    filled orders in an abandoned market are silently excluded from
+    realized P&L)."""
+
+    def test_prefers_unfiltered_result_when_present(self):
+        # Fresh close: still visible unfiltered (often resolvable via
+        # infer_resolution_from_price even though closed=False here) --
+        # must NOT waste a second request.
+        raw = {"closed": False, "outcomePrices": json.dumps(["0.995", "0.005"])}
+        session = ClosedAwareFakeSession({("eth-updown-5m-1", None): [raw]})
+        result = fetch_market_for_resolution("eth-updown-5m-1", session=session)
+        assert result == raw
+        assert session.calls == [("eth-updown-5m-1", None)]
+
+    def test_falls_back_to_closed_true_when_unfiltered_is_empty(self):
+        # The confirmed gap: aged out of the unfiltered listing, but
+        # Gamma has since finished flagging it closed=true.
+        raw = {"closed": True, "outcomePrices": json.dumps(["1", "0"])}
+        session = ClosedAwareFakeSession({
+            ("eth-updown-5m-2", None): None,       # unfiltered: empty
+            ("eth-updown-5m-2", "true"): [raw],    # closed=true: found
+        })
+        result = fetch_market_for_resolution("eth-updown-5m-2", session=session)
+        assert result == raw
+        assert session.calls == [("eth-updown-5m-2", None), ("eth-updown-5m-2", "true")]
+
+    def test_still_returns_none_when_both_queries_are_empty(self):
+        # The genuine in-between gap: not resolvable yet either way --
+        # resolution_tick's existing retry/backoff/abandon logic handles
+        # this, unchanged.
+        session = ClosedAwareFakeSession({})
+        result = fetch_market_for_resolution("eth-updown-5m-3", session=session)
+        assert result is None
+        assert session.calls == [("eth-updown-5m-3", None), ("eth-updown-5m-3", "true")]
+
+    def test_fetch_market_by_slug_passes_closed_param_through_only_when_given(self):
+        session = ClosedAwareFakeSession({
+            ("btc-updown-5m-9", None): [{"a": 1}],
+            ("btc-updown-5m-9", "true"): [{"a": 2}],
+        })
+        assert fetch_market_by_slug("btc-updown-5m-9", session=session) == {"a": 1}
+        assert fetch_market_by_slug("btc-updown-5m-9", session=session, closed=True) == {"a": 2}
 
     def test_picks_the_higher_priced_outcome(self):
         raw = {"outcomes": json.dumps(["Up", "Down"]),

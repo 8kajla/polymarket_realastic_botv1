@@ -166,20 +166,36 @@ ENTRY_SIZING_USD = {
 # bias (a weighted coin flip), never a hard rule.
 # ---------------------------------------------------------------------------
 SIDE_PERSISTENCE = {
-    # RECALIBRATED 2026-09-08 (n=8,907, trusted) -- 91.17% -> 93.48%.
-    # Notably the OPPOSITE direction from Solana's persistence, which
-    # dropped over the same period -- not a uniform trend across assets.
-    "Bitcoin": 0.9348,
-    # Ethereum CHECKED, essentially unchanged (90.57% -> 90.49%, n=2,661
-    # trusted) -- left as-is, the historical value is already accurate.
-    "Ethereum": 0.9057,
-    # RECALIBRATED 2026-09-08 from post-gap live data (n=1,607, trusted
-    # sample) -- 86.34% -> 81.64%. See ASSET_REGIME_DISTRIBUTION_PCT's
-    # Solana comment for the full context.
-    "Solana": 0.8164,
-    "Dogecoin": 0.9152,
-    "Hyperliquid": 0.8512,
-    "BNB": 0.8085,
+    # MADE REGIME-DEPENDENT 2026-09-08 for the three active assets (Bitcoin/
+    # Ethereum/Solana) -- TRADER_PROFILE.md section 8 confirmed a real,
+    # non-confounded win-rate difference by (regime, persist-vs-switch) back
+    # when SIDE_PERSISTENCE was still asset-level only, and flagged "would
+    # need a second full calibration pass" to turn that into real per-regime
+    # persistence rates. This is that pass: each cell below is P(this entry
+    # keeps the same side | the side CURRENTLY held was last trading in this
+    # regime) -- i.e. keyed by the PREVIOUS entry's own regime, not this
+    # entry's resulting one (the only framing usable at decision time; see
+    # strategy.decide_side and its docstring for why). Computed from the
+    # full live mirror (n=7,937-74,500 per cell, all far past the n>=500
+    # trust bar). Genuinely NOT uniform across regimes or assets -- e.g.
+    # Bitcoin's CHEAP persistence (88.3%) is its lowest regime, while
+    # Solana's CORE (79.2%) and HIGH (81.2%) are its lowest -- no single
+    # "switches more at extremes" or "switches more in the middle" rule
+    # holds across all three, which is exactly why this needed real
+    # per-(asset,regime) data rather than a hand-picked rule.
+    "Bitcoin": {"CHEAP": 0.8832, "MID": 0.9295, "CORE": 0.9309, "HIGH": 0.9167},
+    "Ethereum": {"CHEAP": 0.9179, "MID": 0.8948, "CORE": 0.8710, "HIGH": 0.8842},
+    "Solana": {"CHEAP": 0.8797, "MID": 0.8616, "CORE": 0.7917, "HIGH": 0.8120},
+    # Dogecoin/Hyperliquid/BNB are dormant (see ASSET_REGIME_DISTRIBUTION_PCT's
+    # comment) -- not worth the same rigor while untraded. Kept at their old
+    # single blended value, just reshaped to the same per-regime dict shape
+    # so side_persistence_for() has one uniform lookup path; this is a pure
+    # type-consistency change, NOT a recalibration -- same number in all 4
+    # regime cells, so behavior for these three is byte-for-byte unchanged
+    # from before.
+    "Dogecoin": {"CHEAP": 0.9152, "MID": 0.9152, "CORE": 0.9152, "HIGH": 0.9152},
+    "Hyperliquid": {"CHEAP": 0.8512, "MID": 0.8512, "CORE": 0.8512, "HIGH": 0.8512},
+    "BNB": {"CHEAP": 0.8085, "MID": 0.8085, "CORE": 0.8085, "HIGH": 0.8085},
 }
 
 # ---------------------------------------------------------------------------
@@ -329,6 +345,18 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
         return ENTRY_SIZING_USD[asset][regime][position_tier]
     except KeyError as exc:
         raise BehaviorLookupError(asset, regime) from exc
+
+
+def side_persistence_for(asset: str, held_side_regime: str) -> float:
+    """P(keep the currently-held side) given the regime that side is
+    CURRENTLY trading in (i.e. the regime it would land in if persisted --
+    see strategy.decide_side for why this, not the regime a switch would
+    resolve to, is the only framing knowable before the decision is made).
+    """
+    try:
+        return SIDE_PERSISTENCE[asset][held_side_regime]
+    except KeyError as exc:
+        raise BehaviorLookupError(asset, held_side_regime) from exc
 
 
 # ---------------------------------------------------------------------------

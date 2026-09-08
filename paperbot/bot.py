@@ -34,7 +34,7 @@ from .ledger import Ledger
 from .market_discovery import (
     Market,
     MarketDiscovery,
-    fetch_market_by_slug,
+    fetch_market_for_resolution,
     infer_resolution_from_price,
     parse_resolution,
 )
@@ -83,7 +83,7 @@ class PaperBot:
         self.book_states: dict[str, BookState] = {}          # token_id -> BookState
         self.activity: dict[str, MarketActivityState] = {}    # condition_id -> state
         self.markets_by_condition: dict[str, Market] = {}
-        self.resting_order_id: dict[str, int] = {}            # condition_id -> order_id
+        self.resting_order_ids: dict[str, set[int]] = {}       # condition_id -> {order_id, ...}
         self.halted_conditions: set[str] = set()
         self.pending_resolution: dict[str, Market] = {}
         self.last_price_by_token: dict[str, float] = {}
@@ -199,7 +199,10 @@ class PaperBot:
     async def strategy_tick(self, now: float | None = None) -> None:
         now = now if now is not None else time.time()
         for cid, market in self.markets_by_condition.items():
-            if cid in self.halted_conditions or cid in self.resting_order_id:
+            if cid in self.halted_conditions:
+                continue
+            open_here = self.resting_order_ids.get(cid)
+            if open_here and len(open_here) >= config.MAX_OPEN_ORDERS_PER_MARKET:
                 continue
             try:
                 self._evaluate_one_market(market, now)
@@ -243,7 +246,7 @@ class PaperBot:
             intent.size_shares = intent.notional_usd / price if price > 0 else 0.0
 
         order = self.fill_sim.place_order(intent, order_book, now=now)
-        self.resting_order_id[market.condition_id] = order.order_id
+        self.resting_order_ids.setdefault(market.condition_id, set()).add(order.order_id)
         activity.record_entry(intent.side, intent.notional_usd, intent.regime, is_hedge=intent.is_hedge)
 
     # -- order management -------------------------------------------------
@@ -293,11 +296,18 @@ class PaperBot:
         # `changed` list: an order can also stop being open because a trade
         # print filled it during the drain loop above, which manage_open_orders
         # never sees. Checking every tracked order's actual current state is
-        # the only way to keep this dict from going stale either way.
-        for cid, order_id in list(self.resting_order_id.items()):
-            order = self.fill_sim.orders.get(order_id)
-            if order is None or not order.is_open():
-                del self.resting_order_id[cid]
+        # the only way to keep this dict from going stale either way. Per-cid
+        # SET (not a single id) since MAX_OPEN_ORDERS_PER_MARKET can hold more
+        # than one order open in the same market at once -- drop only the
+        # ones that actually closed, keep the cid entry as long as at least
+        # one order in it is still open.
+        for cid, order_ids in list(self.resting_order_ids.items()):
+            still_open = {oid for oid in order_ids
+                          if (order := self.fill_sim.orders.get(oid)) is not None and order.is_open()}
+            if still_open:
+                self.resting_order_ids[cid] = still_open
+            else:
+                del self.resting_order_ids[cid]
 
     # -- resolution / settlement -------------------------------------------
 
@@ -375,7 +385,7 @@ class PaperBot:
             attempted += 1
             self._resolution_last_attempt[cid] = now
             try:
-                raw = await asyncio.to_thread(fetch_market_by_slug, market.slug, self.session)
+                raw = await asyncio.to_thread(fetch_market_for_resolution, market.slug, self.session)
             except Exception as exc:
                 self._resolution_failure_count[cid] = fails + 1
                 status = getattr(getattr(exc, "response", None), "status_code", None)

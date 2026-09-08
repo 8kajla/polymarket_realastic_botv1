@@ -113,8 +113,35 @@ class TestRegimeDistributionTable:
 class TestSidePersistence:
     def test_all_six_assets_present_and_plausible(self):
         assert set(bc.SIDE_PERSISTENCE.keys()) == set(bc.ASSET_NAMES)
-        for asset, p in bc.SIDE_PERSISTENCE.items():
-            assert 0.5 < p < 1.0, f"{asset} side persistence {p} looks implausible"
+        for asset, by_regime in bc.SIDE_PERSISTENCE.items():
+            assert set(by_regime.keys()) == set(bc.REGIME_NAMES)
+            for regime, p in by_regime.items():
+                assert 0.5 < p < 1.0, f"{asset}/{regime} side persistence {p} looks implausible"
+
+    def test_dormant_assets_have_the_same_rate_in_every_regime(self):
+        # Reshaped to per-regime dicts for interface consistency, but not
+        # recalibrated -- Dogecoin/Hyperliquid/BNB are dormant, so this
+        # should be a pure type change, not a behavior change.
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            values = set(bc.SIDE_PERSISTENCE[asset].values())
+            assert len(values) == 1, f"{asset} should be unchanged (flat) across regimes"
+
+    def test_active_assets_genuinely_vary_by_regime(self):
+        # The opposite check for the three assets that WERE recalibrated
+        # per-regime -- if any of these collapsed to one flat number, the
+        # regime-dependent calibration silently didn't take.
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            values = set(bc.SIDE_PERSISTENCE[asset].values())
+            assert len(values) > 1, f"{asset} should vary by regime"
+
+    def test_side_persistence_for_matches_the_table(self):
+        for asset, by_regime in bc.SIDE_PERSISTENCE.items():
+            for regime, p in by_regime.items():
+                assert bc.side_persistence_for(asset, regime) == p
+
+    def test_side_persistence_for_raises_on_unknown_regime(self):
+        with pytest.raises(bc.BehaviorLookupError):
+            bc.side_persistence_for("Bitcoin", "NOT_A_REGIME")
 
 
 class TestFloorLotProbability:
