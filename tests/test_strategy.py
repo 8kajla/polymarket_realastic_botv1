@@ -397,4 +397,36 @@ class TestBuildOrderIntentHedge:
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
         assert intent is not None
         assert intent.is_hedge is False
+
+    def test_hedge_too_small_for_exchange_minimum_falls_through_to_ordinary_entry(self, monkeypatch):
+        """CONFIRMED LIVE (2026-09-08): hedge notional -- deliberately
+        small, proportional insurance -- falls below the exchange's real
+        minimum far more often than ordinary entries. Previously this
+        meant the whole tick produced NOTHING (decide_hedge intercepts
+        every entry_count==1 evaluation, so a too-small hedge silently
+        blocked the ordinary entry that tick would otherwise have placed
+        too). Must now fall through to a normally-sized entry on the same
+        side instead of abandoning the tick entirely."""
+        # Bitcoin/CORE: dominant_cost=10.0 * hedge_size_ratio(~0.1062) ~= 1.06,
+        # jittered to roughly 0.9-1.22 -- vs the ordinary CORE/2nd_3rd
+        # median of 10.989 (this is the market's 2nd entry, so position_
+        # tier is "2nd_3rd" not "first"; jittered ~9.3-12.6). A min_size
+        # that only the hedge notional can fail: 5 shares * 0.80 = $4.00.
+        market = make_market(end_time=1000.0, asset="Bitcoin", order_min_size=5.0)
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.80, token_id="down")  # CORE band
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE")
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        assert intent is not None, "must not abandon the tick -- fall through to an ordinary entry"
+        assert intent.is_hedge is False
+        assert intent.side == "Down"
+        assert intent.reason == "entry_curve"
+        # The ordinary CORE/2nd_3rd curve, not the tiny hedge-ratio sizing.
+        core_median = bc.median_entry_notional("Bitcoin", "CORE", "2nd_3rd")
+        assert intent.notional_usd > core_median * 0.5
         assert intent.reason in ("entry_curve", "floor_lot")

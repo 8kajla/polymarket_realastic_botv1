@@ -260,6 +260,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
 
     position_tier = activity.position_tier()
 
+    min_size = market.order_min_size
+
     if is_hedge:
         # Hedge sizing scales with what it's protecting (the dominant
         # side's cost so far), not the position-count curve -- that's the
@@ -270,10 +272,35 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)
         notional = max(dominant_cost * ratio * jitter, 0.0)
         is_floor_lot = False
+
+        if min_size is not None and notional < min_size * price:
+            # CONFIRMED LIVE (2026-09-08): hedge notional -- deliberately
+            # small, proportional insurance -- falls below the exchange's
+            # real minimum far more often than ordinary entries (23 of 58
+            # min-size skips in one window were hedge attempts, despite
+            # hedges being a small minority of total attempts: at most one
+            # per market, vs many ordinary entries). Previously this meant
+            # the WHOLE tick produced nothing: decide_hedge intercepts
+            # every entry_count==1 evaluation, so a rejected hedge
+            # silently blocked the ORDINARY entry that would otherwise
+            # have happened that same tick too -- throttling how often a
+            # market's second entry landed at all, worst in exactly the
+            # asset/regime cells with the highest hedge_trigger_
+            # probability. Falling through to a normally-sized entry on
+            # the same (still opposite-of-dominant) side instead of
+            # abandoning the tick is what a real trader would do too: if
+            # the insurance leg you intended is too small to place, you
+            # don't skip the market entirely, you just trade normally.
+            logger.info(
+                "SKIP asset=%s regime=%s pos=%s hedge=True: notional $%.4f below exchange min "
+                "($%.4f = %.2f shares * $%.4f) -- falling through to an ordinary entry",
+                market.asset, regime, position_tier, notional, min_size * price, min_size, price,
+            )
+            is_hedge = False
+            notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng)
     else:
         notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng)
 
-    min_size = market.order_min_size
     if min_size is not None and notional < min_size * price:
         # This simulated order would be rejected by the exchange's own
         # runtime-fetched minimum order size -- most relevant for the
@@ -283,19 +310,11 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # platform constraint rather than force an unrealistic fill.
         # Logged (unlike a bare None-return) since a small-bankroll
         # instance scaling every entry down needs this visible to tell a
-        # genuine liquidity/timing skip from a scale-induced one. hedge=
-        # included specifically to check a live hypothesis (2026-09-08):
-        # hedge notional is DELIBERATELY small (proportional insurance,
-        # not a full entry -- see HEDGE_SIZE_RATIO, whose HIGH-regime
-        # values are as low as 0.016-0.048 of the dominant side's cost),
-        # so it may be falling below the real exchange minimum far more
-        # often than ordinary entries, especially in CORE/HIGH where the
-        # ratio is smallest and the price (hence dollar minimum) is
-        # highest -- a real, structural explanation for hedge trigger
-        # probabilities firing on paper but almost never producing a
-        # settled hedge (confirmed live: 1 of 213 settled records
-        # flagged is_hedge, despite 19 of 22 markets in the same window
-        # reaching a second entry).
+        # genuine liquidity/timing skip from a scale-induced one. By this
+        # point is_hedge is always False here -- a hedge that failed this
+        # same check already got its own SKIP line and fell through above;
+        # this one only fires for an ordinary entry (or a hedge's
+        # ordinary-entry fallback) that's ALSO too small.
         logger.info(
             "SKIP asset=%s regime=%s pos=%s hedge=%s: notional $%.4f below exchange min "
             "($%.4f = %.2f shares * $%.4f)", market.asset, regime, position_tier, is_hedge,
