@@ -100,42 +100,50 @@ ASSET_REGIME_DISTRIBUTION_PCT = {
 POSITION_TIERS = ("first", "2nd_3rd", "4th_plus")
 
 ENTRY_SIZING_USD = {
-    # 4th_plus RECALIBRATED 2026-09-08 for all four regimes (n=1,021 to
-    # 3,265, all well-supported) -- a real, substantial drop, especially
-    # at higher regimes (CORE -32%, HIGH -37%). first/2nd_3rd left at
-    # historical values -- every one of those cells is still below the
-    # n>=500 trust threshold (as low as n=7 for HIGH/first). Verified
-    # this isn't a grouping bug: CORE's recent 4th_plus/2nd_3rd/first
-    # medians coincidentally landed on the exact same repeated dollar
-    # value at first glance, traced to heavy duplication in the raw
-    # trade-size data (a handful of exact dollar amounts recur 60-83
-    # times each in this window) causing thin-sample medians to collide
-    # -- not a bug, and doesn't affect the well-supported 4th_plus figure,
-    # which is computed independently from 1,592+ distinct records.
+    # RECALIBRATED AGAIN 2026-09-08 (later pass, independent of the
+    # same-day recalibration noted below): a completely different check
+    # this time -- not "is the full-history median still right" but "has
+    # his CURRENT sizing drifted away from the full-history calibration
+    # this table was originally built from". It has, a lot: a controlled
+    # test (Welch's t, last 14 days vs the full ~101-day mirror) found
+    # his mean entry size down 38.8% (Bitcoin), 41.6% (Ethereum), 20.9%
+    # (Solana) recently, all wildly significant (t=34.6/17.9/6.4). Only
+    # cells whose last-14-days sample itself clears the n>=500 trust
+    # threshold were updated here (same bar as every other recalibration
+    # in this file) -- 4th_plus is the tier with enough volume in two
+    # weeks to trust; first/2nd_3rd stay at their (older, full-history)
+    # values, and CORE/HIGH's thinner cells here are Bitcoin-only.
+    # Bitcoin: CHEAP/4th_plus 1.341->1.356 (n=4,058, ~flat), MID/2nd_3rd
+    # 3.774->2.226 (n=584, -41%), MID/4th_plus 2.279->2.226 (n=5,282,
+    # ~flat), CORE/4th_plus and HIGH/4th_plus unchanged to 3 decimals
+    # (n=2,738 / n=1,780 -- a single recurring exact dollar amount
+    # dominates both the full-history and recent medians in these two
+    # cells, not a bug, same duplication pattern documented in the prior
+    # pass below).
     "Bitcoin": {
-        "CHEAP": {"first": 1.793, "2nd_3rd": 1.528, "4th_plus": 1.341},
-        "MID":   {"first": 4.209, "2nd_3rd": 3.774, "4th_plus": 2.279},
+        "CHEAP": {"first": 1.793, "2nd_3rd": 1.528, "4th_plus": 1.356},
+        "MID":   {"first": 4.209, "2nd_3rd": 2.226, "4th_plus": 2.226},
         "CORE":  {"first": 12.403, "2nd_3rd": 10.989, "4th_plus": 5.396},
         "HIGH":  {"first": 39.009, "2nd_3rd": 39.960, "4th_plus": 16.284},
     },
-    # CHEAP/4th_plus RECALIBRATED 2026-09-08 (n=1,067, well-supported) --
-    # 0.550 -> 0.843. Every other cell still below the trust threshold.
+    # Ethereum, same later pass: CHEAP/4th_plus 0.843->0.652 (n=2,222,
+    # -23%), MID/4th_plus 2.450->1.920 (n=886, -22%). first/2nd_3rd and
+    # CORE/HIGH stay below n>=500 in a 14-day window for this asset.
     "Ethereum": {
-        "CHEAP": {"first": 0.994, "2nd_3rd": 0.750, "4th_plus": 0.843},
-        "MID":   {"first": 2.968, "2nd_3rd": 2.600, "4th_plus": 2.450},
+        "CHEAP": {"first": 0.994, "2nd_3rd": 0.750, "4th_plus": 0.652},
+        "MID":   {"first": 2.968, "2nd_3rd": 2.600, "4th_plus": 1.920},
         "CORE":  {"first": 9.148, "2nd_3rd": 7.677, "4th_plus": 6.381},
         "HIGH":  {"first": 28.292, "2nd_3rd": 26.758, "4th_plus": 19.380},
     },
-    # Solana CHECKED for recalibration 2026-09-08, left at historical
-    # values -- every (regime, position) cell's recent sample is below
-    # the n>=500 trust threshold (ranged n=25 to n=411), so recent medians
-    # here (some higher, some lower than historical, no clean directional
-    # story) are more plausibly noise than a real shift. Revisit once more
-    # post-gap data has accumulated. See ASSET_REGIME_DISTRIBUTION_PCT's
-    # Solana comment for what WAS recalibrated in this same pass.
+    # Solana, same later pass -- the biggest moves of the three: the
+    # "CHECKED, left at historical values, too thin" note directly below
+    # is now SUPERSEDED for 4th_plus specifically, which cleared the
+    # trust bar this time (more calendar time accumulated since that
+    # check): CHEAP/4th_plus 0.490->0.259 (n=1,171, -47%), MID/4th_plus
+    # 2.387->0.852 (n=821, -64%). first/2nd_3rd/CORE/HIGH still thin.
     "Solana": {
-        "CHEAP": {"first": 1.097, "2nd_3rd": 0.805, "4th_plus": 0.490},
-        "MID":   {"first": 2.850, "2nd_3rd": 2.597, "4th_plus": 2.387},
+        "CHEAP": {"first": 1.097, "2nd_3rd": 0.805, "4th_plus": 0.259},
+        "MID":   {"first": 2.850, "2nd_3rd": 2.597, "4th_plus": 0.852},
         "CORE":  {"first": 7.373, "2nd_3rd": 6.880, "4th_plus": 6.235},
         "HIGH":  {"first": 21.620, "2nd_3rd": 23.126, "4th_plus": 19.740},
     },
