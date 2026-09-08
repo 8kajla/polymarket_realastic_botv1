@@ -91,6 +91,11 @@ class PaperBot:
         self._resolution_failure_count: dict[str, int] = {}
         self._resolution_first_seen: dict[str, float] = {}
         self._last_pnl_summary_at: float = 0.0
+        # Append-only, like ledger.records -- never an incrementally
+        # mutated single number. Only ever grows when config.BANKROLL_USD
+        # is set; see resolution_tick's ABANDONED branch and
+        # available_cash()'s docstring for why this exists.
+        self._abandoned_filled_costs: list[float] = []
 
         self.ws_client = MarketWebSocketClient(get_book_state=self.book_states.get)
 
@@ -245,9 +250,69 @@ class PaperBot:
             intent.price = price
             intent.size_shares = intent.notional_usd / price if price > 0 else 0.0
 
+        cash = self.available_cash()
+        if cash is not None and intent.notional_usd > cash:
+            # Real "insufficient buying power" rejection, not a silent
+            # downsize -- see available_cash()'s docstring. Only reachable
+            # when config.BANKROLL_USD is set; a None return short-
+            # circuits this for the main (unconstrained) bot.
+            logger.info(
+                "SKIP market=%s: insufficient bankroll (need $%.4f, have $%.4f)",
+                market.slug, intent.notional_usd, cash,
+            )
+            return
+
         order = self.fill_sim.place_order(intent, order_book, now=now)
         self.resting_order_ids.setdefault(market.condition_id, set()).add(order.order_id)
         activity.record_entry(intent.side, intent.notional_usd, intent.regime, is_hedge=intent.is_hedge)
+
+    def available_cash(self) -> float | None:
+        """
+        Returns None in the default (unconstrained) mode -- see
+        config.BANKROLL_USD's docstring; the main bot must always get None
+        here so this whole feature is a no-op for it.
+
+        Otherwise, RECOMPUTED FROM SOURCE every call (never a running
+        total that gets +=/-= mutated -- the same hard rule this project
+        already enforces for Ledger.realized_pnl(), for the same reason:
+        an incremental counter drifts from reality the first time an edge
+        case updates state without also touching it, and a stale bankroll
+        number is exactly the kind of bug that would go unnoticed for a
+        long time on an unattended box):
+
+            available = BANKROLL_USD + realized_pnl - committed - written_off
+
+        `committed` covers every dollar not yet reflected in realized_pnl:
+        the unfilled portion of any still-open resting order (remaining_
+        size * price -- a real resting limit order ties up buying power
+        even before it fills), plus the filled-but-not-yet-settled portion
+        of any order still waiting on resolution_tick. Once an order
+        actually settles, it drops out of `committed` (is_open() is False
+        and ledger.is_settled() is True) and its P&L is already inside
+        realized_pnl -- no double-counting either way.
+
+        `written_off` covers the one lifecycle path that skips settlement
+        entirely: an ABANDONED market (Gamma never reported a decisive
+        outcome within RESOLUTION_MAX_AGE_SECONDS). Those filled orders
+        are deliberately excluded from realized_pnl (see resolution_tick's
+        docstring) -- but without also removing that capital here, it
+        would silently reappear as available once remove_orders_for_
+        condition() drops the order from fill_sim.orders, understating
+        what's actually still spent. Treated as a full write-off (the
+        conservative assumption when we genuinely can't confirm the
+        outcome) rather than invented as a settlement this bot has no real
+        confidence in.
+        """
+        if config.BANKROLL_USD is None:
+            return None
+        committed = 0.0
+        for order in self.fill_sim.orders.values():
+            if order.filled_size > 0 and not self.ledger.is_settled(order.order_id):
+                committed += order.filled_size * order.price
+            if order.is_open():
+                committed += order.remaining_size * order.price
+        written_off = sum(self._abandoned_filled_costs)
+        return config.BANKROLL_USD + self.ledger.realized_pnl() - committed - written_off
 
     # -- order management -------------------------------------------------
 
@@ -363,6 +428,18 @@ class PaperBot:
                     "unsettled and are excluded from realized P&L",
                     market.slug, market.asset, now - first_seen,
                 )
+                if config.BANKROLL_USD is not None:
+                    # See available_cash()'s docstring: without this, the
+                    # capital spent on this market's filled orders would
+                    # silently reappear as available once remove_orders_
+                    # for_condition() below drops them from fill_sim.
+                    # orders, understating what's actually still spent. A
+                    # no-op list append when unset, so the main bot is
+                    # completely unaffected.
+                    for order in self.fill_sim.orders.values():
+                        if (order.condition_id == cid and order.filled_size > 0
+                                and not self.ledger.is_settled(order.order_id)):
+                            self._abandoned_filled_costs.append(order.filled_size * order.price)
                 del self.pending_resolution[cid]
                 self._forget_resolution_tracking(cid)
                 self.fill_sim.remove_orders_for_condition(cid)

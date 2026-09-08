@@ -180,7 +180,12 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # three dormant assets), so this can't silently change behavior
     # outside the two regimes it was actually calibrated on.
     within_band = bc.within_band_size_multiplier(asset, regime, price)
-    return max(median * jitter * within_band, 0.0), False
+    # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a
+    # deliberately small-bankroll instance -- see its docstring in
+    # config.py. Applied here (not to the floor-lot branch above) so the
+    # tiny, independently-calibrated probe tier is never pushed below a
+    # real exchange minimum by a scale-down meant for the ordinary curve.
+    return max(median * jitter * within_band * config.SIZE_SCALE_FACTOR, 0.0), False
 
 
 def build_order_intent(market: Market, up_book: BookState, down_book: BookState,

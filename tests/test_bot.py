@@ -18,6 +18,7 @@ from paperbot import strategy as stratmod
 from paperbot.bot import PaperBot
 from paperbot.book import BookState
 from paperbot.fill_simulation import Fill, OrderStatus, SimulatedOrder
+from paperbot.ledger import Ledger
 from paperbot.market_discovery import Market
 from paperbot.strategy import MarketActivityState
 
@@ -668,3 +669,137 @@ class TestBoundedMemoryForLongRunningDeployment:
 
         assert cid not in bot.pending_resolution
         assert order.order_id not in bot.fill_sim.orders
+
+
+class TestBankrollGate:
+    """config.BANKROLL_USD's optional fixed-bankroll mode (2026-09-08),
+    built for a second small-capital instance meant to answer "what would
+    actually happen with a real $100 deposit" -- without changing the
+    strategy at all. See config.py's docstring for the full design."""
+
+    def test_default_mode_is_unconstrained_and_available_cash_is_none(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        assert config.BANKROLL_USD is None
+        assert bot.available_cash() is None
+
+    def test_available_cash_recomputes_from_starting_balance_minus_open_orders(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()  # isolate from any real state on disk
+        assert bot.available_cash() == pytest.approx(100.0)
+
+        # A still-open (unfilled) resting order reserves its full notional --
+        # a real resting limit order ties up buying power before it fills.
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-x", token_id="cond-x-up", asset="Bitcoin",
+            regime="MID", position_tier="first", side="Up", price=0.40,
+            original_size=10.0, is_floor_lot=False, placed_at=0.0, remaining_size=10.0,
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        assert bot.available_cash() == pytest.approx(100.0 - 10.0 * 0.40)
+
+    def test_available_cash_accounts_for_filled_but_unsettled_orders(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()  # isolate from any real state on disk
+        order = make_filled_order("cond-x", order_id=1, price=0.30, size=5.0)
+        bot.fill_sim.orders[order.order_id] = order
+        # Filled (cost committed) but resolution_tick hasn't settled it yet.
+        assert bot.available_cash() == pytest.approx(100.0 - 5.0 * 0.30)
+
+        bot.ledger.settle_order(order, winning_side="Up")
+        # Once settled, the cost drops out of "committed" and the P&L
+        # (payout - cost) is already inside realized_pnl -- no double count.
+        assert bot.available_cash() == pytest.approx(100.0 + bot.ledger.realized_pnl())
+
+    def test_abandoned_filled_orders_stay_written_off_not_reclaimed(self, monkeypatch):
+        """Direct regression test for the accounting leak an abandoned
+        (never-resolved) market would otherwise cause: once resolution_tick
+        prunes its orders from fill_sim.orders, they'd vanish from
+        `committed` without ever being subtracted via realized_pnl --
+        silently making that spent capital look available again."""
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=3)
+        bot.ledger = Ledger()  # isolate from any real state on disk
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        bot._resolution_first_seen[cid] = 0.0
+        order = make_filled_order(cid, order_id=1, side="Up", price=0.30, size=5.0)
+        bot.fill_sim.orders[order.order_id] = order
+
+        cash_before_abandonment = bot.available_cash()
+        assert cash_before_abandonment == pytest.approx(100.0 - 5.0 * 0.30)
+
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution",
+                             lambda slug, session=None, timeout=10.0: None)
+        asyncio.run(bot.resolution_tick(now=config.RESOLUTION_MAX_AGE_SECONDS + 1))
+
+        assert order.order_id not in bot.fill_sim.orders  # pruned, as before
+        assert bot.ledger.realized_pnl() == 0.0            # never settled
+        # ...but the spent capital must NOT have reappeared as available.
+        assert bot.available_cash() == pytest.approx(cash_before_abandonment)
+
+    def test_order_is_skipped_when_it_would_exceed_available_bankroll(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 0.0001)  # effectively broke
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()  # isolate from any real state on disk
+        market = make_bitcoin_market(condition_id="cond-x")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        assert market.condition_id not in bot.resting_order_ids
+        assert len(bot.fill_sim.orders) == 0
+
+    def test_order_still_places_normally_when_bankroll_covers_it(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()  # isolate from any real state on disk
+        market = make_bitcoin_market(condition_id="cond-x")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        assert market.condition_id in bot.resting_order_ids
+
+
+class TestSizeScaleFactor:
+    """config.SIZE_SCALE_FACTOR (2026-09-08): a global multiplier so a
+    small-bankroll instance can run the IDENTICAL decision logic at a
+    proportionally smaller dollar scale, without exhausting its bankroll
+    on a handful of whale-sized entries and trading less often than the
+    unscaled bot as a result."""
+
+    def test_default_factor_is_a_no_op(self):
+        assert config.SIZE_SCALE_FACTOR == 1.0
+
+    def test_scaling_down_shrinks_notional_proportionally_not_the_strategy(self, monkeypatch):
+        rng_unscaled = __import__("random").Random(42)
+        rng_scaled = __import__("random").Random(42)  # same seed -> same jitter roll
+
+        notional_unscaled, floor_unscaled = stratmod.decide_size(
+            "Bitcoin", "MID", "first", 0.40, rng_unscaled)
+
+        monkeypatch.setattr(config, "SIZE_SCALE_FACTOR", 0.2)
+        notional_scaled, floor_scaled = stratmod.decide_size(
+            "Bitcoin", "MID", "first", 0.40, rng_scaled)
+
+        assert floor_unscaled == floor_scaled  # same floor-lot roll either way
+        if not floor_unscaled:
+            # Exactly proportional -- same relative sizing curve, just at a
+            # smaller dollar scale. Not a strategy change.
+            assert notional_scaled == pytest.approx(notional_unscaled * 0.2)
+
+    def test_floor_lot_tier_is_never_scaled(self, monkeypatch):
+        """The floor-lot probe tier is already tiny and independently
+        calibrated -- scaling it further risks pushing it below a real
+        exchange's orderMinSize and silently killing those trades outright,
+        the opposite of what SIZE_SCALE_FACTOR exists for."""
+        monkeypatch.setattr(config, "SIZE_SCALE_FACTOR", 0.01)
+        rng = __import__("random").Random(1)
+        # BNB/CHEAP/first has a nonzero floor-lot probability (position-
+        # dependent table) -- force the roll to land in the floor-lot branch.
+        monkeypatch.setattr(rng, "random", lambda: 0.0)
+        notional, is_floor_lot = stratmod.decide_size("BNB", "CHEAP", "first", 0.10, rng)
+        assert is_floor_lot is True
+        assert notional == pytest.approx(config.FLOOR_LOT_SIZE_SHARES * 0.10)

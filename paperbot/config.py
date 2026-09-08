@@ -172,6 +172,46 @@ FLOOR_LOT_SIZE_SHARES = 0.02
 SIZING_JITTER_FRACTION = 0.15
 
 # ---------------------------------------------------------------------------
+# Optional fixed-bankroll mode. Added 2026-09-08 for a second, small-capital
+# instance meant to answer a real question -- "if I deposited $100 real
+# money and ran this exact strategy, what would actually happen?" -- not to
+# change the strategy at all.
+#
+# None (the default) means UNCONSTRAINED: every order the strategy decides
+# to place gets placed, no matter the cumulative notional -- today's
+# behavior, exactly. This MUST stay the main bot's mode: that instance
+# exists to track how closely the strategy matches the real trader's
+# behavior at the real trader's own scale, not to model one account size.
+#
+# Setting BANKROLL_USD turns on a hard "can't spend money we don't have"
+# gate in PaperBot._evaluate_one_market: before placing an order, available
+# cash is recomputed FROM SOURCE every time (starting balance + realized
+# P&L - capital currently committed to unsettled orders -- see
+# PaperBot.available_cash()) -- never an incrementally-mutated running
+# total, matching this project's existing hard rule for
+# Ledger.realized_pnl(). If an order's notional exceeds what's available it
+# is skipped entirely (logged), exactly like a real exchange rejecting an
+# order for insufficient buying power -- never silently downsized, which
+# would be an actual (unrequested) strategy change.
+BANKROLL_USD = os.environ.get("BANKROLL_USD")
+if BANKROLL_USD is not None:
+    BANKROLL_USD = float(BANKROLL_USD)
+
+# Global multiplier applied to every non-floor-lot entry's notional (see
+# strategy.decide_size). 1.0 (default) is a no-op -- today's behavior,
+# unchanged. Exists so a small-bankroll instance can run the EXACT SAME
+# decision logic (side/regime/hedge/timing all untouched -- this only
+# scales dollars) at a proportionally smaller dollar scale, so a $100
+# account can still afford to trade near the real trader's ENTRY FREQUENCY
+# instead of exhausting its bankroll on a handful of whale-sized entries
+# and then sitting out most opportunities. Deliberately NOT applied to the
+# floor-lot probe tier (FLOOR_LOT_SIZE_SHARES): that tier is already tiny
+# and independently calibrated, and scaling it down further risks pushing
+# it below the exchange's real per-market orderMinSize, which would
+# silently kill those trades outright -- the opposite of "not less trades".
+SIZE_SCALE_FACTOR = float(os.environ.get("SIZE_SCALE_FACTOR", "1.0"))
+
+# ---------------------------------------------------------------------------
 # Local paper-trading state (gitignored -- never commit real run state)
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(os.environ.get("PAPERBOT_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))

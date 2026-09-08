@@ -107,6 +107,12 @@ class Ledger:
         module docstring. Never mutate a running total instead of this."""
         return sum(r.pnl for r in self.records)
 
+    def is_settled(self, order_id: int) -> bool:
+        """Whether this order_id has already produced a settlement record.
+        Exposed so callers (PaperBot.available_cash()) don't need to reach
+        into the private _settled_order_ids set directly."""
+        return order_id in self._settled_order_ids
+
     def realized_pnl_by_asset(self) -> dict:
         out: dict[str, float] = {}
         for r in self.records:
