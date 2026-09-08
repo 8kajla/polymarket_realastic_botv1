@@ -6,6 +6,7 @@ the fill simulator directly (bot.py wires those together).
 """
 from __future__ import annotations
 
+import logging
 import random
 from dataclasses import dataclass, field
 from typing import Optional
@@ -14,6 +15,8 @@ from . import behavior_config as bc
 from . import config
 from .book import BookState
 from .market_discovery import Market
+
+logger = logging.getLogger("paperbot.strategy")
 
 
 @dataclass
@@ -264,8 +267,18 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     if min_size is not None and notional < min_size * price:
         # This simulated order would be rejected by the exchange's own
         # runtime-fetched minimum order size -- most relevant for the
-        # floor-lot tier, whose whole point is a tiny notional. Respect the
-        # real platform constraint rather than force an unrealistic fill.
+        # floor-lot tier, whose whole point is a tiny notional, and for
+        # SIZE_SCALE_FACTOR < 1.0 (see config.py), which shrinks the
+        # ordinary curve toward that same real floor. Respect the real
+        # platform constraint rather than force an unrealistic fill.
+        # Logged (unlike a bare None-return) since a small-bankroll
+        # instance scaling every entry down needs this visible to tell a
+        # genuine liquidity/timing skip from a scale-induced one.
+        logger.info(
+            "SKIP asset=%s regime=%s pos=%s: notional $%.4f below exchange min "
+            "($%.4f = %.2f shares * $%.4f)", market.asset, regime, position_tier,
+            notional, min_size * price, min_size, price,
+        )
         return None
 
     size_shares = notional / price if price > 0 else 0.0
