@@ -317,14 +317,30 @@ class TestDecideHedge:
         activity = MarketActivityState()
         assert decide_hedge("Bitcoin", activity, random.Random(0)) is None
 
-    def test_only_fires_at_exactly_the_second_entry(self):
+    def test_can_fire_at_entry_counts_beyond_the_second_entry(self):
+        """CHANGED 2026-09-08: previously entry_count==2 was hard-gated
+        off entirely. Fresh re-derivation from the real trader mirror
+        found only 23.5% of real hedges land at entry_count==1 (median
+        index 4) -- decide_hedge must now be able to fire at later
+        entry_counts too, not just the market's literal 2nd entry."""
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="MID")  # entry_count now 1
         activity.record_entry("Up", notional_usd=1.0, regime="MID")   # entry_count now 2
-        # Even with seeds that would trigger at entry_count==1 (BNB/MID has
-        # the highest known probability, 0.9004), entry_count==2 must gate
-        # it off entirely.
-        for seed in range(20):
+        # BNB/MID has the highest known cumulative probability (0.9004) --
+        # over enough seeds, at least one must trigger at entry_count==2.
+        assert any(
+            decide_hedge("BNB", activity, random.Random(seed)) is not None
+            for seed in range(50)
+        )
+
+    def test_returns_none_past_the_modeled_hazard_window(self):
+        """hedge_attempt_hazard returns 0.0 past behavior_config's modeled
+        window (10 attempts) -- decide_hedge must never fire there,
+        regardless of how favorable the RNG draw is."""
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.entry_count = 11
+        for seed in range(50):
             assert decide_hedge("BNB", activity, random.Random(seed)) is None
 
     def test_returns_the_opposite_of_the_dominant_side(self):
@@ -347,19 +363,36 @@ class TestDecideHedge:
         for seed in range(20):
             assert decide_hedge("BNB", activity, random.Random(seed)) is None
 
-    def test_bitcoin_high_regime_rarely_triggers(self):
-        """Sanity check the probability is actually being used, not just
-        always-true or always-false: HIGH-regime Bitcoin has one of the
-        lowest trigger probabilities (0.2967) -- over many seeds, most
-        should NOT trigger."""
-        activity = MarketActivityState()
-        activity.record_entry("Up", notional_usd=10.0, regime="HIGH")
-        n = 500
-        triggered = sum(
-            1 for seed in range(n) if decide_hedge("Bitcoin", activity, random.Random(seed)) is not None
-        )
+    def test_bitcoin_high_regime_cumulative_probability_matches_calibration(self):
+        """CHANGED 2026-09-08: the calibrated 0.2967 for Bitcoin/HIGH is
+        now a CUMULATIVE probability across the whole multi-attempt
+        hazard window (hedge_attempt_hazard), not a single-shot rate at
+        entry_count==1 -- simulate the real decide_hedge call pattern
+        (one activity, entry_count advancing 1..10, stopping at the
+        first trigger) across many independent markets and check the
+        empirical hedge-at-all rate reproduces the calibrated target."""
+        n = 2000
+        triggered = 0
+        for seed in range(n):
+            rng = random.Random(seed)
+            activity = MarketActivityState()
+            activity.record_entry("Up", notional_usd=10.0, regime="HIGH")
+            for _ in range(10):  # entry_count 1..10, matching the modeled window
+                if decide_hedge("Bitcoin", activity, rng) is not None:
+                    triggered += 1
+                    break
+                activity.entry_count += 1
         rate = triggered / n
-        assert abs(rate - 0.2967) < 0.05
+        assert abs(rate - 0.2967) < 0.03
+
+    def test_first_attempt_hazard_is_lower_than_the_old_single_shot_probability(self):
+        """The whole point of the fix: entry_count==1's own hazard must be
+        LESS than the old design's flat 0.2967 (BNB/MID's calibrated
+        cumulative, used here since it's the largest and most sensitive to
+        a broken rescale), since it's now only one of several chances
+        spread across the market's lifetime rather than the only one."""
+        p1 = bc.hedge_attempt_hazard("BNB", "MID", 1)
+        assert 0 < p1 < bc.hedge_trigger_probability("BNB", "MID")
 
 
 class TestBuildOrderIntentHedge:

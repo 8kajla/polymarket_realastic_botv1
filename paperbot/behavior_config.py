@@ -465,3 +465,104 @@ def hedge_trigger_probability(asset: str, primary_regime: str) -> float:
 
 def hedge_size_ratio(asset: str, primary_regime: str) -> float:
     return HEDGE_SIZE_RATIO.get(asset, {}).get(primary_regime, _DEFAULT_HEDGE_SIZE_RATIO)
+
+
+# ---------------------------------------------------------------------------
+# Hedge TIMING. Added 2026-09-08, correcting a confirmed live mismatch:
+# decide_hedge previously checked ONLY at entry_count==1 (the market's
+# literal 2nd entry) using HEDGE_TRIGGER_PROBABILITY directly as a
+# single-shot probability there. Fresh re-derivation from the full mirror
+# (803,047 trades / 77,753 markets, 39,228 of them dual-sided) found the
+# real first-opposite-side-entry index distribution is nowhere near that
+# concentrated: only 23.5% of real hedges land at index 1; median index
+# is 4, mean 5.59, and coverage only reaches 85% by index 10. The
+# single-check design was structurally missing the majority of when
+# hedges actually happen -- not a sizing or trigger-rate problem, a
+# TIMING one.
+#
+# _HEDGE_HAZARD_SHAPE is the empirical hazard curve -- P(first opposite-
+# side entry happens exactly at this entry_count | market reached this
+# entry_count without having hedged yet) -- for entry_count = 1..10
+# (covers 85.4% of real hedges; the long tail past 10 contributes little
+# and this bot's 90-second timing cutoff usually ends a market's entries
+# well before an index that deep anyway).
+#
+# DISCLOSED DEVIATION from this file's own "never blended across assets"
+# rule (see module docstring): this shape is pooled across all six
+# assets, not measured per-asset. Per-(asset, regime) hazard curves would
+# need to split ~39k dual-sided markets across 24 cells -- far too thin
+# to trust the SHAPE at that granularity (unlike HEDGE_TRIGGER_PROBABILITY
+# and HEDGE_SIZE_RATIO above, which only need one number per cell and
+# have enough support for that). The compromise, standard in survival
+# analysis (a shared baseline hazard, scaled per group -- the same idea
+# as a Cox proportional-hazards model): use this one pooled TIMING shape
+# for every cell, but rescale it per (asset, regime) so the cumulative
+# probability across the whole attempt sequence exactly reproduces that
+# cell's own already-calibrated HEDGE_TRIGGER_PROBABILITY. Nothing about
+# the OVERALL per-cell hedge frequency changes -- only the shape of WHEN,
+# within a market, that single hedge gets attempted.
+_HEDGE_HAZARD_SHAPE = [
+    0.1281, 0.0998, 0.0894, 0.0861, 0.0805,
+    0.0799, 0.0811, 0.0793, 0.0774, 0.0759,
+]
+
+
+def _solve_hazard_scale(shape, target_cumulative, lo=0.0, hi=50.0, iters=60):
+    """Binary search for the odds-scale k such that applying it to every
+    entry of `shape` via the proportional-odds transform (odds = h/(1-h),
+    scaled_odds = k*odds, scaled_h = scaled_odds/(1+scaled_odds) -- always
+    stays in [0, 1), unlike naive linear scaling of h itself) yields a
+    survival-curve cumulative probability equal to target_cumulative.
+    cumulative_for(k) is monotonically increasing in k, so bisection is
+    exact to float precision within `iters` steps."""
+    def cumulative_for(k):
+        survival = 1.0
+        for h in shape:
+            odds = h / (1 - h)
+            scaled_h = (k * odds) / (1 + k * odds)
+            survival *= (1 - scaled_h)
+        return 1 - survival
+
+    if target_cumulative <= 0:
+        return 0.0
+    for _ in range(iters):
+        mid = (lo + hi) / 2
+        if cumulative_for(mid) < target_cumulative:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def _build_hedge_attempt_hazards():
+    """Precomputed once at import time (24 cells x ~60 bisection steps x
+    10 hazard evaluations -- trivial cost): (asset, regime) -> list of
+    per-attempt hazards for entry_count 1..len(_HEDGE_HAZARD_SHAPE)."""
+    out = {}
+    for asset, regimes in HEDGE_TRIGGER_PROBABILITY.items():
+        out[asset] = {}
+        for regime, target in regimes.items():
+            k = _solve_hazard_scale(_HEDGE_HAZARD_SHAPE, target)
+            hazards = []
+            for h in _HEDGE_HAZARD_SHAPE:
+                odds = h / (1 - h)
+                scaled_h = (k * odds) / (1 + k * odds)
+                hazards.append(scaled_h)
+            out[asset][regime] = hazards
+    return out
+
+
+HEDGE_ATTEMPT_HAZARDS = _build_hedge_attempt_hazards()
+
+
+def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) -> float:
+    """attempt_index is entry_count (1 = the market's 2nd entry, matching
+    decide_hedge's old single check point; up to len(_HEDGE_HAZARD_SHAPE)).
+    Returns 0.0 past the modeled window or for an unknown cell -- the
+    caller (decide_hedge) treats that as "never triggers from here",
+    exactly like today's behavior once a market ages past where a hedge
+    was ever going to happen."""
+    hazards = HEDGE_ATTEMPT_HAZARDS.get(asset, {}).get(primary_regime)
+    if not hazards or attempt_index < 1 or attempt_index > len(hazards):
+        return 0.0
+    return hazards[attempt_index - 1]

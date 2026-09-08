@@ -101,23 +101,33 @@ def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
 
 def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random) -> Optional[str]:
     """
-    Returns the hedge side ("Up"/"Down") if this market's SECOND entry
-    should be a deliberate insurance leg on the opposite side from the
-    first entry, or None if not (in which case the caller falls through
-    to the ordinary decide_side/decide_size flow).
+    Returns the hedge side ("Up"/"Down") if THIS entry should be a
+    deliberate insurance leg on the opposite side from the first entry,
+    or None if not (in which case the caller falls through to the
+    ordinary decide_side/decide_size flow).
 
-    Only ever fires at entry_count == 1 (about to place the 2nd entry) and
-    only if no hedge has been placed yet for this market -- see
-    HEDGE_TRIGGER_PROBABILITY's docstring in behavior_config.py for why
-    this is modeled as a single roll rather than a repeated one.
+    CHANGED 2026-09-08 (was: only ever fires at entry_count == 1, the
+    market's literal 2nd entry, using HEDGE_TRIGGER_PROBABILITY as a
+    single-shot probability there). Fresh re-derivation from the full
+    trader mirror found that design structurally missed most real
+    hedges: only 23.5% of them land at index 1; median index is 4. Now
+    checked at EVERY entry_count from 1 up through behavior_config's
+    modeled hazard window, using hedge_attempt_hazard's per-attempt
+    conditional probability -- rescaled so the cumulative probability
+    across the whole sequence still exactly reproduces
+    HEDGE_TRIGGER_PROBABILITY's calibrated overall frequency (unchanged),
+    while the SHAPE of when it fires now matches the real timing
+    distribution instead of concentrating everything at one point. Still
+    only ever places once per market (hedge_placed guards every attempt,
+    same as before).
     """
-    if activity.entry_count != 1 or activity.hedge_placed or activity.first_entry_regime is None:
+    if activity.entry_count < 1 or activity.hedge_placed or activity.first_entry_regime is None:
         return None
     dominant = activity.dominant_side()
     if dominant is None:
         return None
-    p = bc.hedge_trigger_probability(asset, activity.first_entry_regime)
-    if rng.random() < p:
+    p = bc.hedge_attempt_hazard(asset, activity.first_entry_regime, activity.entry_count)
+    if p > 0 and rng.random() < p:
         return "Down" if dominant == "Up" else "Up"
     return None
 
