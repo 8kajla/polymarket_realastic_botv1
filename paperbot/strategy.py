@@ -283,10 +283,22 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # platform constraint rather than force an unrealistic fill.
         # Logged (unlike a bare None-return) since a small-bankroll
         # instance scaling every entry down needs this visible to tell a
-        # genuine liquidity/timing skip from a scale-induced one.
+        # genuine liquidity/timing skip from a scale-induced one. hedge=
+        # included specifically to check a live hypothesis (2026-09-08):
+        # hedge notional is DELIBERATELY small (proportional insurance,
+        # not a full entry -- see HEDGE_SIZE_RATIO, whose HIGH-regime
+        # values are as low as 0.016-0.048 of the dominant side's cost),
+        # so it may be falling below the real exchange minimum far more
+        # often than ordinary entries, especially in CORE/HIGH where the
+        # ratio is smallest and the price (hence dollar minimum) is
+        # highest -- a real, structural explanation for hedge trigger
+        # probabilities firing on paper but almost never producing a
+        # settled hedge (confirmed live: 1 of 213 settled records
+        # flagged is_hedge, despite 19 of 22 markets in the same window
+        # reaching a second entry).
         logger.info(
-            "SKIP asset=%s regime=%s pos=%s: notional $%.4f below exchange min "
-            "($%.4f = %.2f shares * $%.4f)", market.asset, regime, position_tier,
+            "SKIP asset=%s regime=%s pos=%s hedge=%s: notional $%.4f below exchange min "
+            "($%.4f = %.2f shares * $%.4f)", market.asset, regime, position_tier, is_hedge,
             notional, min_size * price, min_size, price,
         )
         return None
