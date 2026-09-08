@@ -897,6 +897,27 @@ symptom, before it could become one:
     AWS. See `trader_intel/README.md` for the full build and bug-catch
     trail.
 
+20. **Caught the trader going silent across ALL assets for 6+ hours
+    while doing a routine status check** (verified directly against
+    Polymarket's live API, not a mirror-freshness bug on our end). Every
+    strategy-change event investigated this session (asset adds/drops)
+    could only ever be reconstructed AFTER the fact from historical
+    aggregates -- this is the first time a real behavioral discontinuity
+    has been caught while it's actually happening. Built durable
+    detection so the resumption moment itself isn't lost the same way:
+    `fetch_trades.py`'s `check_trader_silence_resumption` compares each
+    incremental poll's earliest new trade against the previously-known
+    most-recent timestamp; a gap past `TRADER_SILENCE_THRESHOLD_SECONDS`
+    (default 2h) durably logs the exact gap length plus the first 20
+    trades back (asset/side/price/size/timing) to
+    `trader_silence_resumption_alerts.jsonl`, and surfaces a loud,
+    `ERROR`-level `TRADER_RESUMED_AFTER_SILENCE` line in `live_poller.py`
+    the same way the existing per-asset dormancy watch does. A
+    session-persistent watch polls for it every 60s so the resumption
+    gets investigated (own recent PNL, external market conditions right
+    at that moment) while the context is still fresh, not reconstructed
+    coarsely from aggregates the way every earlier event had to be.
+
 ## Provenance
 
 `behavior_config.py`'s tables are calibrated on `trade_behavioral_analysis.json`,
