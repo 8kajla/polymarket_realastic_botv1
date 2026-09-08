@@ -503,13 +503,29 @@ class PaperBot:
                 logger.info("resolution inferred from decisive price (Gamma closed=False) market=%s "
                             "outcomePrices=%s", market.slug, raw.get("outcomePrices"))
 
-            settled = [
-                self.ledger.settle_order(order, winning_side)
-                for order in self.fill_sim.orders.values()
+            with_fills = [
+                order for order in self.fill_sim.orders.values()
                 if order.condition_id == cid and order.filled_size > 0
             ]
+            settled = [self.ledger.settle_order(order, winning_side) for order in with_fills]
             settled = [r for r in settled if r is not None]
             self.ledger.save()
+            # Diagnostic (2026-09-08): settle_order() silently returns None
+            # for a filled order whose status isn't FILLED/PARTIALLY_FILLED
+            # (e.g. CANCELLED after a partial fill, if that ever happens --
+            # see manage_open_orders' drift-cancel path) -- surfacing the
+            # status breakdown here makes that gap visible instead of just
+            # a settled_orders count lower than expected with no way to
+            # tell why from the logs alone.
+            if len(with_fills) != len(settled):
+                status_counts: dict[str, int] = {}
+                for order in with_fills:
+                    status_counts[order.status.value] = status_counts.get(order.status.value, 0) + 1
+                logger.warning(
+                    "RESOLUTION_GAP market=%s: %d orders had fills but only %d settled -- "
+                    "status breakdown of the %d with fills: %s",
+                    market.slug, len(with_fills), len(settled), len(with_fills), status_counts,
+                )
             logger.info(
                 "RESOLVED market=%s asset=%s winning_side=%s settled_orders=%d "
                 "realized_pnl_total=%.4f",
