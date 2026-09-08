@@ -246,6 +246,16 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
 
     ok, reason = availability_check(side_book)
     if not ok:
+        # Diagnostic (2026-09-08): this was a silent None-return -- same
+        # blind spot the min-size skip had before it got a log line.
+        # Investigating why HIGH-band participation is far below the real
+        # trader's (3% of placements vs his 13% of actual activity in a
+        # same-window comparison) needs to see whether HIGH-band
+        # opportunities are being SEEN but REJECTED here (thin/wide book,
+        # which is structurally more likely right at a price extreme) vs
+        # never reached at all -- indistinguishable from the outside
+        # without this.
+        logger.info("SKIP asset=%s regime=%s: %s", market.asset, regime, reason)
         return None
 
     position_tier = activity.position_tier()
