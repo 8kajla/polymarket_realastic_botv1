@@ -458,17 +458,24 @@ def side_persistence_for(asset: str, held_side_regime: str) -> float:
 # side's cumulative cost so far (not the position-count sizing curve --
 # hedge sizing scales with what it's protecting, not with entry index).
 # ---------------------------------------------------------------------------
-# None of the six assets' hedge tables were recalibrated in the
-# 2026-09-08 pass (see ASSET_REGIME_DISTRIBUTION_PCT's Solana/Bitcoin
-# comments for what WAS, for the three currently-active assets) -- these
-# need a MARKET-level breakdown by first-entry regime, and even Bitcoin
-# (the most active of the three) only has ~340 post-gap markets, split
-# across 4 regimes -- too thin for CORE/HIGH first-entries specifically
-# to trust at all. Left at historical values; revisit once more data has
-# accumulated.
+# RECALIBRATED AGAIN 2026-09-08 (later pass, last-14-days only, same drift
+# check already applied to ENTRY_SIZING_USD/ASSET_REGIME_DISTRIBUTION_PCT/
+# SIDE_PERSISTENCE this session): a MARKET-level breakdown (not trade-level
+# -- hedge frequency is "did this market ever go dual-sided", one data
+# point per market, so this table's own trust bar is n>=200 MARKETS, much
+# smaller in raw count than the trade-level tables' n>=500 but comparably
+# meaningful given what it's counting). Most cells stayed too thin even in
+# 14 days (as low as 8 markets for Bitcoin/HIGH -- not touched). Two cells
+# cleared both the market-count bar and a genuine, large, significant gap:
+#   Bitcoin/MID:  0.6697 -> 0.8018 (n=328 markets, +13.2pp)
+#   Ethereum/CHEAP: 0.4006 -> 0.5336 (n=223 markets, +13.3pp)
+# Both moved UP -- hedging MORE often recently -- consistent with the
+# smaller, more risk-averse recent sizing found in the same pass
+# (ENTRY_SIZING_USD's recalibration above). Solana and every other cell
+# checked either weren't significant or stayed below the trust bar.
 HEDGE_TRIGGER_PROBABILITY = {
-    "Bitcoin":     {"CHEAP": 0.6242, "MID": 0.6697, "CORE": 0.4754, "HIGH": 0.2967},
-    "Ethereum":    {"CHEAP": 0.4006, "MID": 0.6562, "CORE": 0.5064, "HIGH": 0.2971},
+    "Bitcoin":     {"CHEAP": 0.6242, "MID": 0.8018, "CORE": 0.4754, "HIGH": 0.2967},
+    "Ethereum":    {"CHEAP": 0.5336, "MID": 0.6562, "CORE": 0.5064, "HIGH": 0.2971},
     "Solana":      {"CHEAP": 0.5950, "MID": 0.7286, "CORE": 0.5523, "HIGH": 0.3039},
     "Dogecoin":    {"CHEAP": 0.3515, "MID": 0.4531, "CORE": 0.6209, "HIGH": 0.3041},
     "Hyperliquid": {"CHEAP": 0.3506, "MID": 0.5819, "CORE": 0.5628, "HIGH": 0.3079},
