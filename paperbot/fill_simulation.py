@@ -23,6 +23,35 @@ logger = logging.getLogger("paperbot.fill_simulation")
 _order_id_counter = itertools.count(1)
 
 
+def seed_order_id_counter(start_at: int) -> None:
+    """
+    Reset the module-level order_id counter to begin at `start_at`. Call
+    once at process startup, AFTER loading the persisted ledger -- see
+    PaperBot.__init__, which seeds this past every order_id its loaded
+    ledger has ever recorded a settlement for.
+
+    CONFIRMED LIVE (2026-09-08) as the root cause of a severe, silent bug:
+    order_id was a plain per-process counter starting at 1 on every
+    restart, but Ledger._settled_order_ids (used by settle_order() as an
+    idempotency check, keyed ONLY on this small integer -- no per-run
+    namespace) persists across restarts, loaded fresh from disk every
+    time. On a long-running ledger restarted many times, a fresh
+    process's own order_id range collided almost entirely with order_ids
+    already used by PRIOR runs: settle_order() saw `order_id in
+    self._settled_order_ids` as True (matching some unrelated OLD order
+    that happened to reuse the same small integer) and silently refused
+    to record the real, brand-new settlement -- not an error, not a log
+    line, just a missing record. Measured live: of one run's first 1,299
+    order_ids, 1,253 (96.5%) had already been used by an earlier run,
+    and only 54 of over 500 genuinely filled orders ever made it into the
+    ledger. This was the dominant cause of the bot's settled-trade counts
+    (and therefore entries/market, win rate, and PNL) looking far lower
+    than what was actually happening.
+    """
+    global _order_id_counter
+    _order_id_counter = itertools.count(start_at)
+
+
 class OrderStatus(str, Enum):
     PENDING = "PENDING"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"

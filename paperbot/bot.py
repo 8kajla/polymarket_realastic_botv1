@@ -29,7 +29,7 @@ import requests
 from . import behavior_config as bc
 from . import config
 from .book import BookState, MarketWebSocketClient, bootstrap_book_state
-from .fill_simulation import FillSimulator
+from .fill_simulation import FillSimulator, seed_order_id_counter
 from .ledger import Ledger
 from .market_discovery import (
     Market,
@@ -78,6 +78,15 @@ class PaperBot:
         self.discovery = MarketDiscovery(session=self.session, assets=self.assets)
         self.fill_sim = FillSimulator(queue_safety_factor=queue_safety_factor)
         self.ledger = Ledger.load()
+        # Seed order_id past every id this ledger has ever settled --
+        # otherwise a fresh restart's own order_id range (which always
+        # starts at 1) can collide with historical order_ids still in
+        # Ledger._settled_order_ids, and settle_order() silently drops
+        # real new settlements it mistakes for already-recorded ones. See
+        # seed_order_id_counter's docstring for the confirmed live impact.
+        existing_order_ids = {r.order_id for r in self.ledger.records}
+        if existing_order_ids:
+            seed_order_id_counter(max(existing_order_ids) + 1)
         self.rng = random.Random(seed)
 
         self.book_states: dict[str, BookState] = {}          # token_id -> BookState

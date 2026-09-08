@@ -5,6 +5,7 @@ by construction, such as state going stale across the strategy /
 fill-simulation / order-tracking boundary.
 """
 import asyncio
+import json
 import os
 import signal
 import time
@@ -761,6 +762,78 @@ class TestBankrollGate:
         asyncio.run(bot.strategy_tick(now=1000.0))
 
         assert market.condition_id in bot.resting_order_ids
+
+
+class TestOrderIdCollisionAcrossRestarts:
+    """Direct regression test for a confirmed severe live bug (2026-09-08):
+    order_id was a plain per-process counter starting at 1 on every
+    restart, but Ledger._settled_order_ids (settle_order()'s idempotency
+    check, keyed only on this small integer) persists across restarts,
+    loaded fresh from disk every time. A fresh run's own order_id range
+    collided with order_ids already used by prior runs, and settle_order()
+    silently refused to record the real, brand-new settlement -- measured
+    live: 96.5% of one run's first 1,299 order_ids had already been used
+    by an earlier run, and only 54 of 500+ genuinely filled orders ever
+    made it into the ledger. Fixed by seeding the counter past the loaded
+    ledger's max order_id at PaperBot construction time."""
+
+    def test_fresh_order_ids_never_collide_with_a_loaded_ledgers_history(self):
+        # Simulate a ledger from prior runs whose order_ids go far higher
+        # than a fresh process's own counter would ever start at.
+        old_record = {
+            "order_id": 500, "condition_id": "old-cond", "asset": "Bitcoin",
+            "regime": "MID", "side": "Up", "entry_price": 0.5, "filled_size": 2.0,
+            "entry_cost": 1.0, "winning_side": "Up", "won": True, "payout": 2.0,
+            "pnl": 1.0, "settled_at": 1000.0, "is_floor_lot": False, "is_hedge": False,
+        }
+        config.LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        config.LEDGER_PATH.write_text(json.dumps({"records": [old_record]}))
+
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market(condition_id="cond-new")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        assert market.condition_id in bot.resting_order_ids
+        new_order_id = next(iter(bot.resting_order_ids[market.condition_id]))
+        assert new_order_id > 500, (
+            "a fresh order_id collided with (or fell below) the loaded ledger's "
+            "historical max -- settle_order() would silently drop this order's "
+            "real settlement, mistaking it for the old order_id=500 record"
+        )
+
+    def test_settlement_actually_records_after_seeding(self):
+        """End-to-end: not just that the id differs, but that a real
+        settlement for a fresh order actually lands in ledger.records --
+        this is what was silently failing before the fix. Places through
+        the real strategy_tick pipeline (not a hand-picked order_id) to
+        prove the fix end-to-end."""
+        old_record = {
+            "order_id": 3, "condition_id": "old-cond", "asset": "Bitcoin",
+            "regime": "MID", "side": "Up", "entry_price": 0.5, "filled_size": 2.0,
+            "entry_cost": 1.0, "winning_side": "Up", "won": True, "payout": 2.0,
+            "pnl": 1.0, "settled_at": 1000.0, "is_floor_lot": False, "is_hedge": False,
+        }
+        config.LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        config.LEDGER_PATH.write_text(json.dumps({"records": [old_record]}))
+
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market(condition_id="new-cond")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        placed_id = next(iter(bot.resting_order_ids[market.condition_id]))
+        placed_order = bot.fill_sim.orders[placed_id]
+        placed_order.fills.append(Fill(size=placed_order.original_size, price=placed_order.price, ts=1001.0))
+        placed_order.status = OrderStatus.FILLED
+
+        record = bot.ledger.settle_order(placed_order, winning_side=placed_order.side)
+
+        assert record is not None, (
+            "settle_order() silently dropped a genuinely new settlement -- "
+            "the exact bug this fix closes"
+        )
+        assert bot.ledger.realized_pnl() == pytest.approx(1.0 + record.pnl)
 
 
 class TestSizeScaleFactor:
