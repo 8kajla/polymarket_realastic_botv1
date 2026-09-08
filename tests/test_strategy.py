@@ -164,6 +164,44 @@ class TestSizingDecision:
         median = bc.median_entry_notional("Bitcoin", "CORE", "first")
         assert median * 0.8 <= notional <= median * 1.2
 
+    def test_within_band_multiplier_scales_size_with_price(self):
+        # Bitcoin HIGH: band_mean_price=0.947. Average over many draws at
+        # a low-in-band price should land meaningfully below the average
+        # at a high-in-band price, holding regime/position_tier fixed --
+        # confirms decide_size actually applies within_band_size_multiplier,
+        # not just that the multiplier function itself works in isolation.
+        def avg_notional(price, n=400):
+            rng = random.Random(5)
+            total = 0.0
+            for _ in range(n):
+                notional, _ = decide_size("Bitcoin", "HIGH", "4th_plus", price, rng)
+                total += notional
+            return total / n
+
+        low_avg = avg_notional(0.91)
+        high_avg = avg_notional(0.99)
+        assert low_avg < high_avg
+
+    def test_within_band_multiplier_is_a_noop_in_cheap_and_mid(self):
+        # CHEAP/MID weren't calibrated for this -- price shouldn't move
+        # the average size within those regimes via this mechanism.
+        def avg_notional(regime, price, n=400):
+            rng = random.Random(9)
+            total = 0.0
+            for _ in range(n):
+                notional, is_floor = decide_size("Bitcoin", regime, "4th_plus", price, rng)
+                if not is_floor:
+                    total += notional
+            return total / n
+
+        low = avg_notional("MID", 0.31)
+        high = avg_notional("MID", 0.69)
+        # Same rng seed consumed identically in both calls (Bitcoin's
+        # floor-lot probability is 0 everywhere, so there's no branching
+        # to desync the draw sequence) -- a true no-op multiplier means
+        # these must match exactly, not just approximately.
+        assert low == high
+
 
 class TestBuildOrderIntent:
     def test_returns_none_under_timing_cutoff(self):

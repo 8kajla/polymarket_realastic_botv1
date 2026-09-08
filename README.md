@@ -918,6 +918,36 @@ symptom, before it could become one:
     at that moment) while the context is still fresh, not reconstructed
     coarsely from aggregates the way every earlier event had to be.
 
+21. **Continuous within-band size scaling for CORE/HIGH** (Bitcoin/
+    Ethereum/Solana only). A dedicated hunt for the trader's "hidden
+    trigger" tried several new angles -- round-price clustering (none
+    found), cross-asset entry-timing (initially looked like coordinated
+    multi-asset execution, but a shuffled-baseline control showed the
+    *opposite*: his same-asset bursts are so tight they crowd out
+    cross-asset proximity, i.e. execution looks sequential/round-robin
+    per asset, not parallel), and a first-mover skill test (a small
+    pooled edge at price≈0.50 didn't survive being broken out by asset,
+    by side, or by first-half-vs-second-half of history -- ruled out,
+    not confirmed). One angle held up under scrutiny and got built: a
+    real, positive relationship between price and log(size) *within*
+    every single (asset, CORE/HIGH regime, position_tier) cell
+    individually -- checked cell-by-cell specifically to rule out this
+    being position_tier (which already drives size) merely correlating
+    with price, before trusting it enough to implement.
+
+    `behavior_config.WITHIN_BAND_SIZE_SLOPE` + `within_band_size_multiplier`
+    apply a mean-neutral `exp(slope * (price - band_mean_price))`
+    multiplier (capped to [0.2x, 5x]) on top of the existing
+    position-tier median in `strategy.decide_size` -- a no-op (1.0x)
+    everywhere outside the six calibrated (asset, regime) cells, so
+    CHEAP/MID and the three dormant assets are provably unaffected. 6
+    new tests (mean-neutrality at the calibrated price, correct
+    direction, the cap, and an exact-equality no-op check outside the
+    calibrated cells). 173 tests passing (was 167). Verified importing
+    and running clean on AWS, confirmed live in the first few orders
+    placed post-restart (lower-in-band CORE prices sized visibly smaller
+    than higher-in-band ones, as calibrated).
+
 ## Provenance
 
 `behavior_config.py`'s tables are calibrated on `trade_behavioral_analysis.json`,

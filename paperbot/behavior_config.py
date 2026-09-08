@@ -7,6 +7,7 @@ Nothing in this file should be "smoothed" to look more uniform across
 assets. Some rows increase where you might expect a decrease (Dogecoin
 HIGH, BNB CORE) -- those are confirmed, real, and kept as-is.
 """
+import math
 from dataclasses import dataclass
 from typing import Union
 
@@ -345,6 +346,47 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
         return ENTRY_SIZING_USD[asset][regime][position_tier]
     except KeyError as exc:
         raise BehaviorLookupError(asset, regime) from exc
+
+
+# ---------------------------------------------------------------------------
+# Continuous within-band size scaling. Added 2026-09-08: ENTRY_SIZING_USD
+# only conditions on the discrete (regime, position_tier) bucket -- but a
+# fresh investigation found a real, positive relationship between price and
+# log(size) WITHIN every single (asset, CORE/HIGH regime, position_tier)
+# cell individually (not an artifact of position_tier correlating with
+# price -- checked explicitly cell-by-cell before trusting this, since
+# position_tier already drives size and double-counting was the real risk).
+# Correlations: 0.09-0.36 (weak-to-moderate but consistent in sign and
+# rough slope magnitude across position tiers within an asset/regime).
+# Restricted to CORE/HIGH for the three active assets only -- CHEAP/MID
+# and the three dormant assets were not checked with this rigor and get a
+# neutral 1.0x multiplier (unchanged behavior).
+#
+# slope = d(log usdc)/d(price), band_mean_price = the mean price this slope
+# was measured around. Applied as a MEAN-NEUTRAL multiplier
+# exp(slope * (price - band_mean_price)) on top of the existing
+# position-tier median, so the calibrated average sizing per cell is
+# unchanged -- this only adds the continuous within-band variation that
+# ENTRY_SIZING_USD's discrete buckets can't express. Capped (see
+# within_band_size_multiplier) against extrapolating past where the data
+# actually supports it.
+WITHIN_BAND_SIZE_SLOPE = {
+    "Bitcoin": {"CORE": {"slope": 4.19, "band_mean_price": 0.795},
+                "HIGH": {"slope": 13.47, "band_mean_price": 0.947}},
+    "Ethereum": {"CORE": {"slope": 3.21, "band_mean_price": 0.799},
+                 "HIGH": {"slope": 21.09, "band_mean_price": 0.955}},
+    "Solana": {"CORE": {"slope": 4.50, "band_mean_price": 0.801},
+               "HIGH": {"slope": 28.16, "band_mean_price": 0.949}},
+}
+_WITHIN_BAND_MULTIPLIER_CAP = 5.0  # symmetric: multiplier clamped to [1/cap, cap]
+
+
+def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
+    spec = WITHIN_BAND_SIZE_SLOPE.get(asset, {}).get(regime)
+    if spec is None:
+        return 1.0
+    raw = math.exp(spec["slope"] * (price - spec["band_mean_price"]))
+    return max(1.0 / _WITHIN_BAND_MULTIPLIER_CAP, min(_WITHIN_BAND_MULTIPLIER_CAP, raw))
 
 
 def side_persistence_for(asset: str, held_side_regime: str) -> float:

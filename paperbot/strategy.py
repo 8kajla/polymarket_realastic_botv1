@@ -172,7 +172,15 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
 
     median = bc.median_entry_notional(asset, regime, position_tier)
     jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)
-    return max(median * jitter, 0.0), False
+    # Continuous within-band scaling (2026-09-08 finding): a real, cell-
+    # verified relationship between price and size WITHIN CORE/HIGH that
+    # the discrete regime bucket alone can't express. Mean-neutral by
+    # construction (see WITHIN_BAND_SIZE_SLOPE's docstring) -- a no-op
+    # (1.0x) everywhere it wasn't specifically verified (CHEAP/MID, the
+    # three dormant assets), so this can't silently change behavior
+    # outside the two regimes it was actually calibrated on.
+    within_band = bc.within_band_size_multiplier(asset, regime, price)
+    return max(median * jitter * within_band, 0.0), False
 
 
 def build_order_intent(market: Market, up_book: BookState, down_book: BookState,

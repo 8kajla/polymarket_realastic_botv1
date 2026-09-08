@@ -182,6 +182,50 @@ class TestFloorLotProbability:
             bc.floor_lot_probability("Bitcoin", "CHEAP", "5th")
 
 
+class TestWithinBandSizeMultiplier:
+    """Continuous price-vs-size scaling within CORE/HIGH, added 2026-09-08.
+    Verified cell-by-cell (asset, regime, position_tier) before trusting it
+    wasn't just position_tier correlating with price -- see
+    behavior_config.WITHIN_BAND_SIZE_SLOPE's docstring."""
+
+    def test_neutral_everywhere_not_specifically_calibrated(self):
+        # CHEAP/MID, and the three dormant assets even in CORE/HIGH, must
+        # be an exact no-op -- this feature was only verified for
+        # Bitcoin/Ethereum/Solana's CORE and HIGH bands.
+        for asset in bc.ASSET_NAMES:
+            for regime in ("CHEAP", "MID"):
+                assert bc.within_band_size_multiplier(asset, regime, 0.5) == 1.0
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            for regime in ("CORE", "HIGH"):
+                assert bc.within_band_size_multiplier(asset, regime, 0.8) == 1.0
+
+    def test_mean_neutral_at_the_calibrated_band_mean_price(self):
+        # At exactly band_mean_price, the multiplier must be 1.0 -- that's
+        # what makes this mean-neutral relative to the existing median.
+        for asset, regimes in bc.WITHIN_BAND_SIZE_SLOPE.items():
+            for regime, spec in regimes.items():
+                mult = bc.within_band_size_multiplier(asset, regime, spec["band_mean_price"])
+                assert abs(mult - 1.0) < 1e-9
+
+    def test_increases_with_price_within_band(self):
+        # The confirmed direction: higher price -> larger size, for every
+        # calibrated (asset, regime) cell.
+        for asset, regimes in bc.WITHIN_BAND_SIZE_SLOPE.items():
+            for regime, spec in regimes.items():
+                mean = spec["band_mean_price"]
+                low = bc.within_band_size_multiplier(asset, regime, mean - 0.02)
+                high = bc.within_band_size_multiplier(asset, regime, mean + 0.02)
+                assert low < 1.0 < high, f"{asset}/{regime}: expected low<1.0<high, got {low}/{high}"
+
+    def test_capped_against_extrapolation(self):
+        # Ethereum HIGH has the steepest slope (21.09) -- at the extreme
+        # edge of the band this must still be bounded, not blow up.
+        mult = bc.within_band_size_multiplier("Ethereum", "HIGH", 1.0)
+        assert mult <= 5.0
+        mult_low = bc.within_band_size_multiplier("Ethereum", "HIGH", 0.90)
+        assert mult_low >= 1.0 / 5.0
+
+
 class TestHedgeCalibration:
     """Confirmed from the full historical dataset: dual-sided markets have
     a dramatically better worst-case outcome than single-sided ones
