@@ -313,24 +313,52 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
 
     if min_size is not None and notional < min_size * price:
         # This simulated order would be rejected by the exchange's own
-        # runtime-fetched minimum order size -- most relevant for the
-        # floor-lot tier, whose whole point is a tiny notional, and for
-        # SIZE_SCALE_FACTOR < 1.0 (see config.py), which shrinks the
-        # ordinary curve toward that same real floor. Respect the real
-        # platform constraint rather than force an unrealistic fill.
-        # Logged (unlike a bare None-return) since a small-bankroll
-        # instance scaling every entry down needs this visible to tell a
-        # genuine liquidity/timing skip from a scale-induced one. By this
-        # point is_hedge is always False here -- a hedge that failed this
-        # same check already got its own SKIP line and fell through above;
-        # this one only fires for an ordinary entry (or a hedge's
-        # ordinary-entry fallback) that's ALSO too small.
+        # runtime-fetched minimum order size. By this point is_hedge is
+        # always False here -- a hedge that failed this same check
+        # already got its own SKIP line and fell through above; this
+        # only fires for an ordinary entry (or a hedge's ordinary-entry
+        # fallback) that's ALSO too small.
+        floor_notional = min_size * price
+        if is_floor_lot:
+            # Floor-lot's whole point IS a tiny, often-below-minimum
+            # notional (see FLOOR_LOT_SIZE_SHARES) -- matches how his own
+            # tiny partial-fill remainders look in the real trade data
+            # (confirmed live 2026-09-08: the trader's per-fill share-size
+            # distribution has a long near-zero tail, p10=0.02 shares,
+            # almost certainly leftover fragments of larger orders rather
+            # than genuine sub-minimum placements). Bumping this tier up
+            # to the real minimum would defeat its entire purpose, so it
+            # stays exempt and genuinely skips, unchanged from before.
+            logger.info(
+                "SKIP asset=%s regime=%s pos=%s hedge=%s: notional $%.4f below exchange min "
+                "($%.4f = %.2f shares * $%.4f)", market.asset, regime, position_tier, is_hedge,
+                notional, floor_notional, min_size, price,
+            )
+            return None
+        # CONFIRMED LIVE (2026-09-08): silently skipping every ORDINARY
+        # entry that fell below the minimum was a real, large problem --
+        # 9,616 skips vs 5,542 successful placements in one ~8h window,
+        # heavily concentrated in cells the SAME night's recalibration
+        # (matching his smaller recent sizing) had shrunk toward this
+        # exact floor. We replicate him by CAPITAL (ENTRY_SIZING_USD is
+        # his measured dollar size, share count is only ever a derived,
+        # price-dependent quantity), but the exchange's minimum is a
+        # SHARE quantity -- the same dollar target needs more capital to
+        # clear it at a high price than a low one, so a purely
+        # dollar-calibrated median will sometimes fall short depending on
+        # exactly where price sits within its band at decision time.
+        # Bumping up to the real minimum (using the ACTUAL current price,
+        # not a worst-case guess) instead of skipping preserves both
+        # goals at once: the calibrated median still governs sizing
+        # whenever it's legally placeable, and a trade that would
+        # otherwise be lost entirely now happens at the smallest size the
+        # exchange actually allows, instead of not happening at all.
         logger.info(
-            "SKIP asset=%s regime=%s pos=%s hedge=%s: notional $%.4f below exchange min "
-            "($%.4f = %.2f shares * $%.4f)", market.asset, regime, position_tier, is_hedge,
-            notional, min_size * price, min_size, price,
+            "BUMP asset=%s regime=%s pos=%s hedge=%s: notional $%.4f below exchange min, "
+            "raised to $%.4f (%.2f shares * $%.4f) instead of skipping",
+            market.asset, regime, position_tier, is_hedge, notional, floor_notional, min_size, price,
         )
-        return None
+        notional = floor_notional
 
     size_shares = notional / price if price > 0 else 0.0
     if size_shares <= 0:

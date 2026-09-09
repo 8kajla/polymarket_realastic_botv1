@@ -266,18 +266,39 @@ class TestBuildOrderIntent:
         cheap_median = bc.median_entry_notional(market.asset, "CHEAP", "first")
         assert intent.notional_usd < cheap_median * 2  # generous jitter allowance
 
-    def test_respects_runtime_minimum_order_size(self):
-        """A floor-lot-sized notional below the market's live-fetched
-        minimum order size must not produce an order."""
+    def test_floor_lot_still_skips_below_the_runtime_minimum(self):
+        """Floor-lot's whole point is a tiny, often-below-minimum notional
+        -- it must still genuinely skip (not get bumped up), unlike the
+        ordinary curve below."""
+        market = make_market(end_time=1000.0, asset="BNB", order_min_size=1000.0)
+        up_book = make_liquid_book(price=0.20, token_id="up")  # CHEAP
+        down_book = make_liquid_book(price=0.79, token_id="down")
+        activity = MarketActivityState()
+        rng = random.Random(0)
+        monkeypatch_random = 0.0  # forces the floor-lot roll (BNB/CHEAP/first p=0.45)
+        rng.random = lambda: monkeypatch_random
+        intent = build_order_intent(market, up_book, down_book, activity, rng, now=0.0)
+        assert intent is None
+
+    def test_ordinary_entry_below_runtime_minimum_bumps_up_instead_of_skipping(self):
+        """CHANGED 2026-09-08: an ordinary (non-floor-lot) entry below the
+        exchange's real minimum now gets bumped up to exactly that
+        minimum instead of being silently dropped -- confirmed live this
+        was costing far more entries than it should (9,616 skips vs 5,542
+        placements in one ~8h window)."""
         market = make_market(end_time=1000.0, asset="Hyperliquid",
                               order_min_size=1000.0)  # absurdly high on purpose
         up_book = make_liquid_book(price=0.20, token_id="up")
         down_book = make_liquid_book(price=0.79, token_id="down")
         activity = MarketActivityState()
-        # Even the non-floor-lot median at this regime is far below 1000
-        # shares worth, so every attempt should be rejected.
-        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
-        assert intent is None
+        rng = random.Random(0)
+        rng.random = lambda: 1.0  # never rolls floor-lot -- forces the ordinary curve
+        intent = build_order_intent(market, up_book, down_book, activity, rng, now=0.0)
+
+        assert intent is not None, "must bump up, not skip"
+        assert intent.is_floor_lot is False
+        assert intent.notional_usd == pytest.approx(1000.0 * intent.price)
+        assert intent.size_shares == pytest.approx(1000.0)
 
 
 class TestMarketActivityStateHedgeTracking:
