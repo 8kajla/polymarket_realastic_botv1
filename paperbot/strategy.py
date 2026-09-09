@@ -29,7 +29,17 @@ class MarketActivityState:
     last_price_seen: Optional[float] = None
     first_entry_regime: Optional[str] = None
     cost_by_side: dict = field(default_factory=lambda: {"Up": 0.0, "Down": 0.0})
-    hedge_placed: bool = False
+    # CHANGED 2026-09-09 (was: hedge_placed: bool, permanently locking
+    # after the market's first hedge-shaped entry). CONFIRMED LIVE:
+    # collapsing raw trade rows into genuine decisions (merging same-side
+    # fills within 5s, since 63.5% of raw rows turned out to be CLOB
+    # fragments of one order, not separate decisions) still leaves a real
+    # multi-hedge pattern -- only 39.8% of dual-sided markets stop at 1
+    # hedge decision. A single boolean can't represent "how many hedges
+    # so far", which decide_hedge/HEDGE_CONTINUATION_PROBABILITY now need
+    # to decide whether a 2nd/3rd/4th+ hedge should follow. See
+    # HEDGE_CONTINUATION_PROBABILITY's docstring in behavior_config.py.
+    hedge_count: int = 0
 
     def position_tier(self) -> str:
         return bc.position_tier_for_index(self.entry_count)
@@ -50,7 +60,7 @@ class MarketActivityState:
         self.entry_count += 1
         self.last_side = side
         if is_hedge:
-            self.hedge_placed = True
+            self.hedge_count += 1
 
 
 @dataclass
@@ -118,16 +128,29 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random) 
     across the whole sequence still exactly reproduces
     HEDGE_TRIGGER_PROBABILITY's calibrated overall frequency (unchanged),
     while the SHAPE of when it fires now matches the real timing
-    distribution instead of concentrating everything at one point. Still
-    only ever places once per market (hedge_placed guards every attempt,
-    same as before).
+    distribution instead of concentrating everything at one point.
+
+    CHANGED AGAIN 2026-09-09 (was: hedge_placed guarding every attempt,
+    at most one hedge-shaped entry ever per market). CONFIRMED LIVE:
+    even after collapsing raw trade rows into genuine decisions (merging
+    same-side CLOB fragments -- 63.5% of raw rows turned out to be
+    fragments, not separate decisions), only 39.8% of dual-sided markets
+    actually stop at 1 hedge; the rest keep going. Once the market's
+    FIRST hedge has fired (hedge_count >= 1), a further hedge-shaped
+    entry is now governed by HEDGE_CONTINUATION_PROBABILITY instead of
+    being blocked outright -- see its docstring in behavior_config.py for
+    the calibration. hedge_attempt_hazard above still exclusively governs
+    the FIRST hedge (hedge_count == 0); nothing about that path changed.
     """
-    if activity.entry_count < 1 or activity.hedge_placed or activity.first_entry_regime is None:
+    if activity.entry_count < 1 or activity.first_entry_regime is None:
         return None
     dominant = activity.dominant_side()
     if dominant is None:
         return None
-    p = bc.hedge_attempt_hazard(asset, activity.first_entry_regime, activity.entry_count)
+    if activity.hedge_count == 0:
+        p = bc.hedge_attempt_hazard(asset, activity.first_entry_regime, activity.entry_count)
+    else:
+        p = bc.hedge_continuation_probability(activity.hedge_count)
     if p > 0 and rng.random() < p:
         return "Down" if dominant == "Up" else "Up"
     return None
@@ -278,8 +301,20 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # side's cost so far), not the position-count curve -- that's the
         # whole point: it's proportional insurance, not another ordinary
         # entry. See HEDGE_SIZE_RATIO's docstring in behavior_config.py.
+        #
+        # CHANGED 2026-09-09: hedge_count==0 (the market's FIRST hedge)
+        # still uses HEDGE_SIZE_RATIO, unchanged. A 2nd+ hedge (hedge_count
+        # >= 1, now reachable at all since decide_hedge no longer hard-
+        # blocks after the first) uses HEDGE_CONTINUATION_SIZE_RATIO
+        # instead -- a real, separately-calibrated decaying curve (2nd
+        # hedge sizes at ~19% of the dominant side's RUNNING cost, 3rd at
+        # ~13%, 4th+ at ~11% -- much flatter than the drop from 1st to
+        # 2nd), not the same ratio repeated. See its docstring.
         dominant_cost = activity.cost_by_side.get(activity.dominant_side(), 0.0)
-        ratio = bc.hedge_size_ratio(market.asset, activity.first_entry_regime)
+        if activity.hedge_count == 0:
+            ratio = bc.hedge_size_ratio(market.asset, activity.first_entry_regime)
+        else:
+            ratio = bc.hedge_continuation_size_ratio(activity.hedge_count + 1)
         jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)
         notional = max(dominant_cost * ratio * jitter, 0.0)
         is_floor_lot = False
@@ -289,10 +324,9 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             # small, proportional insurance -- falls below the exchange's
             # real minimum far more often than ordinary entries (23 of 58
             # min-size skips in one window were hedge attempts, despite
-            # hedges being a small minority of total attempts: at most one
-            # per market, vs many ordinary entries). Previously this meant
-            # the WHOLE tick produced nothing: decide_hedge intercepts
-            # every entry_count==1 evaluation, so a rejected hedge
+            # hedges being a small minority of total attempts). Previously
+            # this meant the WHOLE tick produced nothing: decide_hedge
+            # intercepts every entry_count==1 evaluation, so a rejected hedge
             # silently blocked the ORDINARY entry that would otherwise
             # have happened that same tick too -- throttling how often a
             # market's second entry landed at all, worst in exactly the

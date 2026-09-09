@@ -652,6 +652,77 @@ def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) ->
 
 
 # ---------------------------------------------------------------------------
+# HEDGE CONTINUATION. Added 2026-09-09, closing the multi-hedge gap found
+# this session: decide_hedge above only ever fired ONCE per market
+# (hedge_placed permanently locked it after the first success). Real data
+# says otherwise -- and this took two passes to get right. The first pass
+# (raw trade rows) found a wild-looking tail: median 5 hedge-side trades
+# per market, 25% of markets with 7+. That turned out to be substantially
+# inflated: 63.5% of raw trade rows are CLOB FRAGMENTS of one order
+# (median 2s gap between them), not separate decisions -- collapsing
+# same-side trades within 5s of each other into one decision (median gap
+# between genuine decisions: 20s) revised the picture down a lot, but a
+# real multi-hedge pattern still survives it: only 39.8% of dual-sided
+# markets stop at 1 hedge decision; 60.2% get a 2nd.
+#
+# The conditional continuation rate (P(one more hedge | got this many
+# already), measured on decisions) is remarkably stable once past the
+# first hedge -- close enough to a flat curve that one pooled lookup
+# captures the shape without needing the full per-attempt hazard/
+# bisection machinery above (that machinery solves WITHIN-cycle TIMING
+# for a single event; this is a simpler between-event continuation rate):
+#   P(2nd hedge | 1st happened) = 60.2%   P(3rd | 2nd) = 59.8%
+#   P(4th | 3rd)  = 53.3%                 P(5th+ | 4th+) ~= 50.5% (blended)
+#
+# Sizing is the same decision-corrected pass, keyed by hedge INDEX (the
+# 1-based position of the hedge about to be placed) rather than by
+# entry_count, as a ratio to the dominant side's RUNNING cost at that
+# moment (not the eventual final total -- unknowable at decision time,
+# same reasoning as SCOUT_SIZE_RATIO below):
+#   hedge#1 = 70.0% (unchanged -- still HEDGE_SIZE_RATIO/hedge_size_ratio's
+#             job; this table only starts at index 2)
+#   hedge#2 = 18.6%   hedge#3 = 13.3%   hedge#4+ = 10.6%
+#
+# CALIBRATED 2026-09-09, 14-day window, BTC/ETH/SOL, decision-collapsed
+# (5s same-side merge) trade mirror -- pooled across assets/regimes, the
+# same thin-sample tradeoff _HEDGE_HAZARD_SHAPE above already documents:
+# splitting this by (asset, regime) too would leave too few genuine
+# decisions per cell to trust the shape. DISCLOSED GAP: HEDGE_SIZE_RATIO's
+# own hedge#1 calibration was measured on RAW trades, before this
+# fragment-vs-decision distinction was discovered -- it may itself be
+# under-measuring hedge#1's true size the same way this section's first
+# pass was. Not revised here (out of scope for this change, and it's the
+# already-tested, deployed mechanism); worth a dedicated recalibration
+# pass later.
+HEDGE_CONTINUATION_PROBABILITY = {
+    1: 0.602,
+    2: 0.598,
+    3: 0.533,
+}
+_DEFAULT_HEDGE_CONTINUATION_PROBABILITY = 0.505  # hedge_count >= 4
+
+HEDGE_CONTINUATION_SIZE_RATIO = {
+    2: 0.186,
+    3: 0.133,
+}
+_DEFAULT_HEDGE_CONTINUATION_SIZE_RATIO = 0.106  # hedge index >= 4
+
+
+def hedge_continuation_probability(hedge_count: int) -> float:
+    """hedge_count is how many hedge-shaped entries this market already
+    has (only called with hedge_count >= 1 -- hedge_count == 0 goes
+    through hedge_attempt_hazard above instead, unchanged)."""
+    return HEDGE_CONTINUATION_PROBABILITY.get(hedge_count, _DEFAULT_HEDGE_CONTINUATION_PROBABILITY)
+
+
+def hedge_continuation_size_ratio(hedge_index: int) -> float:
+    """hedge_index is the 1-based index of the hedge ABOUT TO BE placed
+    (2 = the market's 2nd hedge-shaped entry, etc. -- index 1 is not
+    handled here, see HEDGE_SIZE_RATIO/hedge_size_ratio above)."""
+    return HEDGE_CONTINUATION_SIZE_RATIO.get(hedge_index, _DEFAULT_HEDGE_CONTINUATION_SIZE_RATIO)
+
+
+# ---------------------------------------------------------------------------
 # SCOUT sizing for the market's very FIRST entry. Added 2026-09-09, closing
 # a confirmed structural gap in the hedge model above: decide_hedge() can
 # only ever fire once entry_count >= 1 -- there's nothing to hedge against

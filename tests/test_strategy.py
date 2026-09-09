@@ -325,12 +325,14 @@ class TestMarketActivityStateHedgeTracking:
         activity.record_entry("Down", notional_usd=2.0, regime="CHEAP")
         assert activity.dominant_side() == "Up"
 
-    def test_record_entry_sets_hedge_placed_flag(self):
+    def test_record_entry_increments_hedge_count(self):
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="MID")
-        assert activity.hedge_placed is False
+        assert activity.hedge_count == 0
         activity.record_entry("Down", notional_usd=2.0, regime="CHEAP", is_hedge=True)
-        assert activity.hedge_placed is True
+        assert activity.hedge_count == 1
+        activity.record_entry("Down", notional_usd=1.0, regime="CHEAP", is_hedge=True)
+        assert activity.hedge_count == 2
 
 
 class TestDecideHedge:
@@ -377,12 +379,45 @@ class TestDecideHedge:
                 break
         assert triggered == "Down"
 
-    def test_does_not_refire_once_hedge_already_placed(self):
+    def test_can_refire_after_the_first_hedge_using_continuation_probability(self):
+        """CHANGED 2026-09-09 (was: hedge_placed permanently blocked any
+        further hedge once one had fired). CONFIRMED LIVE, even after
+        correcting for CLOB-fragment inflation: only 39.8% of dual-sided
+        markets stop at 1 hedge decision -- a 2nd (and 3rd, ...) must be
+        reachable, governed by HEDGE_CONTINUATION_PROBABILITY instead of
+        being blocked outright."""
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="MID")
-        activity.hedge_placed = True
-        for seed in range(20):
-            assert decide_hedge("BNB", activity, random.Random(seed)) is None
+        activity.record_entry("Down", notional_usd=2.0, regime="MID", is_hedge=True)
+        assert activity.hedge_count == 1
+        # HEDGE_CONTINUATION_PROBABILITY[1] = 0.602 -- over enough seeds,
+        # at least one must trigger a 2nd hedge.
+        assert any(
+            decide_hedge("BNB", activity, random.Random(seed)) is not None
+            for seed in range(20)
+        )
+
+    def test_continuation_uses_hedge_continuation_probability_not_the_hazard_curve(self, monkeypatch):
+        """The FIRST hedge (hedge_count==0) is governed by
+        hedge_attempt_hazard; a further hedge (hedge_count>=1) must use
+        hedge_continuation_probability instead -- confirm decide_hedge
+        actually calls the right one for each case."""
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+
+        calls = []
+        monkeypatch.setattr(bc, "hedge_attempt_hazard",
+                             lambda asset, regime, idx: calls.append(("hazard", idx)) or 0.0)
+        monkeypatch.setattr(bc, "hedge_continuation_probability",
+                             lambda count: calls.append(("continuation", count)) or 0.0)
+
+        decide_hedge("BNB", activity, random.Random(0))
+        assert calls == [("hazard", 1)]
+
+        activity.record_entry("Down", notional_usd=2.0, regime="MID", is_hedge=True)
+        calls.clear()
+        decide_hedge("BNB", activity, random.Random(0))
+        assert calls == [("continuation", 1)]
 
     def test_bitcoin_high_regime_cumulative_probability_matches_calibration(self):
         """CHANGED 2026-09-08: the calibrated 0.2967 for Bitcoin/HIGH is
@@ -415,6 +450,21 @@ class TestDecideHedge:
         p1 = bc.hedge_attempt_hazard("BNB", "MID", 1)
         assert 0 < p1 < bc.hedge_trigger_probability("BNB", "MID")
 
+    def test_hedge_continuation_probability_defaults_for_deep_indices(self):
+        assert bc.hedge_continuation_probability(1) == pytest.approx(0.602)
+        assert bc.hedge_continuation_probability(3) == pytest.approx(0.533)
+        # hedge_count=10 (well past the calibrated 1-3 table) falls back
+        # to the documented default rather than KeyError-ing.
+        assert bc.hedge_continuation_probability(10) == bc._DEFAULT_HEDGE_CONTINUATION_PROBABILITY
+
+    def test_hedge_continuation_size_ratio_decays_and_defaults_for_deep_indices(self):
+        assert bc.hedge_continuation_size_ratio(2) == pytest.approx(0.186)
+        assert bc.hedge_continuation_size_ratio(3) == pytest.approx(0.133)
+        assert bc.hedge_continuation_size_ratio(10) == bc._DEFAULT_HEDGE_CONTINUATION_SIZE_RATIO
+        # decaying, not flat: each successive calibrated index is smaller
+        assert bc.hedge_continuation_size_ratio(2) > bc.hedge_continuation_size_ratio(3) \
+            > bc._DEFAULT_HEDGE_CONTINUATION_SIZE_RATIO
+
 
 class TestBuildOrderIntentHedge:
     def test_produces_a_hedge_intent_sized_off_dominant_cost(self, monkeypatch):
@@ -439,6 +489,32 @@ class TestBuildOrderIntentHedge:
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
             <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
         assert intent.reason == "hedge"
+
+    def test_a_second_hedge_uses_continuation_size_ratio_not_hedge_size_ratio(self, monkeypatch):
+        """hedge_count==1 (this would be the market's 2nd hedge-shaped
+        entry) must size off HEDGE_CONTINUATION_SIZE_RATIO, a real,
+        separately-calibrated (and much flatter) curve -- not repeat
+        HEDGE_SIZE_RATIO, which only governs the first hedge."""
+        market = make_market(end_time=1000.0, asset="BNB")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE")
+        activity.record_entry("Down", notional_usd=1.0, regime="CORE", is_hedge=True)
+        assert activity.hedge_count == 1
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        assert intent is not None
+        assert intent.is_hedge is True
+        expected_ratio = bc.hedge_continuation_size_ratio(2)  # this is hedge #2
+        assert expected_ratio != bc.hedge_size_ratio("BNB", "CORE")  # sanity: genuinely different curve
+        dominant_cost = 10.0  # activity.cost_by_side["Up"], unaffected by the 1.0 hedge already placed
+        expected_notional = dominant_cost * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
 
     def test_no_hedge_falls_through_to_normal_flow(self, monkeypatch):
         market = make_market(end_time=1000.0, asset="Bitcoin")

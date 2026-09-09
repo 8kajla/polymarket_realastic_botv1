@@ -118,7 +118,7 @@ class TestHedgeLegEndToEnd:
         assert hedge_order.is_hedge is True
         assert hedge_order.is_floor_lot is False
         assert hedge_order.side != first_order.side
-        assert activity.hedge_placed is True
+        assert activity.hedge_count == 1
 
         # Sized as a ratio of the dominant side's cost, not the ordinary
         # position-count curve -- confirm it's in a sane, small range
