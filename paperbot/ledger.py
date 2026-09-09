@@ -73,7 +73,21 @@ class Ledger:
 
         now = now if now is not None else time.time()
         won = order.side == winning_side
-        entry_cost = order.filled_size * order.price
+        # CONFIRMED LIVE (2026-09-08): order.filled_size * order.price is
+        # WRONG whenever an order reprices between fills -- order.price is
+        # the order's CURRENT (final) resting price, but filled_size sums
+        # shares that may have filled at DIFFERENT prices before a
+        # drift-reprice changed it (each Fill already records its own
+        # actual price; order.price does not retroactively apply to
+        # earlier fills). Measured live: 144 of 2,577 completed orders in
+        # one ~8h window (5.6%) had fills spanning at least one reprice --
+        # a real, non-negligible fraction, not a rare edge case. True cost
+        # is the sum of each fill's own size*price, which this project's
+        # existing convention (weighted-average entry_price, matching
+        # ENTRY_SIZING_USD's own "size * price" invariant used throughout
+        # every analysis script this session) requires getting right.
+        entry_cost = sum(f.size * f.price for f in order.fills)
+        entry_price = entry_cost / order.filled_size if order.filled_size else order.price
         payout = order.filled_size * 1.0 if won else 0.0
         pnl = payout - entry_cost
 
@@ -83,7 +97,7 @@ class Ledger:
             asset=order.asset,
             regime=order.regime,
             side=order.side,
-            entry_price=order.price,
+            entry_price=entry_price,
             filled_size=order.filled_size,
             entry_cost=entry_cost,
             winning_side=winning_side,

@@ -108,6 +108,56 @@ class TestRealizedPnlRecompute:
         assert len(ledger.records) == 1
 
 
+class TestCostBasisAcrossReprices:
+    """Direct regression test for a confirmed live bug (2026-09-08, found
+    via a direct "is our own PNL system trustworthy" audit): entry_cost
+    used to be filled_size * order.price -- order.price is the order's
+    CURRENT (final) resting price, but filled_size sums shares that may
+    have filled at DIFFERENT prices before a drift-reprice changed it.
+    Measured live: 144 of 2,577 completed orders in one ~8h window (5.6%)
+    had fills spanning at least one reprice -- real, not a rare edge
+    case."""
+
+    def test_entry_cost_uses_each_fills_own_price_not_the_final_resting_price(self):
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-1", token_id="tok-up", asset="Bitcoin",
+            regime="MID", position_tier="first", side="Up", price=0.55,
+            original_size=10.0, is_floor_lot=False, placed_at=0.0, remaining_size=0.0,
+        )
+        # 4 shares filled at the ORIGINAL price (0.40), then the order
+        # repriced to 0.55, then the remaining 6 filled at the NEW price.
+        order.fills.append(Fill(size=4.0, price=0.40, ts=1.0))
+        order.fills.append(Fill(size=6.0, price=0.55, ts=2.0))
+        order.status = OrderStatus.FILLED
+
+        ledger = Ledger()
+        record = ledger.settle_order(order, winning_side="Up")
+
+        true_cost = 4.0 * 0.40 + 6.0 * 0.55
+        wrong_cost = 10.0 * 0.55  # what the old buggy formula would have given
+        assert record.entry_cost == pytest.approx(true_cost)
+        assert record.entry_cost != pytest.approx(wrong_cost)
+        assert record.entry_price == pytest.approx(true_cost / 10.0)
+        assert record.pnl == pytest.approx(10.0 * 1.0 - true_cost)
+
+    def test_single_fill_order_is_unaffected(self):
+        """Sanity check: an order that never reprices (the overwhelming
+        majority) must settle identically to before -- filled_size * price
+        and sum(fill.size * fill.price) agree exactly when there's only
+        one fill at the resting price."""
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-1", token_id="tok-up", asset="Bitcoin",
+            regime="CHEAP", position_tier="first", side="Up", price=0.20,
+            original_size=5.0, is_floor_lot=False, placed_at=0.0, remaining_size=0.0,
+        )
+        order.fills.append(Fill(size=5.0, price=0.20, ts=1.0))
+        order.status = OrderStatus.FILLED
+
+        record = Ledger().settle_order(order, winning_side="Up")
+        assert record.entry_cost == pytest.approx(5.0 * 0.20)
+        assert record.entry_price == pytest.approx(0.20)
+
+
 class TestOnlyFilledOrdersSettle:
     def test_zero_fill_order_produces_no_settlement(self):
         ledger = Ledger()
