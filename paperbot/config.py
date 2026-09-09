@@ -232,6 +232,24 @@ if BANKROLL_USD is not None:
 # and independently calibrated, and scaling it down further risks pushing
 # it below the exchange's real per-market orderMinSize, which would
 # silently kill those trades outright -- the opposite of "not less trades".
+#
+# LIMIT CONFIRMED 2026-09-09 ($100-bankroll capacity work): this can't
+# scale a bankroll down arbitrarily far. The real orderMinSize=5-share
+# floor (strategy.py's own BUMP path) sets a hard per-trade dollar floor
+# that doesn't move with this factor -- roughly $0.75 (CHEAP) to $4.75
+# (HIGH) at typical in-band prices. Below the scale where a regime's
+# calibrated median would clear that floor on its own, every trade in
+# that regime just gets bumped to the same flat floor value regardless of
+# how low this factor goes -- shrinking it further stops reducing
+# concurrent commitment and only flattens size differentiation. Verified
+# live: paperbot-100 at BANKROLL_USD=1000, SIZE_SCALE_FACTOR=1.0 (this
+# knob unused) already peaks around $450-460 committed concurrently
+# across 3 assets -- that peak is a near-fixed property of the strategy's
+# calibrated sizing x hedge depth, not something BANKROLL_USD alone
+# controls (BANKROLL_USD only gates whether a trade is AFFORDABLE, not
+# how big it is). Getting a $100 instance to a safe concurrent-commitment
+# ceiling needs this factor AND a tighter MAX_HEDGE_COUNT_PER_MARKET
+# together, not either alone.
 SIZE_SCALE_FACTOR = float(os.environ.get("SIZE_SCALE_FACTOR", "1.0"))
 
 # ---------------------------------------------------------------------------
@@ -299,7 +317,14 @@ def maker_rebate_usd(shares: float, price: float) -> float:
 # bucket is only 2.2% (a thin tail, not where the real mass lives) --
 # capping here cuts off almost none of genuine behavior while
 # eliminating the runaway-chain failure mode entirely.
-MAX_HEDGE_COUNT_PER_MARKET = 6
+#
+# Env-overridable (2026-09-09, added for the $100-bankroll capacity
+# work): a small-bankroll instance needs a tighter cap than 6 to bound
+# worst-case concurrent commitment -- see SIZE_SCALE_FACTOR's own
+# docstring for why size scaling alone can't do this (exchange
+# orderMinSize floors don't scale down). Default stays 6, unchanged, for
+# every existing instance.
+MAX_HEDGE_COUNT_PER_MARKET = int(os.environ.get("MAX_HEDGE_COUNT_PER_MARKET", "6"))
 
 # ---------------------------------------------------------------------------
 # Local paper-trading state (gitignored -- never commit real run state)
