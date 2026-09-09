@@ -33,13 +33,13 @@ def make_liquid_book(price=0.20, token_id="up"):
 
 
 class TestTimingGate:
-    def test_skips_under_90_seconds(self):
+    def test_skips_just_under_the_cutoff(self):
         market = make_market(end_time=100.0)
-        assert timing_ok(market, now=100.0 - 89) is False
+        assert timing_ok(market, now=100.0 - (config.MIN_SECONDS_BEFORE_CLOSE - 1)) is False
 
-    def test_allows_at_exactly_90_seconds(self):
+    def test_allows_at_exactly_the_cutoff(self):
         market = make_market(end_time=100.0)
-        assert timing_ok(market, now=100.0 - 90) is True
+        assert timing_ok(market, now=100.0 - config.MIN_SECONDS_BEFORE_CLOSE) is True
 
     def test_allows_with_plenty_of_time(self):
         market = make_market(end_time=1000.0)

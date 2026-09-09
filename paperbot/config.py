@@ -103,8 +103,31 @@ PNL_SUMMARY_INTERVAL_SECONDS = 300
 # Never place a NEW entry, and never let a resting paper order keep sitting
 # unmanaged, once fewer than this many seconds remain before market close.
 # Confirmed near-hard rule from historical data (violation rate ~0.04% at a
-# stricter 60s boundary) -- 90s gives real margin.
-MIN_SECONDS_BEFORE_CLOSE = 90
+# stricter 60s boundary) -- was 90 (chosen as "real margin" above that 60s
+# boundary, not derived from anything about this bot's own fill mechanics --
+# see the git history for the original reasoning).
+#
+# TIGHTENED 2026-09-09 (found chasing the confirmed-live HIGH-regime
+# participation gap -- bot lands on HIGH-band entries at roughly half the
+# real trader's rate in a same-window comparison). Root cause: HIGH-band
+# opportunities concentrate very late in the window (median 119s
+# remaining, vs 168-204s for the other three regimes), so the 90s cutoff
+# was disproportionately excluding them -- 26.4% of his real HIGH-regime
+# trades land with 60-90s remaining, a window this bot could never enter
+# at 90s. That's not HIGH-specific plumbing -- CHEAP/MID/CORE lose
+# 8.7-15.0% of their own real trades to the same 60-90s band, just less
+# severely since they aren't clustered as late. Confirmed exactly ZERO
+# real trades (any regime, n=37,860 checked) fall under 60s remaining --
+# matches the original 60s boundary finding exactly, so that boundary
+# itself isn't in question, only how much margin to keep above it.
+# Tightened to 75 -- keeps a real 15s buffer above his empirical 60s
+# limit (half the original 30s margin, not zero), while recovering most
+# of the excluded opportunity: HIGH's excluded share drops from 26.4% to
+# 10.7% at this threshold. Applies symmetrically to both usages below
+# (new-entry gate in strategy.timing_ok, and the open-order expiry check
+# in fill_simulation.manage_open_orders) since both exist for the same
+# reason and should move together.
+MIN_SECONDS_BEFORE_CLOSE = 75
 
 # ---------------------------------------------------------------------------
 # Availability / liquidity sanity check -- deliberately SIMPLE and UNIFORM
