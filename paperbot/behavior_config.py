@@ -527,10 +527,31 @@ HEDGE_TRIGGER_PROBABILITY = {
     "BNB":         {"CHEAP": 0.8389, "MID": 0.9004, "CORE": 0.7806, "HIGH": 0.4884},
 }
 
+# RECALIBRATED 2026-09-09 (Bitcoin/MID and Solana/MID only): the same
+# raw-trade-vs-decision fragmentation issue found for HEDGE_CONTINUATION_*
+# below turned out to affect hedge#1 (this table) too -- these values were
+# originally measured on raw trade rows, before that distinction existed.
+# Re-measured on decision-collapsed data (5s same-side merge), per
+# (asset, first_entry_regime), 14-day window, n>=200 markets trust bar
+# (matching HEDGE_TRIGGER_PROBABILITY's own bar for this kind of
+# once-per-market measurement):
+#   Bitcoin/MID: 0.2756 -> 0.4764 (n=345, +72.9%)
+#   Solana/MID:  0.2760 -> 0.6437 (n=233, +133.2%)
+# Every OTHER cell stayed below n=200 and was left unchanged. CHEAP-band
+# cells specifically were left alone even where n looked sufficient,
+# because their decision-based ratios come back nonsensically large
+# (1332% for Bitcoin/CHEAP, up to 2396% for Solana/CHEAP) -- a "hedge"
+# bigger than what it's hedging isn't insurance sizing, it's SCOUT's
+# territory bleeding in: when the first entry is CHEAP, decide_hedge's
+# own "first hedge" often fires on what is actually the market's real,
+# much bigger conviction bet (the tentative CHEAP stake getting
+# outpaced), not a genuine small insurance leg. Untangling that overlap
+# between SCOUT_PROBABILITY and HEDGE_SIZE_RATIO's CHEAP cells is its own
+# follow-up, not a same-day fix -- flagged, not guessed at here.
 HEDGE_SIZE_RATIO = {
-    "Bitcoin":     {"CHEAP": 0.1316, "MID": 0.2756, "CORE": 0.1062, "HIGH": 0.0306},
+    "Bitcoin":     {"CHEAP": 0.1316, "MID": 0.4764, "CORE": 0.1062, "HIGH": 0.0306},
     "Ethereum":    {"CHEAP": 0.1243, "MID": 0.2511, "CORE": 0.0822, "HIGH": 0.0204},
-    "Solana":      {"CHEAP": 0.1574, "MID": 0.2760, "CORE": 0.0625, "HIGH": 0.0159},
+    "Solana":      {"CHEAP": 0.1574, "MID": 0.6437, "CORE": 0.0625, "HIGH": 0.0159},
     "Dogecoin":    {"CHEAP": 0.1992, "MID": 0.2937, "CORE": 0.0942, "HIGH": 0.0480},
     "Hyperliquid": {"CHEAP": 0.1453, "MID": 0.1742, "CORE": 0.0833, "HIGH": 0.0358},
     "BNB":         {"CHEAP": 0.1063, "MID": 0.1686, "CORE": 0.0503, "HIGH": 0.0285},
