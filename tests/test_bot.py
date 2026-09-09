@@ -542,6 +542,47 @@ class TestResolutionThrottling:
         assert cid in bot.pending_resolution  # still waiting, correctly
 
 
+class TestAbandonedResolutionWriteOff:
+    """Code-review pass (2026-09-09): no test coverage existed at all for
+    the ABANDONED write-off path before this. Also fixes the same
+    reprice-price-mismatch bug found in committed_capital(): the write-off
+    used order.filled_size * order.price (current resting price) instead
+    of each fill's own actual price."""
+
+    def test_abandoned_market_writes_off_at_actual_fill_prices(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=9)
+        bot.ledger = Ledger()
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        bot._resolution_first_seen[cid] = 0.0  # seed as already "seen" long ago
+
+        order = SimulatedOrder(
+            order_id=1, condition_id=cid, token_id=f"{cid}-up", asset="Bitcoin",
+            regime="MID", position_tier="first", side="Up",
+            price=0.55,  # current resting price, different from the fills below
+            original_size=8.0, is_floor_lot=False, placed_at=0.0, remaining_size=0.0,
+            fills=[Fill(size=5.0, price=0.40, ts=0.0), Fill(size=3.0, price=0.55, ts=1.0)],
+        )
+        order.status = OrderStatus.FILLED
+        bot.fill_sim.orders[order.order_id] = order
+
+        def fake_fetch(slug, session=None, timeout=10.0):
+            return None  # Gamma never decides -- forces the ABANDONED branch
+
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", fake_fetch)
+
+        asyncio.run(bot.resolution_tick(now=config.RESOLUTION_MAX_AGE_SECONDS + 100))
+
+        assert cid not in bot.pending_resolution
+        expected = 5.0 * 0.40 + 3.0 * 0.55
+        assert bot._abandoned_filled_costs == [pytest.approx(expected)]
+        # Old buggy formula: filled_size * order.price = 8.0 * 0.55 = 4.4 -- confirm
+        # the fix doesn't accidentally land back on that wrong number.
+        wrong_old_value = order.filled_size * order.price
+        assert bot._abandoned_filled_costs[0] != pytest.approx(wrong_old_value)
+
+
 class TestDriftCancelRunsBeforeTradePrintDrain:
     """
     Regression test for the CORE/HIGH win-rate gap found by comparing the

@@ -513,10 +513,21 @@ class PaperBot:
                     # orders, understating what's actually still spent. A
                     # no-op list append when unset, so the main bot is
                     # completely unaffected.
+                    #
+                    # FIXED 2026-09-09 (code-review pass): was
+                    # order.filled_size * order.price -- the same reprice-
+                    # price-mismatch bug found and fixed in
+                    # committed_capital() and (originally) in
+                    # ledger.settle_order(). order.price is the order's
+                    # CURRENT resting price, not what earlier fills
+                    # actually cleared at. Now sums each fill's own
+                    # size*price, same as both of those.
                     for order in self.fill_sim.orders.values():
                         if (order.condition_id == cid and order.filled_size > 0
                                 and not self.ledger.is_settled(order.order_id)):
-                            self._abandoned_filled_costs.append(order.filled_size * order.price)
+                            self._abandoned_filled_costs.append(
+                                sum(f.size * f.price for f in order.fills)
+                            )
                 del self.pending_resolution[cid]
                 self._forget_resolution_tracking(cid)
                 self.fill_sim.remove_orders_for_condition(cid)
