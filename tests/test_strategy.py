@@ -334,6 +334,32 @@ class TestMarketActivityStateHedgeTracking:
         activity.record_entry("Down", notional_usd=1.0, regime="CHEAP", is_hedge=True)
         assert activity.hedge_count == 2
 
+    def test_release_unfilled_reverses_a_fully_cancelled_placement(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.release_unfilled("Up", 10.0)
+        assert activity.cost_by_side["Up"] == 0.0
+
+    def test_release_unfilled_reverses_only_the_unfilled_portion(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.release_unfilled("Up", 4.0)  # e.g. 6 of 10 shares' worth filled before cancel
+        assert activity.cost_by_side["Up"] == 6.0
+
+    def test_release_unfilled_never_goes_negative(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=5.0, regime="MID")
+        activity.release_unfilled("Up", 999.0)  # defensive: overshoot shouldn't corrupt state
+        assert activity.cost_by_side["Up"] == 0.0
+
+    def test_release_unfilled_does_not_touch_the_other_side(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.record_entry("Down", notional_usd=3.0, regime="CHEAP")
+        activity.release_unfilled("Up", 10.0)
+        assert activity.cost_by_side["Up"] == 0.0
+        assert activity.cost_by_side["Down"] == 3.0
+
 
 class TestDecideHedge:
     def test_no_hedge_before_a_first_entry_exists(self):

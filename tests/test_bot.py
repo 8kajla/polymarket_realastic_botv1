@@ -598,6 +598,105 @@ class TestDriftCancelRunsBeforeTradePrintDrain:
         assert order.filled_size == 0.0
 
 
+class TestCostBySideReleasedOnCancelOrExpiry:
+    """
+    Code-review finding (2026-09-09): record_entry() adds the FULL
+    intended notional to MarketActivityState.cost_by_side at PLACEMENT
+    time, but nothing corrected it back down when an order's unfilled
+    portion was later cancelled or expired -- confirmed live at a 38.6%
+    cancellation rate (93% of those fully unfilled), meaning roughly a
+    third of tracked cost_by_side was phantom exposure that never
+    happened, corrupting every dominant_side()/hedge decision downstream.
+    manage_orders_tick now calls activity.release_unfilled() for every
+    order manage_open_orders reports as newly terminal-with-a-remainder.
+    """
+
+    def test_fully_cancelled_order_releases_its_whole_notional(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=7)
+        market = make_bitcoin_market()
+        book = wire_market(bot, market, bid=0.95, ask=0.96, depth=50.0)
+        bot.markets_by_condition[market.condition_id] = market
+        bot.activity[market.condition_id] = MarketActivityState()
+        bot.activity[market.condition_id].record_entry("Up", notional_usd=9.5, regime="HIGH")
+
+        order = SimulatedOrder(
+            order_id=1, condition_id=market.condition_id, token_id=market.token_id_up,
+            asset="Bitcoin", regime="HIGH", position_tier="first", side="Up", price=0.95,
+            original_size=10.0, is_floor_lot=False, placed_at=1000.0,
+            remaining_size=10.0, queue_ahead_raw=0.0, queue_ahead_discounted=0.0,
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        bot.resting_order_ids[market.condition_id] = {order.order_id}
+
+        # Price leaves the HIGH band entirely -> manage_open_orders cancels
+        # the order fully unfilled (no fills recorded on it at all).
+        book.apply_snapshot(bids=[(0.50, 50.0)], asks=[(0.51, 50.0)])
+
+        bot.manage_orders_tick(now=1001.0)
+
+        assert order.status.value == "CANCELLED"
+        assert order.filled_size == 0.0
+        assert bot.activity[market.condition_id].cost_by_side["Up"] == pytest.approx(0.0), (
+            "the order never filled at all, so cost_by_side should have been "
+            "released all the way back down instead of keeping the phantom "
+            "placement-time notional"
+        )
+
+    def test_partially_filled_then_cancelled_order_releases_only_the_remainder(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=7)
+        market = make_bitcoin_market()
+        book = wire_market(bot, market, bid=0.95, ask=0.96, depth=50.0)
+        bot.markets_by_condition[market.condition_id] = market
+        bot.activity[market.condition_id] = MarketActivityState()
+        bot.activity[market.condition_id].record_entry("Up", notional_usd=9.5, regime="HIGH")
+
+        order = SimulatedOrder(
+            order_id=1, condition_id=market.condition_id, token_id=market.token_id_up,
+            asset="Bitcoin", regime="HIGH", position_tier="first", side="Up", price=0.95,
+            original_size=10.0, is_floor_lot=False, placed_at=1000.0,
+            remaining_size=4.0, queue_ahead_raw=0.0, queue_ahead_discounted=0.0,
+            fills=[Fill(size=6.0, price=0.95, ts=1000.5)],
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        bot.resting_order_ids[market.condition_id] = {order.order_id}
+
+        book.apply_snapshot(bids=[(0.50, 50.0)], asks=[(0.51, 50.0)])
+
+        bot.manage_orders_tick(now=1001.0)
+
+        assert order.filled_size == 6.0
+        # Only the unfilled 4 shares' worth (at the order's resting price
+        # 0.95) should be released -- the 6 that genuinely filled stay in
+        # cost_by_side, matching real exposure.
+        assert bot.activity[market.condition_id].cost_by_side["Up"] == pytest.approx(9.5 - 4.0 * 0.95)
+
+    def test_a_repriced_still_open_order_releases_nothing(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=7)
+        market = make_bitcoin_market()
+        book = wire_market(bot, market, bid=0.50, ask=0.51, depth=50.0)
+        bot.markets_by_condition[market.condition_id] = market
+        bot.activity[market.condition_id] = MarketActivityState()
+        bot.activity[market.condition_id].record_entry("Up", notional_usd=5.0, regime="MID")
+
+        order = SimulatedOrder(
+            order_id=1, condition_id=market.condition_id, token_id=market.token_id_up,
+            asset="Bitcoin", regime="MID", position_tier="first", side="Up", price=0.40,
+            original_size=10.0, is_floor_lot=False, placed_at=1000.0,
+            remaining_size=10.0, queue_ahead_raw=0.0, queue_ahead_discounted=0.0,
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        bot.resting_order_ids[market.condition_id] = {order.order_id}
+
+        # best_bid drifted enough to trigger a reprice, but stayed inside
+        # the same MID band -- order stays open, nothing should be released.
+        book.apply_snapshot(bids=[(0.45, 50.0)], asks=[(0.46, 50.0)])
+
+        bot.manage_orders_tick(now=1001.0)
+
+        assert order.is_open()
+        assert bot.activity[market.condition_id].cost_by_side["Up"] == pytest.approx(5.0)
+
+
 class TestPnlSummaryLogging:
     def test_log_pnl_summary_does_not_raise_and_reports_totals(self, caplog):
         bot = PaperBot(assets=["Bitcoin"], seed=6)

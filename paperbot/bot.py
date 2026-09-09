@@ -388,7 +388,29 @@ class PaperBot:
         seconds_remaining = {
             cid: m.seconds_remaining(now) for cid, m in self.markets_by_condition.items()
         }
-        self.fill_sim.manage_open_orders(self.book_states, seconds_remaining, now=now)
+        changed = self.fill_sim.manage_open_orders(self.book_states, seconds_remaining, now=now)
+
+        # CONFIRMED LIVE (2026-09-09, code-review pass): `changed`'s return
+        # value used to be discarded entirely here. Every order that just
+        # went terminal (CANCELLED, EXPIRED_UNFILLED, or PARTIALLY_FILLED
+        # with expired_remainder/cancelled_remainder set) with shares left
+        # unfilled needs its phantom placement-time notional released back
+        # out of MarketActivityState.cost_by_side -- see
+        # release_unfilled()'s own docstring in strategy.py for the exact
+        # numbers (38.6% cancellation rate, 93% of those fully unfilled).
+        # A repriced-but-still-open order (also in `changed`) is correctly
+        # skipped by the is_open() check -- nothing to release, it's still
+        # live.
+        for order in changed:
+            if order.is_open():
+                continue
+            unfilled_shares = order.original_size - order.filled_size
+            if unfilled_shares <= 0:
+                continue
+            activity = self.activity.get(order.condition_id)
+            if activity is None:
+                continue
+            activity.release_unfilled(order.side, unfilled_shares * order.price)
 
         for token_id, book in self.book_states.items():
             for trade in book.drain_pending_trades():

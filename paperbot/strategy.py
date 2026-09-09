@@ -62,6 +62,35 @@ class MarketActivityState:
         if is_hedge:
             self.hedge_count += 1
 
+    def release_unfilled(self, side: str, notional_usd: float) -> None:
+        """
+        CONFIRMED LIVE (2026-09-09, code-review pass): record_entry() above
+        adds the FULL intended notional to cost_by_side at PLACEMENT time
+        (see config.py's MAX_OPEN_ORDERS_PER_MARKET docstring for why --
+        entry_count/position_tier need this to handle concurrent resting
+        orders correctly), but nothing anywhere ever corrected it back down
+        when an order's unfilled portion is later cancelled or expires.
+        Measured live: 38.6% of placed orders get cancelled, 93% of those
+        fully unfilled (1,263/1,353 cancellations in a 2h window across all
+        three bots) -- meaning roughly a third of tracked cost_by_side was
+        phantom exposure that never actually happened, silently corrupting
+        every dominant_side() call, every hedge trigger decision, and
+        (worse, post tonight's HEDGE_SIZE_RATIO CHEAP fix, where the ratio
+        can exceed 1.0) every hedge's SIZE for every market that ever had a
+        cancelled or expired order in it. Called from bot.py's
+        manage_orders_tick for every order manage_open_orders reports as
+        newly terminal-with-a-remainder (CANCELLED, EXPIRED_UNFILLED, or
+        PARTIALLY_FILLED with expired_remainder/cancelled_remainder set),
+        using (unfilled_shares * order.price) as the phantom amount --
+        order.price is the order's own last resting price, not the
+        original placement price, which drifts slightly on a REPRICE but
+        is the best available estimate of what the never-filled portion
+        would actually have cost. Floored at 0.0 as a defensive guard
+        against float-precision overshoot, not because a real negative is
+        expected.
+        """
+        self.cost_by_side[side] = max(0.0, self.cost_by_side.get(side, 0.0) - notional_usd)
+
 
 @dataclass
 class OrderIntent:
