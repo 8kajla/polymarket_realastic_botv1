@@ -345,11 +345,26 @@ class PaperBot:
         price -- a real resting limit order ties up buying power even
         before it fills), plus the filled-but-not-yet-settled portion of
         any order still waiting on resolution_tick.
+
+        FIXED 2026-09-09 (code-review pass): the filled-but-not-yet-settled
+        branch used to value those shares at order.price -- the order's
+        CURRENT (final) resting price -- exactly the same bug
+        ledger.settle_order() already found and fixed for entry_cost (see
+        its docstring: 144/2,577 completed orders in one ~8h window, 5.6%,
+        had fills spanning at least one reprice, so order.price does not
+        retroactively apply to earlier fills). That fix was never carried
+        over here, even though this function drives the real-money-
+        relevant available_cash() bankroll gate. Now sums each fill's own
+        size*price, same as ledger.py. The remaining_size*price line below
+        is correctly left alone: that portion hasn't filled yet, so
+        order.price (what it would fill AT if it fills) is the right,
+        forward-looking estimate -- there's no earlier real fill price to
+        be wrong about.
         """
         committed = 0.0
         for order in self.fill_sim.orders.values():
             if order.filled_size > 0 and not self.ledger.is_settled(order.order_id):
-                committed += order.filled_size * order.price
+                committed += sum(f.size * f.price for f in order.fills)
             if order.is_open():
                 committed += order.remaining_size * order.price
         return committed

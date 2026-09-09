@@ -727,6 +727,35 @@ class TestCommittedCapitalTracking:
         bot.fill_sim.orders[order.order_id] = order
         assert bot.committed_capital() == pytest.approx(10.0 * 0.40)
 
+    def test_filled_but_unsettled_order_values_at_actual_fill_prices_not_current_price(self):
+        """Code-review fix (2026-09-09): the filled-but-not-yet-settled
+        branch used to value shares at order.price (current/final resting
+        price) instead of each fill's own actual price -- the same bug
+        class ledger.settle_order() already fixed for entry_cost. An order
+        that filled partly BEFORE a reprice and partly AFTER must be valued
+        using each fill's own price, not one blanket current price."""
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-x", token_id="cond-x-up", asset="Bitcoin",
+            regime="MID", position_tier="first", side="Up",
+            price=0.50,  # current (post-reprice) resting price
+            original_size=10.0, is_floor_lot=False, placed_at=0.0,
+            remaining_size=4.0,
+            fills=[
+                Fill(size=3.0, price=0.40, ts=1.0),   # filled before the reprice
+                Fill(size=3.0, price=0.50, ts=2.0),   # filled after the reprice
+            ],
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        expected_filled_notional = 3.0 * 0.40 + 3.0 * 0.50
+        expected_unfilled_notional = 4.0 * 0.50  # still-open remainder: current price is correct here
+        assert bot.committed_capital() == pytest.approx(expected_filled_notional + expected_unfilled_notional)
+        # The old buggy formula (filled_size * order.price = 6.0 * 0.50 = 3.0)
+        # would have overstated the filled portion vs. the correct 2.7 -- make
+        # sure the fix isn't accidentally still landing on that wrong number.
+        wrong_old_value = order.filled_size * order.price + expected_unfilled_notional
+        assert bot.committed_capital() != pytest.approx(wrong_old_value)
+
     def test_available_and_committed_agree_when_bankroll_is_set(self, monkeypatch):
         """committed_capital() must be the exact same number available_cash()
         subtracts -- they were split from one implementation, not two."""
