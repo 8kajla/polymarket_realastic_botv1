@@ -82,6 +82,45 @@ class TestQueueSafetyFactorDiscount:
         assert order.status == OrderStatus.PENDING
 
 
+class TestTradePrintSideFiltering:
+    """Code-review fix (2026-09-10): on_trade_print used to have no
+    trade.side check at all -- only trade.price <= o.price. This bot only
+    ever places resting BUY orders, so only a SELL-side print (a taker
+    selling, crossing into the bid side) can legitimately fill/consume
+    queue for one; a BUY-side print (crossing into the ask side) must
+    never touch it, however low its price happens to be."""
+
+    def test_a_buy_side_print_does_not_consume_queue_or_fill(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=40.0)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0), book, now=0.0)
+        assert order.queue_ahead_discounted == pytest.approx(10.0)
+
+        # Same price, same size as a SELL print that WOULD have filled this
+        # order (see TestQueueConsumption below) -- side is the only thing
+        # that differs.
+        sim.on_trade_print("tok-up", TradePrint(price=0.20, size=100.0, side="BUY", ts=1.0))
+
+        assert order.queue_ahead_discounted == pytest.approx(10.0), (
+            "a BUY-side print must not drain queue meant only for SELL-side "
+            "sweeps into the bid book"
+        )
+        assert order.filled_size == 0.0
+        assert order.status == OrderStatus.PENDING
+
+    def test_a_sell_side_print_at_the_identical_price_still_fills_normally(self):
+        """Sanity check that the fix didn't break the ordinary path --
+        same setup as the BUY test above, SELL side instead."""
+        book = make_book(best_bid=0.20, bid_depth_at_best=40.0)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0), book, now=0.0)
+
+        sim.on_trade_print("tok-up", TradePrint(price=0.20, size=100.0, side="SELL", ts=1.0))
+
+        assert order.filled_size == pytest.approx(5.0)
+        assert order.status == OrderStatus.FILLED
+
+
 class TestQueueConsumption:
     def test_multiple_trade_prints_drain_queue_before_filling(self):
         book = make_book(best_bid=0.20, bid_depth_at_best=40.0)  # raw queue 40

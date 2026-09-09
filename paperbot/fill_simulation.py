@@ -202,7 +202,25 @@ class FillSimulator:
         an order it predates produces impossible negative time-to-fill and
         inflates the fill rate. Confirmed live: order=9 in a real deploy
         logged `time_to_fill=-0.1s` before this filter was added.
+
+        `trade.side` is filtered to SELL only -- also on purpose, and
+        FIXED 2026-09-10 (code-review pass): this bot only ever places
+        resting BUY (bid) orders, so only a SELL-side trade print (a
+        taker selling, crossing INTO the bid side) can ever legitimately
+        consume queue or fill one -- a BUY-side print (a taker buying,
+        crossing into the ASK side) never touches the bid book at all.
+        The eligibility check used to be `trade.price <= o.price` alone,
+        with no side check whatsoever -- confirmed by grep that every
+        single existing test used side="SELL", so this gap was never
+        exercised. Usually harmless (a BUY print's price sits at/above
+        the ask, normally well above any resting bid), but under a tight
+        spread combined with a resting order that's drifted up to
+        DRIFT_REPRICE_TICKS behind the live best_bid before its next
+        reprice, a BUY-side print's price can fall at or below a stale
+        bid price and would have been misattributed as filling it.
         """
+        if trade.side.upper() != "SELL":
+            return
         remaining_trade_size = trade.size
         candidates = [
             o for o in self.orders.values()
