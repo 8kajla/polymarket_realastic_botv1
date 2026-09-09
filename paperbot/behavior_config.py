@@ -258,7 +258,20 @@ SIDE_PERSISTENCE = {
     # bar this file uses everywhere else -- left at historical values
     # rather than chasing a thin-sample number. MID's +0.9pp gap wasn't
     # significant either.
-    "Solana": {"CHEAP": 0.8065, "MID": 0.8616, "CORE": 0.7917, "HIGH": 0.8120},
+    # RECALIBRATED AGAIN 2026-09-09 (autonomous loop, /loop cycle):
+    # checked all nine live cells (BTC/ETH/SOL x 4 regimes) against a
+    # fresh 7-day window for drift since the pass above -- Bitcoin and
+    # Ethereum held up well (every cell under 1.5pp). Solana/CORE had
+    # moved a real amount: 79.17%->85.32% (n=695, +6.2pp, clears the
+    # trust bar easily). HIGH showed a similar-looking +3.9pp gap but
+    # n=424 stays below the n>=500 bar -- left alone, not chased.
+    # CHEAP/MID both under 1pp, unchanged. This drift within ~1 day of
+    # the pass above is itself evidence for the broader finding this
+    # loop made tonight: his behavior (regime mix, hedge rate) has been
+    # continuously shifting since the Sept 6 resumption, not settling
+    # into a fixed new normal -- these tables are chasing a moving
+    # target and may need periodic re-checks, not a one-time fix.
+    "Solana": {"CHEAP": 0.8065, "MID": 0.8616, "CORE": 0.8532, "HIGH": 0.8120},
     # Dogecoin/Hyperliquid/BNB are dormant (see ASSET_REGIME_DISTRIBUTION_PCT's
     # comment) -- not worth the same rigor while untraded. Kept at their old
     # single blended value, just reshaped to the same per-regime dict shape
