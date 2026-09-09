@@ -146,38 +146,48 @@ ENTRY_SIZING_USD = {
     # file) -- 4th_plus is the tier with enough volume in ~2.3 days to
     # trust; first/2nd_3rd stay at their (older, full-history) values,
     # and CORE/HIGH's thinner cells here are Bitcoin-only.
-    # Bitcoin: CHEAP/4th_plus 1.341->1.356 (n=4,058, ~flat), MID/2nd_3rd
-    # 3.774->2.226 (n=584, -41%), MID/4th_plus 2.279->2.226 (n=5,282,
-    # ~flat), CORE/4th_plus and HIGH/4th_plus unchanged to 3 decimals
-    # (n=2,738 / n=1,780 -- a single recurring exact dollar amount
-    # dominates both the full-history and recent medians in these two
-    # cells, not a bug, same duplication pattern documented in the prior
-    # pass below).
+    #
+    # CORRECTED AGAIN 2026-09-08 (same night, a further pass): the values
+    # right below this comment were measuring a CONTAMINATED population.
+    # Prompted by the user's own hypothesis about tiny CHEAP-band bets
+    # being deliberate tail insurance against bigger positions (confirmed:
+    # 45.9% of CHEAP hedge-shaped trades specifically pair against a
+    # HIGH-regime dominant position -- the single most common hedge
+    # pairing found, and HEDGE_SIZE_RATIO/HEDGE_TRIGGER_PROBABILITY below
+    # already model exactly this). Roughly half of CHEAP/MID trades in
+    # this window are hedge-shaped (the smaller, non-dominant side in
+    # their market) -- sized via a completely different mechanism
+    # (proportional to the dominant position's cost) than the ordinary
+    # entry-count curve this table represents. Blending them in dragged
+    # the "ordinary" median down artificially. Re-measured STANDALONE-ONLY
+    # (dominant-side trades only) for the same cells:
+    #   Bitcoin MID/4th_plus:    2.226 -> 2.385 (n=5,268 standalone, +7%)
+    #   Ethereum CHEAP/4th_plus: 0.652 -> 0.674 (n=1,577 standalone, +5%)
+    #   Ethereum MID/4th_plus:   1.920 -> 1.947 (n=962 standalone, +1%)
+    #   Solana CHEAP/4th_plus:   0.259 -> 0.354 (n=606 standalone, +36%)
+    #   Solana MID/4th_plus:     0.852 -> 1.083 (n=730 standalone, +48%)
+    # Bitcoin MID/2nd_3rd's standalone sample (n=474) stays just below the
+    # trust bar -- left at its already-recalibrated 2.226 rather than
+    # updating from a thin split. Bitcoin's other cells were untouched by
+    # this correction (CHEAP/4th_plus, CORE/4th_plus, HIGH/4th_plus all
+    # showed <1% standalone-vs-blended difference -- not worth a separate
+    # note per cell). Solana was the one asset where this contamination
+    # mattered a lot; Bitcoin and Ethereum were only mildly affected.
     "Bitcoin": {
         "CHEAP": {"first": 1.793, "2nd_3rd": 1.528, "4th_plus": 1.356},
-        "MID":   {"first": 4.209, "2nd_3rd": 2.226, "4th_plus": 2.226},
+        "MID":   {"first": 4.209, "2nd_3rd": 2.226, "4th_plus": 2.385},
         "CORE":  {"first": 12.403, "2nd_3rd": 10.989, "4th_plus": 5.396},
         "HIGH":  {"first": 39.009, "2nd_3rd": 39.960, "4th_plus": 16.284},
     },
-    # Ethereum, same later pass (and same "actually ~2.3 days since the
-    # 09-06 resumption" correction above applies): CHEAP/4th_plus
-    # 0.843->0.652 (n=2,222, -23%), MID/4th_plus 2.450->1.920 (n=886,
-    # -22%). first/2nd_3rd and CORE/HIGH stay below n>=500 for this asset.
     "Ethereum": {
-        "CHEAP": {"first": 0.994, "2nd_3rd": 0.750, "4th_plus": 0.652},
-        "MID":   {"first": 2.968, "2nd_3rd": 2.600, "4th_plus": 1.920},
+        "CHEAP": {"first": 0.994, "2nd_3rd": 0.750, "4th_plus": 0.674},
+        "MID":   {"first": 2.968, "2nd_3rd": 2.600, "4th_plus": 1.947},
         "CORE":  {"first": 9.148, "2nd_3rd": 7.677, "4th_plus": 6.381},
         "HIGH":  {"first": 28.292, "2nd_3rd": 26.758, "4th_plus": 19.380},
     },
-    # Solana, same later pass -- the biggest moves of the three: the
-    # "CHECKED, left at historical values, too thin" note directly below
-    # is now SUPERSEDED for 4th_plus specifically, which cleared the
-    # trust bar this time (more calendar time accumulated since that
-    # check): CHEAP/4th_plus 0.490->0.259 (n=1,171, -47%), MID/4th_plus
-    # 2.387->0.852 (n=821, -64%). first/2nd_3rd/CORE/HIGH still thin.
     "Solana": {
-        "CHEAP": {"first": 1.097, "2nd_3rd": 0.805, "4th_plus": 0.259},
-        "MID":   {"first": 2.850, "2nd_3rd": 2.597, "4th_plus": 0.852},
+        "CHEAP": {"first": 1.097, "2nd_3rd": 0.805, "4th_plus": 0.354},
+        "MID":   {"first": 2.850, "2nd_3rd": 2.597, "4th_plus": 1.083},
         "CORE":  {"first": 7.373, "2nd_3rd": 6.880, "4th_plus": 6.235},
         "HIGH":  {"first": 21.620, "2nd_3rd": 23.126, "4th_plus": 19.740},
     },
