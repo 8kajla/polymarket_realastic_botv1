@@ -561,20 +561,41 @@ HEDGE_TRIGGER_PROBABILITY = {
 #   Bitcoin/MID: 0.2756 -> 0.4764 (n=345, +72.9%)
 #   Solana/MID:  0.2760 -> 0.6437 (n=233, +133.2%)
 # Every OTHER cell stayed below n=200 and was left unchanged. CHEAP-band
-# cells specifically were left alone even where n looked sufficient,
-# because their decision-based ratios come back nonsensically large
-# (1332% for Bitcoin/CHEAP, up to 2396% for Solana/CHEAP) -- a "hedge"
-# bigger than what it's hedging isn't insurance sizing, it's SCOUT's
-# territory bleeding in: when the first entry is CHEAP, decide_hedge's
-# own "first hedge" often fires on what is actually the market's real,
-# much bigger conviction bet (the tentative CHEAP stake getting
-# outpaced), not a genuine small insurance leg. Untangling that overlap
-# between SCOUT_PROBABILITY and HEDGE_SIZE_RATIO's CHEAP cells is its own
-# follow-up, not a same-day fix -- flagged, not guessed at here.
+# cells specifically were left alone at that time even where n looked
+# sufficient, because their decision-based ratios came back nonsensically
+# large (1332% for Bitcoin/CHEAP, up to 2396% for Solana/CHEAP) -- flagged
+# as SCOUT's territory bleeding in (a genuinely tiny CHEAP first entry
+# getting overtaken by a much bigger real conviction bet, not insurance
+# sizing) and explicitly left unguessed-at pending a real fix.
+#
+# CHEAP-band cells FIXED 2026-09-09 (same night, later pass): the missing
+# piece was a floor on the denominator, not the 5s-merge step above (which
+# was already being applied and still gave the nonsensical numbers this
+# comment used to cite). Reconstructed every (BTC/ETH/SOL) market
+# chronologically, replicating strategy.py's own real-time logic exactly
+# (running cost_by_side, first opposite-side decision after collapsing ==
+# the hedge_count==0 case) -- but excluding cases where the "dominant"
+# position at hedge time is itself still scout/fragment-sized (<$1
+# notional, roughly the real orderMinSize=5-shares floor at CHEAP prices).
+# Without that floor, a normal-sized second decision divided by a $0.02
+# scout denominator is exactly what produced 1332%/2396% -- with it, real
+# medians land far lower and stable across floor choices ($0.50-$3 all
+# agree within ~20%): Bitcoin 2.6360, Ethereum 1.9937, Solana 0.9230
+# (n=337/402/433, 21-day window). Ratios >1.0 are real, not a bug: a CHEAP
+# first entry is a low-conviction feeler by construction, and this is
+# specifically the situation where a much bigger real conviction bet often
+# follows on the other side -- that's a bigger number than it's "hedging"
+# by design, and strategy.py's is_hedge classification (opposite side from
+# current running dominant) captures exactly that structural event
+# regardless of whether "insurance" is the right economic label for it.
+# Dogecoin/Hyperliquid/BNB CHEAP cells are untouched -- not currently
+# live-traded (see the asset-basket timeline finding) and not part of
+# either live bot's --assets scope, so recalibrating them isn't useful
+# right now and there's no fresh data to do it with anyway.
 HEDGE_SIZE_RATIO = {
-    "Bitcoin":     {"CHEAP": 0.1316, "MID": 0.4764, "CORE": 0.1062, "HIGH": 0.0306},
-    "Ethereum":    {"CHEAP": 0.1243, "MID": 0.2511, "CORE": 0.0822, "HIGH": 0.0204},
-    "Solana":      {"CHEAP": 0.1574, "MID": 0.6437, "CORE": 0.0625, "HIGH": 0.0159},
+    "Bitcoin":     {"CHEAP": 2.6360, "MID": 0.4764, "CORE": 0.1062, "HIGH": 0.0306},
+    "Ethereum":    {"CHEAP": 1.9937, "MID": 0.2511, "CORE": 0.0822, "HIGH": 0.0204},
+    "Solana":      {"CHEAP": 0.9230, "MID": 0.6437, "CORE": 0.0625, "HIGH": 0.0159},
     "Dogecoin":    {"CHEAP": 0.1992, "MID": 0.2937, "CORE": 0.0942, "HIGH": 0.0480},
     "Hyperliquid": {"CHEAP": 0.1453, "MID": 0.1742, "CORE": 0.0833, "HIGH": 0.0358},
     "BNB":         {"CHEAP": 0.1063, "MID": 0.1686, "CORE": 0.0503, "HIGH": 0.0285},
