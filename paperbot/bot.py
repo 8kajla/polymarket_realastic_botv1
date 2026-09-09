@@ -582,6 +582,7 @@ class PaperBot:
         by_asset = {a: round(v, 4) for a, v in self.ledger.realized_pnl_by_asset().items()}
         open_orders = sum(1 for o in self.fill_sim.orders.values() if o.is_open())
         hedge = self.ledger.hedge_summary()
+        scout = self.ledger.scout_summary()
         # "open amount" -- see committed_capital()'s docstring. Logged
         # unconditionally (not just when config.BANKROLL_USD is set):
         # on the main (unconstrained) bot, this is a direct, MEASURED
@@ -595,10 +596,12 @@ class PaperBot:
         logger.info(
             "PNL_SUMMARY realized_total=%.4f settled_trades=%d open_orders=%d "
             "pending_resolution=%d by_asset=%s hedge_trades=%d hedge_pnl=%.4f "
-            "normal_trades=%d normal_pnl=%.4f committed_capital=%.4f peak_committed_capital=%.4f",
+            "normal_trades=%d normal_pnl=%.4f scout_trades=%d scout_pnl=%.4f "
+            "committed_capital=%.4f peak_committed_capital=%.4f",
             self.ledger.realized_pnl(), len(self.ledger.records), open_orders,
             len(self.pending_resolution), by_asset,
             hedge["hedge_trades"], hedge["hedge_pnl"], hedge["normal_trades"], hedge["normal_pnl"],
+            scout["scout_trades"], scout["scout_pnl"],
             committed_now, self._peak_committed_capital,
         )
 

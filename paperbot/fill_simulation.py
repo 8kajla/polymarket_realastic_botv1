@@ -81,6 +81,7 @@ class SimulatedOrder:
     is_floor_lot: bool
     placed_at: float
     is_hedge: bool = False
+    is_scout: bool = False
 
     # None means "not yet initialized -- default to original_size" (see
     # __post_init__). This is deliberately NOT 0.0: a caller must be able
@@ -164,6 +165,7 @@ class FillSimulator:
             original_size=intent.size_shares,
             is_floor_lot=intent.is_floor_lot,
             is_hedge=intent.is_hedge,
+            is_scout=intent.is_scout,
             placed_at=now,
             remaining_size=intent.size_shares,
             queue_ahead_raw=raw_queue,
@@ -172,9 +174,9 @@ class FillSimulator:
         self.orders[order.order_id] = order
         logger.info(
             "PLACE order=%d asset=%s regime=%s pos=%s side=%s price=%.4f size=%.6f "
-            "floor_lot=%s hedge=%s queue_ahead_raw=%.4f queue_ahead_discounted=%.4f (factor=%.3f)",
+            "floor_lot=%s hedge=%s scout=%s queue_ahead_raw=%.4f queue_ahead_discounted=%.4f (factor=%.3f)",
             order.order_id, order.asset, order.regime, order.position_tier, order.side,
-            order.price, order.original_size, order.is_floor_lot, order.is_hedge,
+            order.price, order.original_size, order.is_floor_lot, order.is_hedge, order.is_scout,
             raw_queue, discounted_queue, self.queue_safety_factor,
         )
         return order

@@ -39,6 +39,7 @@ class SettlementRecord:
     settled_at: float
     is_floor_lot: bool
     is_hedge: bool = False
+    is_scout: bool = False
 
 
 class Ledger:
@@ -107,6 +108,7 @@ class Ledger:
             settled_at=now,
             is_floor_lot=order.is_floor_lot,
             is_hedge=order.is_hedge,
+            is_scout=order.is_scout,
         )
         self.records.append(record)
         self._settled_order_ids.add(order.order_id)
@@ -150,6 +152,21 @@ class Ledger:
         return {
             "hedge_trades": len(hedge),
             "hedge_pnl": round(sum(r.pnl for r in hedge), 4),
+            "normal_trades": len(normal),
+            "normal_pnl": round(sum(r.pnl for r in normal), 4),
+        }
+
+    def scout_summary(self) -> dict:
+        """Scout (small, tentative first-entry) vs. ordinary settlement
+        counts and P&L -- see SCOUT_PROBABILITY/SCOUT_SIZE_RATIO's
+        docstring in behavior_config.py. The live signal for whether this
+        new tier is actually landing at the frequency/size it was
+        calibrated for, same role hedge_summary() plays for hedges."""
+        scout = [r for r in self.records if r.is_scout]
+        normal = [r for r in self.records if not r.is_scout]
+        return {
+            "scout_trades": len(scout),
+            "scout_pnl": round(sum(r.pnl for r in scout), 4),
             "normal_trades": len(normal),
             "normal_pnl": round(sum(r.pnl for r in normal), 4),
         }

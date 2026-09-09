@@ -66,6 +66,7 @@ class OrderIntent:
     notional_usd: float
     is_floor_lot: bool
     is_hedge: bool = False
+    is_scout: bool = False
     reason: str = ""
 
 
@@ -311,6 +312,21 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     else:
         notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng)
 
+    is_scout = False
+    if not is_hedge and not is_floor_lot and activity.entry_count == 0:
+        # SCOUT: a deliberately small, tentative first entry -- see
+        # SCOUT_PROBABILITY/SCOUT_SIZE_RATIO's docstring in
+        # behavior_config.py. Only reachable at the market's true first
+        # entry (decide_hedge structurally can never fire this early --
+        # dominant_side() needs at least one prior entry to exist), and
+        # never stacks with a floor-lot roll (that's an orthogonal, already
+        # -tiny mechanism keyed off share-count minimums, not first-entry
+        # tentativeness -- scaling it down further would just inflate its
+        # already-expected skip rate for no modeling benefit).
+        if rng.random() < bc.scout_probability(market.asset):
+            is_scout = True
+            notional = notional * bc.scout_size_ratio(market.asset)
+
     if min_size is not None and notional < min_size * price:
         # This simulated order would be rejected by the exchange's own
         # runtime-fetched minimum order size. By this point is_hedge is
@@ -330,8 +346,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             # to the real minimum would defeat its entire purpose, so it
             # stays exempt and genuinely skips, unchanged from before.
             logger.info(
-                "SKIP asset=%s regime=%s pos=%s hedge=%s: notional $%.4f below exchange min "
-                "($%.4f = %.2f shares * $%.4f)", market.asset, regime, position_tier, is_hedge,
+                "SKIP asset=%s regime=%s pos=%s hedge=%s scout=%s: notional $%.4f below exchange min "
+                "($%.4f = %.2f shares * $%.4f)", market.asset, regime, position_tier, is_hedge, is_scout,
                 notional, floor_notional, min_size, price,
             )
             return None
@@ -354,9 +370,9 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # otherwise be lost entirely now happens at the smallest size the
         # exchange actually allows, instead of not happening at all.
         logger.info(
-            "BUMP asset=%s regime=%s pos=%s hedge=%s: notional $%.4f below exchange min, "
+            "BUMP asset=%s regime=%s pos=%s hedge=%s scout=%s: notional $%.4f below exchange min, "
             "raised to $%.4f (%.2f shares * $%.4f) instead of skipping",
-            market.asset, regime, position_tier, is_hedge, notional, floor_notional, min_size, price,
+            market.asset, regime, position_tier, is_hedge, is_scout, notional, floor_notional, min_size, price,
         )
         notional = floor_notional
 
@@ -368,6 +384,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
 
     if is_hedge:
         reason = "hedge"
+    elif is_scout:
+        reason = "scout_entry"
     elif is_floor_lot:
         reason = "floor_lot"
     else:
@@ -384,6 +402,7 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         size_shares=size_shares,
         notional_usd=notional,
         is_floor_lot=is_floor_lot,
+        is_scout=is_scout,
         is_hedge=is_hedge,
         reason=reason,
     )

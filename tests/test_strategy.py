@@ -484,3 +484,70 @@ class TestBuildOrderIntentHedge:
         core_median = bc.median_entry_notional("Bitcoin", "CORE", "2nd_3rd")
         assert intent.notional_usd > core_median * 0.5
         assert intent.reason in ("entry_curve", "floor_lot")
+
+
+class TestBuildOrderIntentScout:
+    """SCOUT: a deliberately small, tentative FIRST entry -- the gap
+    decide_hedge structurally can never close (dominant_side() needs at
+    least one prior entry to exist, so decide_hedge always returns None at
+    entry_count==0). See SCOUT_PROBABILITY/SCOUT_SIZE_RATIO's docstring in
+    behavior_config.py."""
+
+    def test_forced_scout_shrinks_the_first_entry_below_the_ordinary_curve(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.25, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: None)
+        monkeypatch.setattr(bc, "scout_probability", lambda asset: 1.0)
+        monkeypatch.setattr(bc, "scout_size_ratio", lambda asset: 0.5)
+
+        scout_intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        # Control run: same seed, same everything, but scout forced off.
+        monkeypatch.setattr(bc, "scout_probability", lambda asset: 0.0)
+        activity2 = MarketActivityState()
+        ordinary_intent = build_order_intent(market, up_book, down_book, activity2, random.Random(0), now=0.0)
+
+        assert scout_intent is not None and ordinary_intent is not None
+        assert scout_intent.is_scout is True
+        assert scout_intent.reason == "scout_entry"
+        assert scout_intent.is_hedge is False
+        assert scout_intent.is_floor_lot is False
+        assert scout_intent.side == ordinary_intent.side  # same rng draw for side selection
+        assert scout_intent.notional_usd == pytest.approx(ordinary_intent.notional_usd * 0.5)
+
+    def test_scout_never_fires_beyond_the_first_entry(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.79, token_id="down")
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=5.0, regime="CHEAP")  # entry_count now 1
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: None)
+        monkeypatch.setattr(bc, "scout_probability", lambda asset: 1.0)  # would always fire if reachable
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+        assert intent is not None
+        assert intent.is_scout is False
+
+    def test_scout_does_not_stack_with_a_floor_lot_roll(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="BNB")  # BNB/CHEAP/first has a real floor-lot rate
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.79, token_id="down")
+        activity = MarketActivityState()
+        rng = random.Random(0)
+        rng.random = lambda: 0.0  # forces the floor-lot roll ahead of the scout check
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: None)
+        monkeypatch.setattr(bc, "scout_probability", lambda asset: 1.0)  # would always fire if reachable
+
+        intent = build_order_intent(market, up_book, down_book, activity, rng, now=0.0)
+        assert intent is not None
+        assert intent.is_floor_lot is True
+        assert intent.is_scout is False
+
+    def test_scout_probability_and_ratio_default_to_no_op_for_uncalibrated_assets(self):
+        assert bc.scout_probability("XRP") == 0.0
+        assert bc.scout_size_ratio("XRP") == bc._DEFAULT_SCOUT_SIZE_RATIO

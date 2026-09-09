@@ -649,3 +649,77 @@ def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) ->
     if not hazards or attempt_index < 1 or attempt_index > len(hazards):
         return 0.0
     return hazards[attempt_index - 1]
+
+
+# ---------------------------------------------------------------------------
+# SCOUT sizing for the market's very FIRST entry. Added 2026-09-09, closing
+# a confirmed structural gap in the hedge model above: decide_hedge() can
+# only ever fire once entry_count >= 1 -- there's nothing to hedge against
+# yet at entry_count==0, dominant_side() is still None -- so the bot's
+# first entry in every market was always sized at the full ordinary
+# "first" tier, never as a deliberately small, tentative stake. (Not
+# reusing the word "probe" -- that's already the floor-lot tier's name,
+# see FLOOR_LOT_SIZE_SHARES; this is a different mechanism, applies at a
+# different point, and the two can both roll on the same first entry.)
+#
+# Real data says the first entry frequently ISN'T the trader's real bet:
+# in dual-sided markets (2026-09-09 hedge-order-loss-impact + probe-
+# calibration passes), the first entry is the eventually-non-dominant
+# (outpaced) side 28.5-39.0% of the time depending on asset, and when it
+# is, it's sized at roughly a fifth to two-thirds of what the ordinary
+# "first" tier curve alone would have produced -- not just noise around
+# the same median. Separately, the ordering itself matters for real PNL:
+# a 7-day, 1,318-pair, 321-loss-event check found the dominant side loses
+# LESS OFTEN (18.0% vs 31.2%) and the hedge covers MORE of the damage when
+# it does lose (61.3% vs 44.5% loss-cut) specifically in the hedge-first
+# cases our bot could never produce before this.
+#
+# SCOUT_PROBABILITY[asset]: rolled ONCE, at entry_count==0, before side is
+# even picked -- matches how the real decision has to work, since he can't
+# know in advance which side will end up dominant either. Fraction of ALL
+# markets (single- and multi-trade) where the real first entry turned out
+# to be the eventually-non-dominant side.
+#
+# SCOUT_SIZE_RATIO[asset]: median(first_entry_usdc / ENTRY_SIZING_USD's
+# "first"-tier median for that entry's own regime), measured only over the
+# scout cases above. Applied as a straight multiplier on the ordinary
+# decide_size() output for position_tier=="first" -- NOT a fraction of the
+# (unknowable at decision time) eventual dominant total, which is the
+# quantity the raw "first entry is ~3% of eventual dominant cost" finding
+# used but can't be computed forward from inside build_order_intent.
+#
+# CALIBRATED 2026-09-09, 14-day window, BTC/ETH/SOL only (the three assets
+# with any real recent activity -- see ASSET_REGIME_DISTRIBUTION_PCT's
+# dormancy notes for Dogecoin/Hyperliquid/BNB, all fully dormant this
+# entire window). n=263/187/239 markets respectively -- below this
+# project's usual n>=500 trade-level trust bar (though comparable to
+# HEDGE_TRIGGER_PROBABILITY's n>=200-market bar for the same kind of
+# once-per-market binary measurement). Treat as a first-pass estimate, not
+# a fully-trusted recalibration -- revisit once more post-resumption data
+# accumulates. Dogecoin/Hyperliquid/BNB default to 0.0 probability
+# (no-op, unchanged first-entry behavior) since there's no live data to
+# calibrate them from at all right now.
+SCOUT_PROBABILITY = {
+    "Bitcoin":  0.390,
+    "Ethereum": 0.285,
+    "Solana":   0.376,
+}
+
+SCOUT_SIZE_RATIO = {
+    "Bitcoin":  0.567,
+    "Ethereum": 0.672,
+    "Solana":   0.185,
+}
+
+# Only reachable if SCOUT_PROBABILITY somehow got a nonzero entry for an
+# asset without a matching ratio -- shouldn't happen since both dicts are
+# maintained together above, but a defined fallback beats a KeyError.
+_DEFAULT_SCOUT_SIZE_RATIO = 0.5
+
+
+def scout_probability(asset: str) -> float:
+    return SCOUT_PROBABILITY.get(asset, 0.0)
+
+
+def scout_size_ratio(asset: str) -> float:
+    return SCOUT_SIZE_RATIO.get(asset, _DEFAULT_SCOUT_SIZE_RATIO)
