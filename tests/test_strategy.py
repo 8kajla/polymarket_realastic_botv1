@@ -397,6 +397,30 @@ class TestDecideHedge:
             for seed in range(20)
         )
 
+    def test_never_fires_at_or_beyond_the_hard_cap(self, monkeypatch):
+        """CONFIRMED LIVE (same night as the continuation fix above): the
+        per-opportunity continuation roll runs away without a ceiling --
+        the bot's own hedge-count-per-market distribution came back
+        badly bimodal (15.1% reaching 7+ vs the real 2.2%), directly
+        costing money on the ledger. config.MAX_HEDGE_COUNT_PER_MARKET
+        must hard-block any further hedge once hedge_count reaches it,
+        regardless of how favorable the RNG draw or the continuation
+        probability is."""
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.hedge_count = config.MAX_HEDGE_COUNT_PER_MARKET
+        monkeypatch.setattr(bc, "hedge_continuation_probability", lambda count: 1.0)  # would always fire otherwise
+        for seed in range(20):
+            assert decide_hedge("BNB", activity, random.Random(seed)) is None
+
+    def test_still_fires_just_under_the_hard_cap(self, monkeypatch):
+        """Sanity check the cap boundary is exact, not off-by-one."""
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.hedge_count = config.MAX_HEDGE_COUNT_PER_MARKET - 1
+        monkeypatch.setattr(bc, "hedge_continuation_probability", lambda count: 1.0)
+        assert decide_hedge("BNB", activity, random.Random(0)) is not None
+
     def test_continuation_uses_hedge_continuation_probability_not_the_hazard_curve(self, monkeypatch):
         """The FIRST hedge (hedge_count==0) is governed by
         hedge_attempt_hazard; a further hedge (hedge_count>=1) must use

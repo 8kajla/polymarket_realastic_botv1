@@ -280,6 +280,28 @@ def maker_rebate_usd(shares: float, price: float) -> float:
     return taker_fee * CRYPTO_MAKER_REBATE_SHARE
 
 # ---------------------------------------------------------------------------
+# Hard cap on hedge_count. Added 2026-09-09, hours after
+# HEDGE_CONTINUATION_PROBABILITY shipped (behavior_config.py) let
+# decide_hedge fire more than once per market -- CONFIRMED LIVE this
+# same night that the per-opportunity probability model runs away: our
+# bot's own hedge-count-per-market distribution came back badly bimodal
+# (61.4% stop at 1, vs the real 39.8%; 15.1% reach 7+, vs the real
+# 2.2% -- nearly 7x too common), and markets with 2+ hedges accounted
+# for 89% of a confirmed net-negative hedging effect (-$474 of -$535
+# total, on the bot's own ledger, dominant-side-alone vs combined PNL
+# across 251 paired markets). Root cause not yet fixed properly (the
+# per-opportunity roll doesn't account for how much more often our
+# bot's tick cadence offers a "continuation opportunity" than the real
+# trader's actual decision cadence, so a 50-60% per-opportunity
+# probability compounds into runaway chains) -- this cap is a direct,
+# conservative mitigation to bound the damage NOW while that gets
+# redesigned properly. 6 is chosen because the real distribution's 7+
+# bucket is only 2.2% (a thin tail, not where the real mass lives) --
+# capping here cuts off almost none of genuine behavior while
+# eliminating the runaway-chain failure mode entirely.
+MAX_HEDGE_COUNT_PER_MARKET = 6
+
+# ---------------------------------------------------------------------------
 # Local paper-trading state (gitignored -- never commit real run state)
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(os.environ.get("PAPERBOT_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))

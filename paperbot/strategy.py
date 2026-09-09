@@ -141,8 +141,18 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random) 
     being blocked outright -- see its docstring in behavior_config.py for
     the calibration. hedge_attempt_hazard above still exclusively governs
     the FIRST hedge (hedge_count == 0); nothing about that path changed.
+
+    HARDENED SAME NIGHT: confirmed live that the per-opportunity
+    continuation roll runs away without a ceiling -- see
+    config.MAX_HEDGE_COUNT_PER_MARKET's docstring for the exact numbers
+    (real distribution vs. this bot's, and the confirmed net-negative $
+    effect on the ledger). Capped as a direct mitigation while the
+    underlying per-opportunity-vs-real-cadence mismatch gets a proper
+    fix.
     """
     if activity.entry_count < 1 or activity.first_entry_regime is None:
+        return None
+    if activity.hedge_count >= config.MAX_HEDGE_COUNT_PER_MARKET:
         return None
     dominant = activity.dominant_side()
     if dominant is None:
