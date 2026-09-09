@@ -221,27 +221,29 @@ SIZE_SCALE_FACTOR = float(os.environ.get("SIZE_SCALE_FACTOR", "1.0"))
 # real, additive income this bot's PNL has been silently leaving out of
 # every dollar figure this whole project has ever reported.
 #
-# SOURCED FROM SECONDARY AGGREGATORS, not Polymarket's own primary docs
-# (docs.polymarket.com / help.polymarket.com were unreachable from this
-# sandbox at the time this was written -- DNS resolution failed both
-# times tried). Two independent aggregator sources agreed on the
-# mechanism and formula:
+# CORRECTED 2026-09-09 (same night, few hours after first shipping this):
+# the original CRYPTO_TAKER_FEE_RATE=0.018 came from secondary aggregator
+# sites (docs.polymarket.com / help.polymarket.com were unreachable from
+# this sandbox -- DNS resolution failed both times tried) and was WRONG.
+# Pulled the live feeSchedule directly off real, currently-open BTC/ETH/
+# SOL 5-min markets via Gamma (a PRIMARY source, not an aggregator's
+# summary) and all three agreed exactly:
+#   {"exponent": 1, "rate": 0.07, "takerOnly": true, "rebateRate": 0.2}
+# rebateRate=0.2 matches CRYPTO_MAKER_REBATE_SHARE below exactly --
+# that part of the aggregator research held up. But the real taker rate
+# is 0.07 (7%), not 0.018 (1.8%) -- nearly 4x off, and understated (this
+# bot's rebate income has been running ~4x too low since the first
+# deploy tonight). "exponent": 1 is consistent with the same p*(1-p)
+# SHAPE the aggregators described (peaks at price=0.50, tapers toward
+# 0/1) -- read as fee = shares * rate * (price*(1-price))^exponent,
+# which collapses to the formula below when exponent=1. Not
+# independently confirmed against Polymarket's own docs (still
+# unreachable), but directly confirmed identical across BTC, ETH, and
+# SOL live market data, which is the authoritative source available.
 #   taker_fee(shares, price) = shares * CRYPTO_TAKER_FEE_RATE * price * (1-price)
-#   (peaks at price=0.50, tapers toward 0/1 -- highest-uncertainty trades
-#   cost takers the most)
 #   makers pay ZERO fees, and are paid CRYPTO_MAKER_REBATE_SHARE of the
 #   taker's fee on that same fill.
-# CRYPTO_TAKER_FEE_RATE = 1.80% is the crypto-category-specific rate (one
-# source: "Crypto 1.80%", the highest of any category, explicitly
-# because of high-velocity short-duration markets like this bot trades).
-# CRYPTO_MAKER_REBATE_SHARE = 20% is also crypto-category-specific (one
-# source explicitly: "Crypto: 20%", vs 25% for politics/tech/finance
-# categories -- crypto's share is lower, but the underlying fee rate is
-# also the highest of any category, so the absolute rebate isn't
-# necessarily smaller). Revisit if Polymarket's primary docs become
-# reachable, to confirm these two numbers directly rather than through
-# aggregators.
-CRYPTO_TAKER_FEE_RATE = 0.018
+CRYPTO_TAKER_FEE_RATE = 0.07
 CRYPTO_MAKER_REBATE_SHARE = 0.20
 
 
