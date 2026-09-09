@@ -35,11 +35,27 @@ class SettlementRecord:
     winning_side: str
     won: bool
     payout: float            # filled_size * 1.0 if won else 0.0
-    pnl: float                # payout - entry_cost
+    pnl: float                # payout - entry_cost -- DIRECTIONAL only,
+                              # deliberately excludes rebate_usd (see its
+                              # docstring below) so every earlier comparison
+                              # this project has ever made against this
+                              # field stays meaningful and comparable.
     settled_at: float
     is_floor_lot: bool
     is_hedge: bool = False
     is_scout: bool = False
+    # Maker rebate earned on this order's fills -- see
+    # config.maker_rebate_usd's docstring. Real, additive income (this bot
+    # only ever places postOnly/maker orders), but kept as a SEPARATE field
+    # rather than folded into `pnl` above: every prior analysis this
+    # project has done (and everything in bot_vs_trader_history.jsonl)
+    # compares against directional pnl alone, and silently redefining it
+    # would make every one of those comparisons wrong retroactively. Use
+    # pnl_with_rebate() for the real, total economic result.
+    rebate_usd: float = 0.0
+
+    def pnl_with_rebate(self) -> float:
+        return self.pnl + self.rebate_usd
 
 
 class Ledger:
@@ -91,6 +107,14 @@ class Ledger:
         entry_price = entry_cost / order.filled_size if order.filled_size else order.price
         payout = order.filled_size * 1.0 if won else 0.0
         pnl = payout - entry_cost
+        # CONFIRMED 2026-09-09 (see config.maker_rebate_usd's docstring):
+        # every order this bot places is postOnly -- it never crosses as a
+        # taker, only ever rests as a maker -- so every fill earns a real
+        # rebate that was never modeled before now. Summed per-fill (each
+        # Fill has its own price, same reasoning as entry_cost above: the
+        # rebate formula is price-dependent, and order.price is only the
+        # CURRENT resting price, not what earlier fills actually cleared at).
+        rebate_usd = sum(config.maker_rebate_usd(f.size, f.price) for f in order.fills)
 
         record = SettlementRecord(
             order_id=order.order_id,
@@ -109,19 +133,32 @@ class Ledger:
             is_floor_lot=order.is_floor_lot,
             is_hedge=order.is_hedge,
             is_scout=order.is_scout,
+            rebate_usd=rebate_usd,
         )
         self.records.append(record)
         self._settled_order_ids.add(order.order_id)
         logger.info(
-            "SETTLE order=%d asset=%s side=%s won=%s entry_cost=%.4f payout=%.4f pnl=%+.4f",
-            order.order_id, order.asset, order.side, won, entry_cost, payout, pnl,
+            "SETTLE order=%d asset=%s side=%s won=%s entry_cost=%.4f payout=%.4f pnl=%+.4f rebate=%.4f",
+            order.order_id, order.asset, order.side, won, entry_cost, payout, pnl, rebate_usd,
         )
         return record
 
     def realized_pnl(self) -> float:
         """Recomputed fresh from the settlement log every call -- see
-        module docstring. Never mutate a running total instead of this."""
+        module docstring. Never mutate a running total instead of this.
+        DIRECTIONAL only -- see realized_pnl_with_rebates() for the real,
+        total economic result including maker rebates."""
         return sum(r.pnl for r in self.records)
+
+    def realized_pnl_with_rebates(self) -> float:
+        """The real total: directional pnl PLUS the maker rebate earned on
+        every fill (this bot only ever places postOnly/maker orders -- see
+        config.maker_rebate_usd's docstring). Recomputed fresh every call,
+        same discipline as realized_pnl() above."""
+        return sum(r.pnl_with_rebate() for r in self.records)
+
+    def total_rebate_usd(self) -> float:
+        return sum(r.rebate_usd for r in self.records)
 
     def is_settled(self, order_id: int) -> bool:
         """Whether this order_id has already produced a settlement record.

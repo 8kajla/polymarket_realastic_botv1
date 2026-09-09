@@ -2,8 +2,9 @@ import json
 
 import pytest
 
+from paperbot import config
 from paperbot.fill_simulation import Fill, OrderStatus, SimulatedOrder
-from paperbot.ledger import Ledger
+from paperbot.ledger import Ledger, SettlementRecord
 
 
 def make_filled_order(order_id=1, asset="Bitcoin", regime="CHEAP", side="Up",
@@ -97,6 +98,97 @@ class TestScoutFlagPropagation:
         assert summary["normal_trades"] == 1
         assert summary["scout_pnl"] == pytest.approx(5.0 * 1.0 - 5.0 * 0.10)
         assert summary["normal_pnl"] == pytest.approx(0.0 - 5.0 * 0.60)
+
+
+class TestMakerRebate:
+    """This bot only ever places postOnly (maker) orders -- every fill
+    earns config.maker_rebate_usd's rebate, tracked separately from
+    directional pnl. See SettlementRecord.rebate_usd's docstring for why
+    it's kept separate rather than folded into `pnl`."""
+
+    def test_settle_order_computes_rebate_from_each_fill(self):
+        ledger = Ledger()
+        order = make_filled_order(price=0.20, size=10.0, side="Down")
+        record = ledger.settle_order(order, winning_side="Down")
+        assert record.rebate_usd == pytest.approx(config.maker_rebate_usd(10.0, 0.20))
+        assert record.rebate_usd > 0.0
+
+    def test_rebate_sums_across_multiple_fills_at_different_prices(self):
+        """Same reasoning as the reprice cost-basis fix -- each fill's own
+        price matters, not the order's final resting price, since the
+        rebate formula is price-dependent (peaks at 0.50)."""
+        order = SimulatedOrder(
+            order_id=1, condition_id="c1", token_id="tok-up", asset="Bitcoin",
+            regime="MID", position_tier="first", side="Up", price=0.55,
+            original_size=10.0, is_floor_lot=False, placed_at=0.0, remaining_size=0.0,
+        )
+        order.fills.append(Fill(size=4.0, price=0.40, ts=1.0))
+        order.fills.append(Fill(size=6.0, price=0.55, ts=2.0))
+        order.status = OrderStatus.FILLED
+        order.first_fill_at = 1.0
+
+        ledger = Ledger()
+        record = ledger.settle_order(order, winning_side="Up")
+        expected = config.maker_rebate_usd(4.0, 0.40) + config.maker_rebate_usd(6.0, 0.55)
+        assert record.rebate_usd == pytest.approx(expected)
+        # NOT the naive (wrong) shortcut of applying the final price to
+        # the whole filled size:
+        assert record.rebate_usd != pytest.approx(config.maker_rebate_usd(10.0, 0.55))
+
+    def test_pnl_with_rebate_adds_rebate_to_directional_pnl(self):
+        ledger = Ledger()
+        order = make_filled_order(price=0.20, size=10.0, side="Down")
+        record = ledger.settle_order(order, winning_side="Up")  # loses
+        assert record.won is False
+        assert record.pnl < 0  # lost the directional bet
+        assert record.rebate_usd > 0  # still earned a rebate on the fill
+        assert record.pnl_with_rebate() == pytest.approx(record.pnl + record.rebate_usd)
+        # the rebate genuinely offsets some of the loss, never worsens it
+        assert record.pnl_with_rebate() > record.pnl
+
+    def test_realized_pnl_with_rebates_sums_across_all_records(self):
+        ledger = Ledger()
+        ledger.settle_order(make_filled_order(order_id=1, price=0.20, size=10.0,
+                                               side="Down", condition_id="c1"), winning_side="Down")
+        ledger.settle_order(make_filled_order(order_id=2, price=0.60, size=5.0,
+                                               side="Up", condition_id="c2"), winning_side="Down")
+        assert ledger.realized_pnl_with_rebates() == pytest.approx(
+            sum(r.pnl_with_rebate() for r in ledger.records)
+        )
+        assert ledger.realized_pnl_with_rebates() != ledger.realized_pnl()  # rebate is nonzero here
+
+    def test_total_rebate_usd_sums_the_rebate_field_only(self):
+        ledger = Ledger()
+        ledger.settle_order(make_filled_order(order_id=1, price=0.20, size=10.0,
+                                               side="Down", condition_id="c1"), winning_side="Down")
+        ledger.settle_order(make_filled_order(order_id=2, price=0.60, size=5.0,
+                                               side="Up", condition_id="c2"), winning_side="Down")
+        assert ledger.total_rebate_usd() == pytest.approx(sum(r.rebate_usd for r in ledger.records))
+        assert ledger.total_rebate_usd() == pytest.approx(ledger.realized_pnl_with_rebates() - ledger.realized_pnl())
+
+    def test_old_records_without_rebate_field_default_to_zero_not_a_crash(self):
+        """Backward compatibility: a ledger.json saved before this field
+        existed has no "rebate_usd" key at all -- must load cleanly with
+        rebate_usd=0.0, not KeyError, and never fabricate a retroactive
+        value for history we don't have per-fill data for."""
+        raw = {
+            "order_id": 1, "condition_id": "c1", "asset": "Bitcoin", "regime": "CHEAP",
+            "side": "Up", "entry_price": 0.2, "filled_size": 10.0, "entry_cost": 2.0,
+            "winning_side": "Up", "won": True, "payout": 10.0, "pnl": 8.0,
+            "settled_at": 1.0, "is_floor_lot": False,
+        }
+        record = SettlementRecord(**raw)
+        assert record.rebate_usd == 0.0
+        assert record.pnl_with_rebate() == pytest.approx(record.pnl)
+
+    def test_persists_and_reloads_rebate_correctly(self, tmp_path):
+        path = tmp_path / "ledger.json"
+        ledger = Ledger()
+        ledger.settle_order(make_filled_order(price=0.20, size=10.0, side="Down"), winning_side="Down")
+        ledger.save(path)
+
+        reloaded = Ledger.load(path)
+        assert reloaded.records[0].rebate_usd == pytest.approx(config.maker_rebate_usd(10.0, 0.20))
 
 
 class TestRealizedPnlRecompute:

@@ -594,11 +594,13 @@ class PaperBot:
         if committed_now > self._peak_committed_capital:
             self._peak_committed_capital = committed_now
         logger.info(
-            "PNL_SUMMARY realized_total=%.4f settled_trades=%d open_orders=%d "
+            "PNL_SUMMARY realized_total=%.4f realized_total_with_rebates=%.4f "
+            "total_rebate=%.4f settled_trades=%d open_orders=%d "
             "pending_resolution=%d by_asset=%s hedge_trades=%d hedge_pnl=%.4f "
             "normal_trades=%d normal_pnl=%.4f scout_trades=%d scout_pnl=%.4f "
             "committed_capital=%.4f peak_committed_capital=%.4f",
-            self.ledger.realized_pnl(), len(self.ledger.records), open_orders,
+            self.ledger.realized_pnl(), self.ledger.realized_pnl_with_rebates(),
+            self.ledger.total_rebate_usd(), len(self.ledger.records), open_orders,
             len(self.pending_resolution), by_asset,
             hedge["hedge_trades"], hedge["hedge_pnl"], hedge["normal_trades"], hedge["normal_pnl"],
             scout["scout_trades"], scout["scout_pnl"],

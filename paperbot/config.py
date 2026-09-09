@@ -212,6 +212,49 @@ if BANKROLL_USD is not None:
 SIZE_SCALE_FACTOR = float(os.environ.get("SIZE_SCALE_FACTOR", "1.0"))
 
 # ---------------------------------------------------------------------------
+# Maker rebates. Added 2026-09-09: every order this bot places is postOnly
+# (see bot.py's "postOnly order would cross spread" skip path -- it never
+# crosses as a taker, only ever rests as a maker), but nothing in the
+# ledger has ever modeled the real economics that comes with that.
+# Polymarket's taker-fee/maker-rebate program means a maker isn't just
+# fee-free, it actively EARNS a share of the taker's fee on every fill --
+# real, additive income this bot's PNL has been silently leaving out of
+# every dollar figure this whole project has ever reported.
+#
+# SOURCED FROM SECONDARY AGGREGATORS, not Polymarket's own primary docs
+# (docs.polymarket.com / help.polymarket.com were unreachable from this
+# sandbox at the time this was written -- DNS resolution failed both
+# times tried). Two independent aggregator sources agreed on the
+# mechanism and formula:
+#   taker_fee(shares, price) = shares * CRYPTO_TAKER_FEE_RATE * price * (1-price)
+#   (peaks at price=0.50, tapers toward 0/1 -- highest-uncertainty trades
+#   cost takers the most)
+#   makers pay ZERO fees, and are paid CRYPTO_MAKER_REBATE_SHARE of the
+#   taker's fee on that same fill.
+# CRYPTO_TAKER_FEE_RATE = 1.80% is the crypto-category-specific rate (one
+# source: "Crypto 1.80%", the highest of any category, explicitly
+# because of high-velocity short-duration markets like this bot trades).
+# CRYPTO_MAKER_REBATE_SHARE = 20% is also crypto-category-specific (one
+# source explicitly: "Crypto: 20%", vs 25% for politics/tech/finance
+# categories -- crypto's share is lower, but the underlying fee rate is
+# also the highest of any category, so the absolute rebate isn't
+# necessarily smaller). Revisit if Polymarket's primary docs become
+# reachable, to confirm these two numbers directly rather than through
+# aggregators.
+CRYPTO_TAKER_FEE_RATE = 0.018
+CRYPTO_MAKER_REBATE_SHARE = 0.20
+
+
+def maker_rebate_usd(shares: float, price: float) -> float:
+    """Rebate earned by the RESTING (maker) side of one fill -- this
+    bot's only execution mode. Always additive income, never a cost (the
+    taker pays the fee; the maker receives a share of it)."""
+    if shares <= 0 or price <= 0.0 or price >= 1.0:
+        return 0.0
+    taker_fee = shares * CRYPTO_TAKER_FEE_RATE * price * (1.0 - price)
+    return taker_fee * CRYPTO_MAKER_REBATE_SHARE
+
+# ---------------------------------------------------------------------------
 # Local paper-trading state (gitignored -- never commit real run state)
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(os.environ.get("PAPERBOT_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
