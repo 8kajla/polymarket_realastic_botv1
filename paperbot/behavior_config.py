@@ -531,10 +531,20 @@ def side_persistence_for(asset: str, held_side_regime: str) -> float:
 # smaller, more risk-averse recent sizing found in the same pass
 # (ENTRY_SIZING_USD's recalibration above). Solana and every other cell
 # checked either weren't significant or stayed below the trust bar.
+# RECALIBRATED AGAIN 2026-09-09 (autonomous /loop cycle, part of the same
+# behavior-over-time drift sweep as SIDE_PERSISTENCE's Solana/CORE fix
+# above): checked all 12 live cells against a fresh 7-day window. Only
+# Solana/CHEAP cleared both the n>=200 trust bar and a real gap:
+# 0.5950 -> 0.7225 (n=227 markets, +12.7pp). Every MID cell (the largest,
+# most reliable samples given CHEAP's declining overall share -- see the
+# broader regime-mix drift documented in this loop's other changes)
+# stayed under 2.5pp, unchanged. CORE/HIGH cells for all three assets
+# looked more dramatic on their face but stayed below the trust bar
+# (n=8-136) -- not chased, same discipline as every thin cell in this file.
 HEDGE_TRIGGER_PROBABILITY = {
     "Bitcoin":     {"CHEAP": 0.6242, "MID": 0.8018, "CORE": 0.4754, "HIGH": 0.2967},
     "Ethereum":    {"CHEAP": 0.5336, "MID": 0.6562, "CORE": 0.5064, "HIGH": 0.2971},
-    "Solana":      {"CHEAP": 0.5950, "MID": 0.7286, "CORE": 0.5523, "HIGH": 0.3039},
+    "Solana":      {"CHEAP": 0.7225, "MID": 0.7286, "CORE": 0.5523, "HIGH": 0.3039},
     "Dogecoin":    {"CHEAP": 0.3515, "MID": 0.4531, "CORE": 0.6209, "HIGH": 0.3041},
     "Hyperliquid": {"CHEAP": 0.3506, "MID": 0.5819, "CORE": 0.5628, "HIGH": 0.3079},
     "BNB":         {"CHEAP": 0.8389, "MID": 0.9004, "CORE": 0.7806, "HIGH": 0.4884},
