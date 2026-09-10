@@ -30,6 +30,14 @@ class MarketActivityState:
     last_side: Optional[str] = None  # "Up" or "Down"
     last_price_seen: Optional[float] = None
     first_entry_regime: Optional[str] = None
+    # ADDED 2026-09-10, alongside ADVERSE_MOVE_SIZE_MULTIPLIER: the price
+    # of the market's first entry (whichever side), needed to compute how
+    # far price has since moved against the dominant side at hedge time.
+    # first_entry_regime only records the BUCKET (CHEAP/MID/CORE/HIGH),
+    # which is too coarse for the continuous adverse-move signal this
+    # measures -- see behavior_config.adverse_move_size_multiplier's
+    # docstring.
+    first_entry_price: Optional[float] = None
     cost_by_side: dict = field(default_factory=lambda: {"Up": 0.0, "Down": 0.0})
     # CHANGED 2026-09-09 (was: hedge_placed: bool, permanently locking
     # after the market's first hedge-shaped entry). CONFIRMED LIVE:
@@ -55,9 +63,11 @@ class MarketActivityState:
         return "Up" if up >= down else "Down"
 
     def record_entry(self, side: str, notional_usd: float = 0.0, regime: Optional[str] = None,
-                      is_hedge: bool = False) -> None:
+                      is_hedge: bool = False, price: Optional[float] = None) -> None:
         if self.entry_count == 0 and regime is not None:
             self.first_entry_regime = regime
+        if self.entry_count == 0 and price is not None:
+            self.first_entry_price = price
         self.cost_by_side[side] = self.cost_by_side.get(side, 0.0) + notional_usd
         self.entry_count += 1
         self.last_side = side
@@ -424,6 +434,19 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         dominant_cost = activity.cost_by_side.get(activity.dominant_side(), 0.0)
         if activity.hedge_count == 0:
             ratio = bc.hedge_size_ratio(market.asset, activity.first_entry_regime)
+            # ADDED 2026-09-10: real, cross-asset-confirmed finding that
+            # first-hedge SIZE scales with how far price has moved against
+            # the dominant side since entry, on top of (not instead of)
+            # the first_entry_regime baseline above -- see
+            # ADVERSE_MOVE_SIZE_MULTIPLIER's docstring in behavior_config.py.
+            # `price` here is the hedge side's book price (opposite of the
+            # dominant side), so 1 - price is the dominant side's current
+            # implied price -- matches this multiplier's real-data
+            # derivation exactly (entry price minus current price, positive
+            # = moved against the dominant side).
+            if config.ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER and activity.first_entry_price is not None:
+                adverse_move = activity.first_entry_price - (1.0 - price)
+                ratio *= bc.adverse_move_size_multiplier(market.asset, adverse_move)
         else:
             ratio = bc.hedge_continuation_size_ratio(activity.hedge_count + 1)
         jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)

@@ -320,7 +320,8 @@ class PaperBot:
 
         order = self.fill_sim.place_order(intent, order_book, now=now)
         self.resting_order_ids.setdefault(market.condition_id, set()).add(order.order_id)
-        activity.record_entry(intent.side, intent.notional_usd, intent.regime, is_hedge=intent.is_hedge)
+        activity.record_entry(intent.side, intent.notional_usd, intent.regime, is_hedge=intent.is_hedge,
+                               price=intent.price)
         self._record_global_trade(now)
 
     def available_cash(self) -> float | None:

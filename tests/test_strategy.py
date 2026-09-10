@@ -429,6 +429,17 @@ class TestMarketActivityStateHedgeTracking:
         activity.record_entry("Down", notional_usd=2.0, regime="CHEAP")
         assert activity.first_entry_regime == "HIGH"
 
+    def test_first_entry_price_locked_on_first_call_only(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="HIGH", price=0.95)
+        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP", price=0.05)
+        assert activity.first_entry_price == 0.95
+
+    def test_first_entry_price_defaults_to_none_when_not_passed(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="HIGH")
+        assert activity.first_entry_price is None
+
     def test_dominant_side_is_none_before_any_entry(self):
         assert MarketActivityState().dominant_side() is None
 
@@ -910,6 +921,90 @@ class TestBuildOrderIntentHedge:
         core_median = bc.median_entry_notional("Bitcoin", "CORE", "2nd_3rd")
         assert intent.notional_usd > core_median * 0.5
         assert intent.reason in ("entry_curve", "floor_lot")
+
+    def test_hedge_size_scales_with_adverse_move(self, monkeypatch):
+        """build_order_intent's hedge-sizing block, added 2026-09-10: the
+        first hedge's notional must include ADVERSE_MOVE_SIZE_MULTIPLIER on
+        top of the base HEDGE_SIZE_RATIO, computed from first_entry_price
+        (recorded via record_entry's new price= kwarg) vs the hedge side's
+        current book price."""
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")     # CORE primary, entered at 0.80
+        down_book = make_liquid_book(price=0.30, token_id="down")  # hedge side -> dominant now at 1-0.30=0.70
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE", price=0.80)
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        assert intent is not None
+        assert intent.is_hedge is True
+        adverse_move = 0.80 - (1.0 - 0.30)  # == 0.10
+        expected_ratio = bc.hedge_size_ratio("Bitcoin", "CORE") * bc.adverse_move_size_multiplier("Bitcoin", adverse_move)
+        expected_notional = 10.0 * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_adverse_move_multiplier_is_a_noop_when_first_entry_price_was_never_recorded(self, monkeypatch):
+        # Same setup as test_produces_a_hedge_intent_sized_off_dominant_cost
+        # but for Bitcoin (which IS in ADVERSE_MOVE_SIZE_MULTIPLIER, unlike
+        # BNB) -- record_entry called WITHOUT price=, matching every
+        # pre-existing caller in this file, must leave sizing untouched.
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.30, token_id="down")
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE")  # no price= kwarg
+        assert activity.first_entry_price is None
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        expected_ratio = bc.hedge_size_ratio("Bitcoin", "CORE")  # no multiplier applied
+        expected_notional = 10.0 * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_adverse_move_multiplier_respects_the_per_instance_feature_flag(self, monkeypatch):
+        # Explicit instruction: paperbot-mini stays on the OLD behavior
+        # (as a control) via ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER=false.
+        monkeypatch.setattr(config, "ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER", False)
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.30, token_id="down")
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE", price=0.80)
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        expected_ratio = bc.hedge_size_ratio("Bitcoin", "CORE")  # multiplier must be a strict no-op
+        expected_notional = 10.0 * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_adverse_move_multiplier_does_not_affect_continuation_hedges(self, monkeypatch):
+        # Same scoping rule as liquidity/weekend: only the first hedge.
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.30, token_id="down")
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE", price=0.80)
+        activity.record_entry("Down", notional_usd=1.0, regime="CORE", is_hedge=True)
+        assert activity.hedge_count == 1
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        expected_ratio = bc.hedge_continuation_size_ratio(2)  # unaffected by the adverse-move multiplier
+        dominant_cost = 10.0
+        expected_notional = dominant_cost * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
 
     def test_computes_is_weekend_correctly_from_now_and_passes_it_to_decide_hedge(self, monkeypatch):
         """build_order_intent must derive is_weekend from `now` using the

@@ -334,6 +334,63 @@ class TestHedgeLiquidityMultiplier:
             assert high_val > low_val, f"{asset}: expected highest-liquidity point to score above lowest"
 
 
+class TestAdverseMoveSizeMultiplier:
+    """First-hedge-size-vs-adverse-move multiplier, added 2026-09-10 --
+    real, cross-asset-generalizing finding that first-hedge SIZE scales
+    with how far price has moved against the dominant side since entry.
+    Controlled for first_entry_regime (fit separately per regime, still
+    holds), and for the TTC confound (r(adverse_move, seconds_to_close)
+    ~0 -- ruled out being a lateness proxy). Restricted to first-hedge-
+    only data (HEDGE_CONTINUATION_SIZE_RATIO covers 2nd+ separately):
+    BTC t=32.5 (n=8,670), ETH t=24.1 (n=6,387), SOL t=20.6 (n=8,237)."""
+
+    def test_neutral_for_assets_not_in_the_table(self):
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            assert bc.adverse_move_size_multiplier(asset, 0.3) == 1.0
+
+    def test_neutral_when_adverse_move_is_unavailable(self):
+        assert bc.adverse_move_size_multiplier("Bitcoin", None) == 1.0
+
+    def test_exact_at_each_calibrated_point(self):
+        for asset, curve in bc.ADVERSE_MOVE_SIZE_MULTIPLIER.items():
+            for move, expected in curve.items():
+                got = bc.adverse_move_size_multiplier(asset, float(move))
+                assert abs(got - expected) < 1e-9, f"{asset}@{move}: {got} != {expected}"
+
+    def test_interpolates_between_points(self):
+        # Bitcoin: -0.10->0.5621, 0.05->2.8117 -- the midpoint move value
+        # must interpolate to (roughly) the midpoint multiplier.
+        mid_move = (-0.10 + 0.05) / 2
+        mid_val = bc.adverse_move_size_multiplier("Bitcoin", mid_move)
+        assert 0.5621 < mid_val < 2.8117
+
+    def test_flat_beyond_the_measured_range_no_extrapolation(self):
+        at_min = bc.adverse_move_size_multiplier("Bitcoin", -0.35)
+        below_min = bc.adverse_move_size_multiplier("Bitcoin", -0.99)
+        assert at_min == below_min
+
+        at_max = bc.adverse_move_size_multiplier("Bitcoin", 0.27)
+        above_max = bc.adverse_move_size_multiplier("Bitcoin", 0.99)
+        assert at_max == above_max
+
+    def test_largest_adverse_move_scores_higher_than_most_favorable_move(self):
+        # Not strictly monotonic (q2 > q3 for all three assets, kept
+        # as-measured rather than smoothed) -- but the two extremes
+        # (most-favorable vs most-adverse) are ordered correctly for
+        # every live asset.
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            curve = bc.ADVERSE_MOVE_SIZE_MULTIPLIER[asset]
+            most_favorable = min(curve)
+            most_adverse = max(curve)
+            low_val = bc.adverse_move_size_multiplier(asset, most_favorable)
+            high_val = bc.adverse_move_size_multiplier(asset, most_adverse)
+            assert high_val > low_val, f"{asset}: expected the most-adverse move to score above the most-favorable"
+
+    def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
+        for asset, curve in bc.ADVERSE_MOVE_SIZE_MULTIPLIER.items():
+            assert max(curve.values()) < bc._ADVERSE_MOVE_SIZE_MULTIPLIER_CAP
+
+
 class TestWeekendHedgeMultiplier:
     """Weekend-conditioned first-hedge trigger, added 2026-09-10 --
     real, well-powered (z=9.9, n=10,183/3,902) finding that his

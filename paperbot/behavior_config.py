@@ -833,6 +833,87 @@ def hedge_size_ratio(asset: str, primary_regime: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# ADVERSE-MOVE-conditioned hedge size. Added 2026-09-10: real, well-powered,
+# cross-asset-generalizing finding that real FIRST-hedge SIZE scales with
+# how far price has moved AGAINST the primary position since entry -- a
+# dimension HEDGE_SIZE_RATIO has never had (it's a single fixed number per
+# asset x first_entry_regime, set once and never adjusted for how much
+# worse things get before the hedge actually lands).
+#
+# adverse_move = primary_entry_price - primary_current_price_at_hedge_time
+# (positive = moved against the primary side). Measured on decision-
+# collapsed real trades (5s same-side merge -- same discipline as
+# MAX_HEDGE_COUNT_PER_MARKET's own corrected re-check, avoiding the raw-
+# fill-fragmentation bug that has bitten this file more than once),
+# restricted to ONLY each market's first hedge (matching exactly what this
+# multiplier is applied to below -- HEDGE_CONTINUATION_SIZE_RATIO governs
+# hedge_count>=1 separately and isn't part of this measurement).
+#
+# Correlation of log(hedge_ratio) vs adverse_move, CONTROLLING FOR
+# first_entry_regime (fit separately within each of the 4 regimes to rule
+# out this just being regime relabeling in disguise): r=0.44-0.60 (BTC),
+# r=0.43-0.50 (ETH), r=0.18-0.37 (SOL) pooling all hedges; restricted to
+# first-hedge-only (this table's actual scope) the correlation is smaller
+# but still robust: BTC r=0.33/t=32.5 (n=8,670), ETH r=0.29/t=24.1
+# (n=6,387), SOL r=0.22/t=20.6 (n=8,237) -- every cell clears this file's
+# own |t|>=2.58 bar by a wide margin. TTC confound checked and ruled out:
+# r(adverse_move, seconds_to_close) is essentially zero (-0.065 to 0.022
+# across assets) -- this is NOT a proxy for how late in the window the
+# hedge happens (already modeled via TTC_SIZE_MULTIPLIER).
+#
+# Per-asset (regime-pooled -- per-regime slopes were consistent, 2.3-4.7
+# with no systematic pattern by regime, so a 16-cell table would overfit
+# noise this data doesn't support), 4 quartile points of adverse_move vs.
+# MEDIAN-based, median-neutral multiplier on HEDGE_SIZE_RATIO's base value
+# -- median chosen over mean (unlike HEDGE_LIQUIDITY_MULTIPLIER's rate-
+# based mean) because hedge_ratio is extremely right-skewed and
+# HEDGE_SIZE_RATIO's own base cells were themselves calibrated on medians
+# for exactly that reason (see its CHEAP-band fix note above: "real
+# medians land far lower and stable across floor choices" where raw means
+# were not trustworthy). Interpolated as-measured, not forced monotonic --
+# all three assets show q2 (near-zero move) higher than q3 (largest
+# adverse move), a consistent shape kept as real per this file's own
+# "never smoothed to look more uniform" rule (see module docstring).
+ADVERSE_MOVE_SIZE_MULTIPLIER = {
+    "Bitcoin": {-0.35: 0.3366, -0.10: 0.5621, 0.05: 2.8117, 0.27: 2.0852},
+    "Ethereum": {-0.48: 0.3405, -0.13: 0.4466, 0.02: 5.0748, 0.21: 2.3048},
+    "Solana": {-0.43: 0.4320, -0.14: 0.4885, 0.02: 2.6819, 0.21: 2.2770},
+}
+_ADVERSE_MOVE_SIZE_MULTIPLIER_CAP = 6.0  # symmetric clamp on the final size
+# multiplier -- wider than HEDGE_LIQUIDITY_MULTIPLIER's 3.0 cap since the
+# measured range itself reaches ~5.07 (ETH q2); mirrors that table's
+# ~2.6x-over-max-measured headroom convention.
+
+
+def adverse_move_size_multiplier(asset: str, adverse_move: Optional[float]) -> float:
+    """Continuous, median-neutral multiplier on HEDGE_SIZE_RATIO's base
+    value as a function of how far price has moved against the primary
+    position since entry (positive = against). 1.0 (no-op) for any asset
+    not in ADVERSE_MOVE_SIZE_MULTIPLIER, or when adverse_move is
+    unavailable (e.g. first_entry_price wasn't recorded). Flat beyond the
+    measured range -- clamped to the nearest endpoint, never extrapolated,
+    same discipline as HEDGE_LIQUIDITY_MULTIPLIER/TTC_SIZE_MULTIPLIER.
+    Final result clamped to _ADVERSE_MOVE_SIZE_MULTIPLIER_CAP."""
+    curve = ADVERSE_MOVE_SIZE_MULTIPLIER.get(asset)
+    if curve is None or adverse_move is None:
+        return 1.0
+    points = sorted(curve.items())
+    lo_move, lo_val = points[0]
+    hi_move, hi_val = points[-1]
+    move = max(lo_move, min(hi_move, adverse_move))
+    result = hi_val
+    for i in range(len(points) - 1):
+        p_move, p_val = points[i]
+        q_move, q_val = points[i + 1]
+        if p_move <= move <= q_move:
+            frac = (move - p_move) / (q_move - p_move) if q_move > p_move else 0.0
+            result = p_val + frac * (q_val - p_val)
+            break
+    cap = _ADVERSE_MOVE_SIZE_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
+
+
+# ---------------------------------------------------------------------------
 # WEEKEND-conditioned hedge trigger. Added 2026-09-10: real, well-powered
 # finding that his dual-sided (hedged) rate is meaningfully higher on
 # weekends than weekdays -- weekday=58.87% (n=10,183 BTC markets),

@@ -353,6 +353,17 @@ ENABLE_WEEKEND_HEDGE_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for ADVERSE_MOVE_SIZE_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-10, same pattern and reasoning as
+# ENABLE_TTC_SIZE_MULTIPLIER/ENABLE_HEDGE_LIQUIDITY_MULTIPLIER/
+# ENABLE_RESUMPTION_SIZE_MULTIPLIER/ENABLE_WEEKEND_HEDGE_MULTIPLIER above --
+# default TRUE everywhere, explicit FALSE for paperbot-mini (the $100
+# control instance).
+ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER = os.environ.get(
+    "ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Hard cap on hedge_count. Added 2026-09-09, hours after
 # HEDGE_CONTINUATION_PROBABILITY shipped (behavior_config.py) let
 # decide_hedge fire more than once per market -- CONFIRMED LIVE this
