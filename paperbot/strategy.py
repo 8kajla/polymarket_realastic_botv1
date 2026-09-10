@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 from . import behavior_config as bc
@@ -140,7 +142,8 @@ def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
 
 
 def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
-                  liquidity: Optional[float] = None) -> Optional[str]:
+                  liquidity: Optional[float] = None,
+                  is_weekend: Optional[bool] = None) -> Optional[str]:
     """
     Returns the hedge side ("Up"/"Down") if THIS entry should be a
     deliberate insurance leg on the opposite side from the first entry,
@@ -190,6 +193,15 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
     continuation mechanism. Optional (default None -> no-op, same pattern
     as decide_size's seconds_remaining) so every existing call site keeps
     working unchanged.
+
+    WEEKEND-conditioned (2026-09-10): `is_weekend` scales the FIRST-hedge
+    probability only, via bc.weekend_hedge_multiplier -- confirmed real,
+    well-powered (z=9.9), and causally explained (lower weekend
+    volatility -> more MID/undecided markets -> more hedging) that his
+    dual-sided rate is higher on weekends. Same scoping rationale as
+    liquidity above: the underlying measurement is "did this market ever
+    go dual-sided", not a continuation-shaped quantity. Optional (default
+    None -> no-op) for the same reason as every other optional param here.
     """
     if activity.entry_count < 1 or activity.first_entry_regime is None:
         return None
@@ -203,6 +215,9 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
         if config.ENABLE_HEDGE_LIQUIDITY_MULTIPLIER:
             liq_mult = bc.hedge_liquidity_multiplier(asset, liquidity)
             p = max(0.0, min(1.0, p * liq_mult))
+        if config.ENABLE_WEEKEND_HEDGE_MULTIPLIER:
+            weekend_mult = bc.weekend_hedge_multiplier(asset, is_weekend)
+            p = max(0.0, min(1.0, p * weekend_mult))
     else:
         p = bc.hedge_continuation_probability(activity.hedge_count)
     if p > 0 and rng.random() < p:
@@ -342,8 +357,15 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         return None
 
     seconds_remaining = market.seconds_remaining(now)
+    # UTC weekday (>=5 is Sat/Sun) -- matches the calibration's own
+    # methodology exactly (real trades.jsonl timestamps grouped by UTC
+    # weekday(), not local time). `now` defaults to real wall-clock time,
+    # same convention as Market.seconds_remaining's own `now` handling.
+    is_weekend = datetime.fromtimestamp(now if now is not None else time.time(),
+                                         tz=timezone.utc).weekday() >= 5
 
-    hedge_side = decide_hedge(market.asset, activity, rng, liquidity=market.liquidity)
+    hedge_side = decide_hedge(market.asset, activity, rng, liquidity=market.liquidity,
+                               is_weekend=is_weekend)
     is_hedge = hedge_side is not None
     if is_hedge:
         side = hedge_side

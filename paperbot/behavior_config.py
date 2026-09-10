@@ -833,6 +833,50 @@ def hedge_size_ratio(asset: str, primary_regime: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# WEEKEND-conditioned hedge trigger. Added 2026-09-10: real, well-powered
+# finding that his dual-sided (hedged) rate is meaningfully higher on
+# weekends than weekdays -- weekday=58.87% (n=10,183 BTC markets),
+# weekend=68.2% (n=3,902), z=9.9. This is a per-market binary measurement
+# ("did this market ever go dual-sided"), not a hedge-COUNT, so it isn't
+# exposed to the raw-fill-vs-decision fragmentation bug that affects
+# count-based measurements in this file (see MAX_HEDGE_COUNT_PER_MARKET's
+# own docstring in config.py, and the corrected 1.57%-not-16% re-check
+# that ruled out raising that cap the same night this was added).
+#
+# Full causal chain confirmed, not just a correlation: real BTC spot
+# volatility is ~47% lower on weekends -> markets stay in MID/undecided
+# territory far more often (48.04% of weekend trades land in MID vs
+# 36.93% weekday) -> MID is where hedging concentrates (already
+# established via HEDGE_TRIGGER_PROBABILITY's own MID cells being the
+# highest of the four regimes) -> higher weekend hedge rate. Checked and
+# ruled out two plausible confounds before landing on this: weekend book-
+# depth/liquidity via a tick-density proxy (no effect, but that proxy
+# measures update frequency not $ depth, so a depth-based mechanism isn't
+# fully ruled out) and cross-asset generalization (ETH/SOL do NOT show
+# this shift -- BTC-specific, same recurring pattern as several other
+# BTC-vs-ETH/SOL divergences found the same session).
+#
+# HEDGE_TRIGGER_PROBABILITY itself was calibrated from all-days blended
+# data, which skews weekday-heavy (5/7 of days, and weekday volume is
+# also higher per the day-of-week finding) -- so weekday stays a 1.0
+# no-op baseline and only weekend gets scaled up, same pattern as every
+# other mean-adjustment table in this file (TTC_SIZE_MULTIPLIER,
+# HEDGE_LIQUIDITY_MULTIPLIER). BTC-only for now, matching the scope of
+# what was actually verified -- 1.0 (no-op) for every other asset.
+WEEKEND_HEDGE_MULTIPLIER = {
+    "Bitcoin": 68.2 / 58.87,  # ~1.1585
+}
+
+
+def weekend_hedge_multiplier(asset: str, is_weekend: bool) -> float:
+    """1.0 (no-op) on weekdays, for any asset not in
+    WEEKEND_HEDGE_MULTIPLIER, or when is_weekend is None-like/False."""
+    if not is_weekend:
+        return 1.0
+    return WEEKEND_HEDGE_MULTIPLIER.get(asset, 1.0)
+
+
+# ---------------------------------------------------------------------------
 # Hedge TIMING. Added 2026-09-08, correcting a confirmed live mismatch:
 # decide_hedge previously checked ONLY at entry_count==1 (the market's
 # literal 2nd entry) using HEDGE_TRIGGER_PROBABILITY directly as a

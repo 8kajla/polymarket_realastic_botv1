@@ -334,6 +334,37 @@ class TestHedgeLiquidityMultiplier:
             assert high_val > low_val, f"{asset}: expected highest-liquidity point to score above lowest"
 
 
+class TestWeekendHedgeMultiplier:
+    """Weekend-conditioned first-hedge trigger, added 2026-09-10 --
+    real, well-powered (z=9.9, n=10,183/3,902) finding that his
+    dual-sided (hedged) rate is higher on weekends, with a fully
+    confirmed causal chain (lower weekend volatility -> more MID/
+    undecided markets -> more hedging). Per-market binary measurement,
+    not a hedge-count, so immune to the raw-fill-vs-decision
+    fragmentation bug that ruled out raising MAX_HEDGE_COUNT_PER_MARKET
+    the same night. BTC-only -- ETH/SOL were checked and don't show this
+    shift."""
+
+    def test_neutral_on_weekdays(self):
+        assert bc.weekend_hedge_multiplier("Bitcoin", False) == 1.0
+
+    def test_neutral_when_is_weekend_is_none(self):
+        assert bc.weekend_hedge_multiplier("Bitcoin", None) == 1.0
+
+    def test_neutral_for_assets_not_in_the_table(self):
+        for asset in ("Ethereum", "Solana", "Dogecoin", "Hyperliquid", "BNB"):
+            assert bc.weekend_hedge_multiplier(asset, True) == 1.0
+
+    def test_bitcoin_weekend_multiplier_matches_the_calibrated_ratio(self):
+        got = bc.weekend_hedge_multiplier("Bitcoin", True)
+        expected = 68.2 / 58.87
+        assert abs(got - expected) < 1e-9
+
+    def test_weekend_multiplier_is_greater_than_one(self):
+        # Real finding: hedging is MORE common on weekends, not less.
+        assert bc.weekend_hedge_multiplier("Bitcoin", True) > 1.0
+
+
 class TestResumptionSizeMultiplier:
     """Resumption-caution ramp, added 2026-09-10 -- a real, precise
     3-phase shape (suppressed 0-6h, overshoot 7-9h, back to baseline

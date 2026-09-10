@@ -107,7 +107,7 @@ class TestHedgeLegEndToEnd:
 
         # Force the hedge roll to trigger deterministically for this test.
         monkeypatch.setattr(stratmod, "decide_hedge",
-                             lambda asset, activity, rng, liquidity=None: "Down" if activity.dominant_side() == "Up"
+                             lambda asset, activity, rng, liquidity=None, is_weekend=None: "Down" if activity.dominant_side() == "Up"
                              else "Up")
 
         asyncio.run(bot.strategy_tick(now=1001.0))

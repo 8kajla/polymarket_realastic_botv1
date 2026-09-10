@@ -343,6 +343,16 @@ ENABLE_RESUMPTION_SIZE_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for WEEKEND_HEDGE_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-10, same pattern and reasoning as
+# ENABLE_TTC_SIZE_MULTIPLIER/ENABLE_HEDGE_LIQUIDITY_MULTIPLIER/
+# ENABLE_RESUMPTION_SIZE_MULTIPLIER above -- default TRUE everywhere,
+# explicit FALSE for paperbot-mini (the $100 control instance).
+ENABLE_WEEKEND_HEDGE_MULTIPLIER = os.environ.get(
+    "ENABLE_WEEKEND_HEDGE_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Hard cap on hedge_count. Added 2026-09-09, hours after
 # HEDGE_CONTINUATION_PROBABILITY shipped (behavior_config.py) let
 # decide_hedge fire more than once per market -- CONFIRMED LIVE this
@@ -362,6 +372,18 @@ ENABLE_RESUMPTION_SIZE_MULTIPLIER = os.environ.get(
 # bucket is only 2.2% (a thin tail, not where the real mass lives) --
 # capping here cuts off almost none of genuine behavior while
 # eliminating the runaway-chain failure mode entirely.
+#
+# RE-CHECKED 2026-09-10 (prompted by a research pass that initially
+# proposed raising this cap): a fresh count using RAW trade fills (not
+# decision-collapsed) found 16.08% of real markets exceed 6 hedges --
+# looked like a real gap worth fixing. Redone properly with the same
+# 5s-same-side-fragment-merge this file already uses for
+# HEDGE_TRIGGER_PROBABILITY/HEDGE_SIZE_RATIO: the real figure is 1.57%
+# (over 10: 0.12%), closely matching the original 2.2% figure above.
+# The raw-count version was inflated by exactly the fragmentation
+# artifact this file has hit before -- multiple partial fills of ONE
+# real hedge decision counted as separate hedges. Cap left at 6,
+# confirmed still correct; not raised.
 #
 # Env-overridable (2026-09-09, added for the $100-bankroll capacity
 # work): a small-bankroll instance needs a tighter cap than 6 to bound
