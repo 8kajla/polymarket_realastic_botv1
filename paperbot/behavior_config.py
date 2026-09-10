@@ -9,7 +9,7 @@ HIGH, BNB CORE) -- those are confirmed, real, and kept as-is.
 """
 import math
 from dataclasses import dataclass
-from typing import Union
+from typing import Optional, Union
 
 # ---------------------------------------------------------------------------
 # Regime price bands -- shared boundaries, not asset-specific.
@@ -567,6 +567,72 @@ def ttc_size_multiplier(asset: str, regime: str, seconds_remaining: float) -> fl
     return curve[_TTC_MULTIPLIER_MIDPOINTS[0] if ttc >= 270 else _TTC_MULTIPLIER_MIDPOINTS[-1]]
 
 
+# ---------------------------------------------------------------------------
+# RESUMPTION-CAUTION ramp. Added 2026-09-10: a real, confirmed pattern
+# from the largest known silence this session found (327.46h/13.6-day gap,
+# resumption at 2026-09-06 14:21 UTC) -- fine-grained hourly reconstruction
+# of entry size after resumption found a genuine 3-phase shape, NOT a
+# monotonic ramp:
+#   hours 0-6:  SUPPRESSED entry size, 15-35% below the $3.71 steady-state
+#               baseline
+#   hours 7-9:  OVERSHOOT, 68-138% ABOVE baseline -- a real catch-up
+#               burst, not just normalization
+#   hour 10+:   settles into noisy oscillation around baseline -- back to
+#               a genuine 1.0x, not held at any edge value
+#
+# CONFIRMED SCOPE, not extrapolated past it: the same session's own
+# earlier work on smaller gaps (1.6-4.3h) found inconsistent, noise-level
+# before/after differences -- only sufficiently large gaps (roughly above
+# 4h) showed this genuine behavioral reset. This curve is therefore gated
+# to apply ONLY after a gap of at least RESUMPTION_GAP_THRESHOLD_HOURS --
+# see bot.py's own tracking of when a qualifying gap just ended. Applying
+# it to every ordinary few-second pause between ticks (which is NOT what
+# was measured or found) would be a real, unvalidated overreach.
+#
+# Single pooled curve (not per-asset, unlike TTC/liquidity above) -- the
+# original investigation was necessarily built from ONE large real gap
+# event (there is only one that large in the whole mirror), so there's
+# no basis to split this by asset the way tables built from thousands of
+# markets can be. Hour-bucket midpoints -> ratio to the $3.71 steady-
+# state baseline measured in that same investigation.
+RESUMPTION_GAP_THRESHOLD_HOURS = 4.0
+RESUMPTION_SIZE_MULTIPLIER = {
+    3: 0.72,    # hours 0-6 midpoint: suppressed (~15-35% below baseline, using the
+                # middle of that measured range)
+    8: 1.90,    # hours 7-9 midpoint: overshoot (~68-138% above baseline, middle of range)
+    10: 1.0,    # hour 10+: back to genuine baseline, held flat beyond this point
+}
+_RESUMPTION_MULTIPLIER_MAX_HOURS = 10.0  # beyond this, a strict 1.0 no-op -- not
+                                          # clamped to the last point's value the
+                                          # way TTC/liquidity do, since "settles
+                                          # into noisy oscillation around baseline"
+                                          # means genuinely back to neutral, not
+                                          # held at hour-10's specific ratio.
+
+
+def resumption_size_multiplier(hours_since_resumption: Optional[float]) -> float:
+    """Continuous multiplier on entry size as a function of hours since a
+    QUALIFYING resumption (a gap >= RESUMPTION_GAP_THRESHOLD_HOURS just
+    ended). 1.0 (no-op) if hours_since_resumption is None (no qualifying
+    resumption is currently tracked) or >= _RESUMPTION_MULTIPLIER_MAX_HOURS
+    (genuinely back to baseline, not held at an edge value)."""
+    if hours_since_resumption is None or hours_since_resumption < 0:
+        return 1.0
+    if hours_since_resumption >= _RESUMPTION_MULTIPLIER_MAX_HOURS:
+        return 1.0
+    points = sorted(RESUMPTION_SIZE_MULTIPLIER.items())
+    lo_h, lo_val = points[0]
+    if hours_since_resumption <= lo_h:
+        return lo_val  # flat before the first measured point -- no extrapolation
+    for i in range(len(points) - 1):
+        p_h, p_val = points[i]
+        q_h, q_val = points[i + 1]
+        if p_h <= hours_since_resumption <= q_h:
+            frac = (hours_since_resumption - p_h) / (q_h - p_h) if q_h > p_h else 0.0
+            return p_val + frac * (q_val - p_val)
+    return points[-1][1]  # defensive fallback; unreachable given the >= max_hours check above
+
+
 def side_persistence_for(asset: str, held_side_regime: str) -> float:
     """P(keep the currently-held side) given the regime that side is
     CURRENTLY trading in (i.e. the regime it would land in if persisted --
@@ -702,6 +768,64 @@ _DEFAULT_HEDGE_SIZE_RATIO = 0.15
 
 def hedge_trigger_probability(asset: str, primary_regime: str) -> float:
     return HEDGE_TRIGGER_PROBABILITY.get(asset, {}).get(primary_regime, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# LIQUIDITY-conditioned hedge trigger. Added 2026-09-10: confirmed, real,
+# well-powered correlation between a market's liquidity and whether he
+# ever hedges it at all -- checked twice this session (original t=4.793,
+# n=869/285 flagged low-power; rechecked with more data, t=5.263,
+# n=1023/322, held up and strengthened) -- dual-sided (hedged) real
+# markets averaged $9354.72 liquidity vs $7787.05 for single-sided ones.
+# This IS an action-level measurement (whether he hedged), not an
+# outcome/win-rate correlation -- unlike a separately-tested price-
+# velocity signal that correlated with OUTCOME but not his own SIZE, and
+# was correctly declined for that reason. Liquidity here is Gamma's own
+# liquidityNum field (see Market.liquidity's docstring in
+# market_discovery.py for why this is NOT the same quantity as
+# BookState.total_depth_usd()) -- the calibration below is measured
+# against, and this must stay paired with, that specific field.
+#
+# Per (asset), 4 quartile points from market liquidity-at-first-snapshot
+# vs. real dual-sided rate, ratio to that asset's own overall hedge rate
+# (mean-neutral by construction -- same principle as TTC_SIZE_MULTIPLIER
+# and WITHIN_BAND_SIZE_SLOPE). BTC/ETH/SOL only (the three live-traded
+# assets; n=624/601/599 markets respectively, all comfortably above the
+# n>=200-market trust bar this file uses for once-per-market measurements).
+# Bitcoin's shape is clean and monotonic; Ethereum/Solana are noisier in
+# the middle quartiles but agree in the same overall direction (highest
+# quartile meaningfully above 1.0 in all three: 1.07/1.14/1.11) --
+# interpolated as-measured rather than smoothed into a false monotonic
+# shape that isn't actually in the data.
+HEDGE_LIQUIDITY_MULTIPLIER = {
+    "Bitcoin": {8590: 0.9336, 13072: 0.9577, 15927: 1.0382, 19828: 1.0704},
+    "Ethereum": {4191: 1.0128, 7378: 0.9015, 9076: 0.9460, 10100: 1.1388},
+    "Solana": {2504: 1.0214, 3688: 0.8715, 5007: 0.9933, 5792: 1.1115},
+}
+_HEDGE_LIQUIDITY_MULTIPLIER_CAP = 3.0  # symmetric clamp on the FINAL probability multiplier
+
+
+def hedge_liquidity_multiplier(asset: str, liquidity: Optional[float]) -> float:
+    """Continuous, mean-neutral multiplier on the first-hedge trigger
+    probability as a function of a market's liquidity. 1.0 (no-op) for
+    any asset not in HEDGE_LIQUIDITY_MULTIPLIER, or when liquidity is
+    unavailable (e.g. Gamma didn't return the field). Flat beyond the
+    measured range -- clamped to the nearest endpoint, never extrapolated,
+    same discipline as TTC_SIZE_MULTIPLIER."""
+    curve = HEDGE_LIQUIDITY_MULTIPLIER.get(asset)
+    if curve is None or liquidity is None:
+        return 1.0
+    points = sorted(curve.items())
+    lo_liq, lo_val = points[0]
+    hi_liq, hi_val = points[-1]
+    liq = max(lo_liq, min(hi_liq, liquidity))
+    for i in range(len(points) - 1):
+        p_liq, p_val = points[i]
+        q_liq, q_val = points[i + 1]
+        if p_liq <= liq <= q_liq:
+            frac = (liq - p_liq) / (q_liq - p_liq) if q_liq > p_liq else 0.0
+            return p_val + frac * (q_val - p_val)
+    return hi_val  # defensive fallback; the clamp above makes this unreachable
 
 
 def hedge_size_ratio(asset: str, primary_regime: str) -> float:

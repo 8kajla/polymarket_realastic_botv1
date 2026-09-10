@@ -115,6 +115,19 @@ class PaperBot:
         # truth. See log_pnl_summary and committed_capital()'s docstring.
         self._peak_committed_capital: float = 0.0
 
+        # RESUMPTION-CAUTION ramp state (2026-09-10) -- see
+        # behavior_config.resumption_size_multiplier's docstring for the
+        # real 3-phase shape this replicates. Global (bot-wide), not
+        # per-market, since the real pattern is about resuming after a
+        # silence in ALL activity, not any one market. _last_trade_at
+        # tracks when the bot's own last trade (of any market/asset)
+        # happened; _resumption_started_at is set to `now` only when a
+        # gap since the previous trade meets
+        # bc.RESUMPTION_GAP_THRESHOLD_HOURS -- an ordinary few-second
+        # gap between ticks must NEVER count as "a resumption."
+        self._last_trade_at: Optional[float] = None
+        self._resumption_started_at: Optional[float] = None
+
         self.ws_client = MarketWebSocketClient(get_book_state=self.book_states.get)
 
     # -- discovery ---------------------------------------------------------
@@ -219,6 +232,29 @@ class PaperBot:
             return None
         return current_price - prev
 
+    def _hours_since_resumption(self, now: float) -> float | None:
+        """Current value of the resumption-caution clock, as of the START
+        of this tick -- see _resumption_started_at's docstring in
+        __init__. None if no qualifying resumption (a gap >=
+        bc.RESUMPTION_GAP_THRESHOLD_HOURS) has been tracked yet."""
+        if self._resumption_started_at is None:
+            return None
+        return (now - self._resumption_started_at) / 3600.0
+
+    def _record_global_trade(self, now: float) -> None:
+        """Called AFTER a trade actually places this tick (never before --
+        a trade's own sizing must be based on state as it stood BEFORE
+        that same trade, not updated by it). Detects whether the gap
+        since the bot's own previous trade qualifies as a real resumption
+        (>= bc.RESUMPTION_GAP_THRESHOLD_HOURS) and, if so, starts the
+        ramp clock; an ordinary few-second gap between ticks must never
+        qualify."""
+        if self._last_trade_at is not None:
+            gap_hours = (now - self._last_trade_at) / 3600.0
+            if gap_hours >= bc.RESUMPTION_GAP_THRESHOLD_HOURS:
+                self._resumption_started_at = now
+        self._last_trade_at = now
+
     async def strategy_tick(self, now: float | None = None) -> None:
         now = now if now is not None else time.time()
         for cid, market in self.markets_by_condition.items():
@@ -247,9 +283,11 @@ class PaperBot:
 
         activity = self.activity[market.condition_id]
         delta = self._recent_price_delta(market.token_id_up, up_book.best_bid)
+        hours_since_resumption = self._hours_since_resumption(now)
 
         intent = build_order_intent(market, up_book, down_book, activity, self.rng,
-                                     recent_price_delta=delta, now=now)
+                                     recent_price_delta=delta, now=now,
+                                     hours_since_resumption=hours_since_resumption)
         if intent is None:
             return
 
@@ -283,6 +321,7 @@ class PaperBot:
         order = self.fill_sim.place_order(intent, order_book, now=now)
         self.resting_order_ids.setdefault(market.condition_id, set()).add(order.order_id)
         activity.record_entry(intent.side, intent.notional_usd, intent.regime, is_hedge=intent.is_hedge)
+        self._record_global_trade(now)
 
     def available_cash(self) -> float | None:
         """

@@ -14,6 +14,7 @@ import pytest
 import requests
 
 import paperbot.bot as botmod
+from paperbot import behavior_config as bc
 from paperbot import config
 from paperbot import strategy as stratmod
 from paperbot.bot import PaperBot
@@ -106,7 +107,7 @@ class TestHedgeLegEndToEnd:
 
         # Force the hedge roll to trigger deterministically for this test.
         monkeypatch.setattr(stratmod, "decide_hedge",
-                             lambda asset, activity, rng: "Down" if activity.dominant_side() == "Up"
+                             lambda asset, activity, rng, liquidity=None: "Down" if activity.dominant_side() == "Up"
                              else "Up")
 
         asyncio.run(bot.strategy_tick(now=1001.0))
@@ -736,6 +737,70 @@ class TestCostBySideReleasedOnCancelOrExpiry:
 
         assert order.is_open()
         assert bot.activity[market.condition_id].cost_by_side["Up"] == pytest.approx(5.0)
+
+
+class TestResumptionCautionTracking:
+    """bot-level state machine backing behavior_config.resumption_size_
+    multiplier (2026-09-10) -- global (bot-wide), not per-market, tracking
+    when the bot's own trading resumed after a genuine multi-hour gap.
+    Only the bookkeeping is tested here (matches config.bc.
+    RESUMPTION_GAP_THRESHOLD_HOURS's real gate); decide_size's own
+    reaction to the resulting hours_since_resumption value is covered in
+    test_strategy.py's TestSizingDecision."""
+
+    def test_no_resumption_tracked_on_a_fresh_bot(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        assert bot._hours_since_resumption(now=1000.0) is None
+
+    def test_the_very_first_trade_does_not_count_as_a_resumption(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot._record_global_trade(now=1000.0)
+        assert bot._resumption_started_at is None
+        assert bot._hours_since_resumption(now=1000.0) is None
+
+    def test_an_ordinary_short_gap_between_trades_does_not_qualify(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot._record_global_trade(now=1000.0)
+        bot._record_global_trade(now=1010.0)  # 10s later -- an ordinary tick gap
+        assert bot._resumption_started_at is None
+        assert bot._hours_since_resumption(now=1010.0) is None
+
+    def test_a_gap_meeting_the_threshold_starts_the_resumption_clock(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot._record_global_trade(now=1000.0)
+        gap_s = bc.RESUMPTION_GAP_THRESHOLD_HOURS * 3600.0
+        bot._record_global_trade(now=1000.0 + gap_s)
+        assert bot._resumption_started_at == pytest.approx(1000.0 + gap_s)
+        assert bot._hours_since_resumption(now=1000.0 + gap_s) == pytest.approx(0.0)
+
+    def test_hours_since_resumption_advances_with_now_not_with_new_trades(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot._record_global_trade(now=1000.0)
+        gap_s = bc.RESUMPTION_GAP_THRESHOLD_HOURS * 3600.0
+        bot._record_global_trade(now=1000.0 + gap_s)
+        later = 1000.0 + gap_s + 3.0 * 3600.0  # 3h after the resumption began
+        assert bot._hours_since_resumption(now=later) == pytest.approx(3.0)
+
+    def test_a_second_qualifying_gap_restarts_the_clock(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        gap_s = bc.RESUMPTION_GAP_THRESHOLD_HOURS * 3600.0
+        bot._record_global_trade(now=1000.0)
+        bot._record_global_trade(now=1000.0 + gap_s)          # first resumption
+        bot._record_global_trade(now=1000.0 + gap_s + 100.0)  # ordinary gap, no reset
+        assert bot._resumption_started_at == pytest.approx(1000.0 + gap_s)
+        second_start = 1000.0 + gap_s + 100.0 + gap_s
+        bot._record_global_trade(now=second_start)            # second qualifying gap
+        assert bot._resumption_started_at == pytest.approx(second_start)
+
+    def test_evaluate_one_market_updates_global_trade_state_on_a_real_placement(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market)
+        assert bot._last_trade_at is None
+
+        bot._evaluate_one_market(market, now=1000.0)
+
+        assert bot._last_trade_at == pytest.approx(1000.0)
 
 
 class TestPnlSummaryLogging:

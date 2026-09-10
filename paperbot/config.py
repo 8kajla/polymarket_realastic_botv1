@@ -320,6 +320,29 @@ ENABLE_TTC_SIZE_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for HEDGE_LIQUIDITY_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-10, same night and same reasoning as
+# ENABLE_TTC_SIZE_MULTIPLIER directly above -- default TRUE everywhere,
+# explicit FALSE for paperbot-mini (the $100 control instance), same
+# env-var-driven, restart-durable mechanism, same rationale: don't change
+# the control's behavior while it's specifically being watched to isolate
+# what its OWN config change (SIZE_SCALE_FACTOR/MAX_HEDGE_COUNT_PER_MARKET)
+# does on its own.
+ENABLE_HEDGE_LIQUIDITY_MULTIPLIER = os.environ.get(
+    "ENABLE_HEDGE_LIQUIDITY_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for RESUMPTION_SIZE_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-10, same night, same pattern and
+# reasoning as ENABLE_TTC_SIZE_MULTIPLIER/ENABLE_HEDGE_LIQUIDITY_MULTIPLIER
+# above -- default TRUE everywhere, explicit FALSE for paperbot-mini (the
+# $100 control instance).
+ENABLE_RESUMPTION_SIZE_MULTIPLIER = os.environ.get(
+    "ENABLE_RESUMPTION_SIZE_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Hard cap on hedge_count. Added 2026-09-09, hours after
 # HEDGE_CONTINUATION_PROBABILITY shipped (behavior_config.py) let
 # decide_hedge fire more than once per market -- CONFIRMED LIVE this

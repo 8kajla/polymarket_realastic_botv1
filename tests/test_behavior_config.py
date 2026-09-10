@@ -287,6 +287,98 @@ class TestTtcSizeMultiplier:
         assert mult_low >= 1.0 / 5.0
 
 
+class TestHedgeLiquidityMultiplier:
+    """Liquidity-conditioned first-hedge trigger, added 2026-09-10 --
+    confirmed real, well-powered (t=5.263, n=1023/322) correlation
+    between a market's liquidity and whether he hedges it at all. Unlike
+    TTC (a size signal) this is an ACTION-level measurement already (did
+    he hedge or not), so it clears the same bar the price-velocity signal
+    failed without needing a separate sizing-reaction check."""
+
+    def test_neutral_for_assets_not_in_the_table(self):
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            assert bc.hedge_liquidity_multiplier(asset, 10000.0) == 1.0
+
+    def test_neutral_when_liquidity_is_unavailable(self):
+        assert bc.hedge_liquidity_multiplier("Bitcoin", None) == 1.0
+
+    def test_exact_at_each_calibrated_point(self):
+        for asset, curve in bc.HEDGE_LIQUIDITY_MULTIPLIER.items():
+            for liq, expected in curve.items():
+                got = bc.hedge_liquidity_multiplier(asset, float(liq))
+                assert abs(got - expected) < 1e-9, f"{asset}@{liq}: {got} != {expected}"
+
+    def test_interpolates_between_points(self):
+        # Bitcoin: 13072->0.9577, 15927->1.0382 -- the midpoint liquidity
+        # value must interpolate to (roughly) the midpoint ratio.
+        mid_liq = (13072 + 15927) / 2
+        mid_val = bc.hedge_liquidity_multiplier("Bitcoin", mid_liq)
+        assert 0.9577 < mid_val < 1.0382
+
+    def test_flat_beyond_the_measured_range_no_extrapolation(self):
+        at_min = bc.hedge_liquidity_multiplier("Bitcoin", 8590.0)
+        below_min = bc.hedge_liquidity_multiplier("Bitcoin", 100.0)
+        assert at_min == below_min
+
+        at_max = bc.hedge_liquidity_multiplier("Bitcoin", 19828.0)
+        above_max = bc.hedge_liquidity_multiplier("Bitcoin", 1_000_000.0)
+        assert at_max == above_max
+
+    def test_higher_liquidity_means_higher_multiplier_for_every_live_asset(self):
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            curve = bc.HEDGE_LIQUIDITY_MULTIPLIER[asset]
+            lowest_liq = min(curve)
+            highest_liq = max(curve)
+            low_val = bc.hedge_liquidity_multiplier(asset, lowest_liq)
+            high_val = bc.hedge_liquidity_multiplier(asset, highest_liq)
+            assert high_val > low_val, f"{asset}: expected highest-liquidity point to score above lowest"
+
+
+class TestResumptionSizeMultiplier:
+    """Resumption-caution ramp, added 2026-09-10 -- a real, precise
+    3-phase shape (suppressed 0-6h, overshoot 7-9h, back to baseline
+    10h+) found from the largest known real silence this session. See
+    its docstring for the confirmed scope caveat: only gaps >=
+    RESUMPTION_GAP_THRESHOLD_HOURS qualify -- smaller gaps were
+    separately checked and found to show no such reset."""
+
+    def test_neutral_when_no_resumption_is_tracked(self):
+        assert bc.resumption_size_multiplier(None) == 1.0
+
+    def test_neutral_for_a_negative_value(self):
+        # Defensive: should never happen in practice, but must not crash
+        # or misbehave if it somehow does.
+        assert bc.resumption_size_multiplier(-1.0) == 1.0
+
+    def test_suppressed_in_the_early_hours(self):
+        # Hours 0-6: confirmed 15-35% below baseline -- must be < 1.0.
+        assert bc.resumption_size_multiplier(0.0) < 1.0
+        assert bc.resumption_size_multiplier(3.0) < 1.0
+
+    def test_overshoots_in_the_middle_window(self):
+        # Hours 7-9: confirmed 68-138% ABOVE baseline -- must be > 1.0,
+        # and clearly higher than the early suppressed phase.
+        early = bc.resumption_size_multiplier(3.0)
+        overshoot = bc.resumption_size_multiplier(8.0)
+        assert overshoot > 1.0
+        assert overshoot > early
+
+    def test_genuinely_neutral_beyond_the_measured_window(self):
+        # Hour 10+: settles into noisy oscillation around baseline --
+        # a STRICT 1.0 no-op, not clamped to hour-10's specific ratio
+        # the way TTC/liquidity clamp to their edge values.
+        assert bc.resumption_size_multiplier(10.0) == 1.0
+        assert bc.resumption_size_multiplier(50.0) == 1.0
+
+    def test_interpolates_smoothly_between_calibrated_points(self):
+        # Between hour 3 (0.72) and hour 8 (1.90), the value at hour 5.5
+        # (the midpoint) must land between them.
+        low = bc.resumption_size_multiplier(3.0)
+        mid = bc.resumption_size_multiplier(5.5)
+        high = bc.resumption_size_multiplier(8.0)
+        assert low < mid < high
+
+
 class TestHedgeCalibration:
     """Confirmed from the full historical dataset: dual-sided markets have
     a dramatically better worst-case outcome than single-sided ones

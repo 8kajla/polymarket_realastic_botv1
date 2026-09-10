@@ -38,6 +38,19 @@ class Market:
     token_id_down: str
     order_min_size: Optional[float]     # from Gamma's orderMinSize, bootstrap value
     order_min_tick_size: Optional[float]  # from Gamma's orderPriceMinTickSize, bootstrap value
+    # Added 2026-09-10 for HEDGE_LIQUIDITY_MULTIPLIER (behavior_config.py):
+    # confirmed real, well-powered correlation between a market's
+    # liquidity and whether he hedges it (t=5.263, n=1023/322) -- this is
+    # Gamma's OWN liquidityNum field (a platform-computed aggregate
+    # metric), NOT the same thing as BookState.total_depth_usd() (summed
+    # from live CLOB bid/ask levels) -- the two are different quantities,
+    # and the calibration was measured against THIS one (via
+    # market_snapshots.jsonl, which stores Gamma's liquidity/liquidityNum
+    # field, matching market_snapshotter.py's own exact fallback order).
+    # Already present in the raw Gamma response fetch_active_markets()
+    # fetches every poll -- no new API call needed, just parsing a field
+    # that was already being fetched and discarded.
+    liquidity: Optional[float] = None
 
     def seconds_remaining(self, now: Optional[float] = None) -> float:
         now = now if now is not None else time.time()
@@ -106,6 +119,7 @@ def parse_market(raw: dict) -> Optional[Market]:
         token_id_down=str(token_down),
         order_min_size=_to_float(raw.get("orderMinSize")),
         order_min_tick_size=_to_float(raw.get("orderPriceMinTickSize")),
+        liquidity=_to_float(raw.get("liquidityNum") if raw.get("liquidityNum") is not None else raw.get("liquidity")),
     )
 
 

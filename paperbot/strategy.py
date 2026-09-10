@@ -139,7 +139,8 @@ def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
     return "Down" if activity.last_side == "Up" else "Up"
 
 
-def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random) -> Optional[str]:
+def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
+                  liquidity: Optional[float] = None) -> Optional[str]:
     """
     Returns the hedge side ("Up"/"Down") if THIS entry should be a
     deliberate insurance leg on the opposite side from the first entry,
@@ -178,6 +179,17 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random) 
     effect on the ledger). Capped as a direct mitigation while the
     underlying per-opportunity-vs-real-cadence mismatch gets a proper
     fix.
+
+    LIQUIDITY-conditioned (2026-09-10): `liquidity` (Market.liquidity,
+    Gamma's liquidityNum -- see its own docstring) scales the FIRST-hedge
+    probability only, via bc.hedge_liquidity_multiplier -- confirmed real
+    and well-powered (t=5.263) that he hedges more in higher-liquidity
+    markets. Deliberately NOT applied to hedge_continuation_probability:
+    that finding was measured on "did this market ever go dual-sided",
+    which maps onto the first hedge specifically, not the separate
+    continuation mechanism. Optional (default None -> no-op, same pattern
+    as decide_size's seconds_remaining) so every existing call site keeps
+    working unchanged.
     """
     if activity.entry_count < 1 or activity.first_entry_regime is None:
         return None
@@ -188,6 +200,9 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random) 
         return None
     if activity.hedge_count == 0:
         p = bc.hedge_attempt_hazard(asset, activity.first_entry_regime, activity.entry_count)
+        if config.ENABLE_HEDGE_LIQUIDITY_MULTIPLIER:
+            liq_mult = bc.hedge_liquidity_multiplier(asset, liquidity)
+            p = max(0.0, min(1.0, p * liq_mult))
     else:
         p = bc.hedge_continuation_probability(activity.hedge_count)
     if p > 0 and rng.random() < p:
@@ -233,7 +248,8 @@ def timing_ok(market: Market, now: Optional[float] = None) -> bool:
 
 
 def decide_size(asset: str, regime: str, position_tier: str, price: float,
-                 rng: random.Random, seconds_remaining: Optional[float] = None) -> tuple[float, bool]:
+                 rng: random.Random, seconds_remaining: Optional[float] = None,
+                 hours_since_resumption: Optional[float] = None) -> tuple[float, bool]:
     """
     Returns (notional_usd, is_floor_lot). Rolls the floor-lot tier first for
     assets where it's modeled (Part 4); falls back to the normal
@@ -241,8 +257,9 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     the confirmed median, since only medians -- not full distributions --
     were measured.
 
-    seconds_remaining is Optional (default None -> no-op) so every
-    existing call site/test that doesn't pass it keeps working unchanged.
+    seconds_remaining and hours_since_resumption are both Optional
+    (default None -> no-op) so every existing call site/test that doesn't
+    pass them keeps working unchanged.
     """
     floor_p = bc.floor_lot_probability(asset, regime, position_tier)
     if floor_p > 0 and rng.random() < floor_p:
@@ -275,18 +292,30 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # what was actually measured.
     ttc_mult = bc.ttc_size_multiplier(asset, regime, seconds_remaining) \
         if seconds_remaining is not None and config.ENABLE_TTC_SIZE_MULTIPLIER else 1.0
+    # RESUMPTION-CAUTION scaling (2026-09-10 finding): a real, precise
+    # 3-phase shape (suppressed 0-6h, overshoot 7-9h, back to baseline
+    # 10h+) found from the largest known real silence this session --
+    # see resumption_size_multiplier's docstring in behavior_config.py
+    # for the full scope caveat (gated to gaps >= RESUMPTION_GAP_
+    # THRESHOLD_HOURS; NOT extrapolated to ordinary short pauses, which
+    # were separately checked and found to show no such reset). Global/
+    # bot-wide, not per-market -- see bot.py's _hours_since_resumption.
+    resumption_mult = bc.resumption_size_multiplier(hours_since_resumption) \
+        if config.ENABLE_RESUMPTION_SIZE_MULTIPLIER else 1.0
     # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a
     # deliberately small-bankroll instance -- see its docstring in
     # config.py. Applied here (not to the floor-lot branch above) so the
     # tiny, independently-calibrated probe tier is never pushed below a
     # real exchange minimum by a scale-down meant for the ordinary curve.
-    return max(median * jitter * within_band * ttc_mult * config.SIZE_SCALE_FACTOR, 0.0), False
+    return max(median * jitter * within_band * ttc_mult * resumption_mult * config.SIZE_SCALE_FACTOR,
+                0.0), False
 
 
 def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                         activity: MarketActivityState, rng: random.Random,
                         recent_price_delta: Optional[float] = None,
-                        now: Optional[float] = None) -> Optional[OrderIntent]:
+                        now: Optional[float] = None,
+                        hours_since_resumption: Optional[float] = None) -> Optional[OrderIntent]:
     """
     Runs the full per-market pipeline (steps 1-6 of Part 5) and returns an
     OrderIntent, or None if this market isn't tradeable right now. Does NOT
@@ -314,7 +343,7 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
 
     seconds_remaining = market.seconds_remaining(now)
 
-    hedge_side = decide_hedge(market.asset, activity, rng)
+    hedge_side = decide_hedge(market.asset, activity, rng, liquidity=market.liquidity)
     is_hedge = hedge_side is not None
     if is_hedge:
         side = hedge_side
@@ -403,10 +432,12 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             )
             is_hedge = False
             notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
-                                                  seconds_remaining=seconds_remaining)
+                                                  seconds_remaining=seconds_remaining,
+                                                  hours_since_resumption=hours_since_resumption)
     else:
         notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
-                                              seconds_remaining=seconds_remaining)
+                                              seconds_remaining=seconds_remaining,
+                                              hours_since_resumption=hours_since_resumption)
 
     is_scout = False
     if not is_hedge and not is_floor_lot and activity.entry_count == 0:

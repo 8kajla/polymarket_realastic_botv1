@@ -255,6 +255,44 @@ class TestSizingDecision:
             "calibrated (asset, regime) cell"
         )
 
+    def test_resumption_multiplier_defaults_to_a_noop_when_not_passed(self):
+        rng_a = random.Random(23)
+        rng_b = random.Random(23)
+        notional_no_arg, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng_a)
+        notional_explicit_none, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng_b,
+                                                 hours_since_resumption=None)
+        assert notional_no_arg == notional_explicit_none
+
+    def test_resumption_multiplier_suppresses_size_early_and_overshoots_later(self):
+        def avg_notional(hours, n=400):
+            rng = random.Random(29)
+            total = 0.0
+            for _ in range(n):
+                notional, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng,
+                                           hours_since_resumption=hours)
+                total += notional
+            return total / n
+
+        no_resumption = avg_notional(None)
+        suppressed = avg_notional(3.0)
+        overshoot = avg_notional(8.0)
+        normal_again = avg_notional(50.0)
+        assert suppressed < no_resumption
+        assert overshoot > no_resumption
+        assert normal_again == pytest.approx(no_resumption, rel=0.05)
+
+    def test_resumption_multiplier_respects_the_per_instance_feature_flag(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_RESUMPTION_SIZE_MULTIPLIER", False)
+        rng_a = random.Random(31)
+        rng_b = random.Random(31)
+        notional_normal, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng_a,
+                                          hours_since_resumption=None)
+        notional_suppressed, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng_b,
+                                              hours_since_resumption=3.0)
+        assert notional_normal == notional_suppressed, (
+            "with the flag off, resumption must be a strict no-op"
+        )
+
 
 class TestBuildOrderIntent:
     def test_returns_none_under_timing_cutoff(self):
@@ -591,6 +629,95 @@ class TestDecideHedge:
             > bc._DEFAULT_HEDGE_CONTINUATION_SIZE_RATIO
 
 
+class TestDecideHedgeLiquidityMultiplier:
+    """decide_hedge's liquidity wiring, added 2026-09-10 -- see
+    TestHedgeLiquidityMultiplier for the multiplier function itself in
+    isolation; these confirm decide_hedge actually applies it (not just
+    that the function works), only to the FIRST hedge, and respects the
+    per-instance feature flag."""
+
+    def test_liquidity_defaults_to_a_noop_when_not_passed(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        n_no_arg = sum(
+            1 for seed in range(200)
+            if decide_hedge("BNB", activity, random.Random(seed)) is not None
+        )
+        n_explicit_none = sum(
+            1 for seed in range(200)
+            if decide_hedge("BNB", activity, random.Random(seed), liquidity=None) is not None
+        )
+        assert n_no_arg == n_explicit_none
+
+    def test_high_liquidity_fires_more_often_than_low_liquidity(self):
+        # Bitcoin/MID -- real curve: 8590->0.9336, 19828->1.0704.
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        n = 500
+        n_low = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), liquidity=8590.0) is not None
+        )
+        n_high = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), liquidity=19828.0) is not None
+        )
+        assert n_high > n_low
+
+    def test_clamped_to_a_valid_probability_even_at_the_cap(self, monkeypatch):
+        # A pathological hazard*multiplier combination must never push
+        # the effective probability outside [0, 1] -- force a multiplier
+        # far above what's actually calibrated and confirm no crash /
+        # over-100% behavior (rng.random() < p with p>1 would always
+        # fire, which is fine semantically, but p itself must stay sane).
+        monkeypatch.setattr(bc, "hedge_liquidity_multiplier", lambda asset, liquidity: 100.0)
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        # must not raise, and must behave as a valid (always-fires) probability
+        for seed in range(10):
+            assert decide_hedge("BNB", activity, random.Random(seed), liquidity=1.0) is not None
+
+    def test_respects_the_per_instance_feature_flag(self, monkeypatch):
+        # Explicit instruction: paperbot-mini stays on the OLD behavior
+        # (as a control) via ENABLE_HEDGE_LIQUIDITY_MULTIPLIER=false.
+        monkeypatch.setattr(config, "ENABLE_HEDGE_LIQUIDITY_MULTIPLIER", False)
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        n = 500
+        n_low = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), liquidity=8590.0) is not None
+        )
+        n_high = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), liquidity=19828.0) is not None
+        )
+        assert n_low == n_high, "with the flag off, liquidity must be a strict no-op"
+
+    def test_does_not_affect_continuation_hedges(self):
+        # The liquidity finding was measured on "did this market ever go
+        # dual-sided" -- must apply ONLY to the first hedge, never to
+        # HEDGE_CONTINUATION_PROBABILITY's separate mechanism. Uses
+        # Bitcoin specifically (a real, differentiated curve -- unlike
+        # BNB, which is already a no-op for any liquidity value since
+        # it's not in HEDGE_LIQUIDITY_MULTIPLIER at all, so BNB wouldn't
+        # actually exercise this scoping even if it were broken).
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.record_entry("Down", notional_usd=2.0, regime="MID", is_hedge=True)
+        assert activity.hedge_count == 1
+        n = 500
+        n_low = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), liquidity=8590.0) is not None
+        )
+        n_high = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), liquidity=19828.0) is not None
+        )
+        assert n_low == n_high, "liquidity must not leak into the continuation-hedge path"
+
+
 class TestBuildOrderIntentHedge:
     def test_produces_a_hedge_intent_sized_off_dominant_cost(self, monkeypatch):
         market = make_market(end_time=1000.0, asset="BNB")
@@ -599,7 +726,7 @@ class TestBuildOrderIntentHedge:
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="CORE")
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -628,7 +755,7 @@ class TestBuildOrderIntentHedge:
         activity.record_entry("Down", notional_usd=1.0, regime="CORE", is_hedge=True)
         assert activity.hedge_count == 1
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -658,7 +785,7 @@ class TestBuildOrderIntentHedge:
         def hedge_at(now):
             activity = MarketActivityState()
             activity.record_entry("Up", notional_usd=10.0, regime="CORE")
-            monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: "Down")
+            monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None: "Down")
             return build_order_intent(market_early if now < 500 else market_late,
                                        up_book, down_book, activity, random.Random(0), now=now)
 
@@ -676,7 +803,7 @@ class TestBuildOrderIntentHedge:
         down_book = make_liquid_book(price=0.79, token_id="down")
         activity = MarketActivityState()
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: None)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None: None)
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
         assert intent is not None
@@ -702,7 +829,7 @@ class TestBuildOrderIntentHedge:
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="CORE")
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -729,7 +856,7 @@ class TestBuildOrderIntentScout:
         down_book = make_liquid_book(price=0.25, token_id="down")
         activity = MarketActivityState()
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: None)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None: None)
         monkeypatch.setattr(bc, "scout_probability", lambda asset: 1.0)
         monkeypatch.setattr(bc, "scout_size_ratio", lambda asset: 0.5)
 
@@ -755,7 +882,7 @@ class TestBuildOrderIntentScout:
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=5.0, regime="CHEAP")  # entry_count now 1
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: None)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None: None)
         monkeypatch.setattr(bc, "scout_probability", lambda asset: 1.0)  # would always fire if reachable
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
@@ -770,7 +897,7 @@ class TestBuildOrderIntentScout:
         rng = random.Random(0)
         rng.random = lambda: 0.0  # forces the floor-lot roll ahead of the scout check
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: None)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None: None)
         monkeypatch.setattr(bc, "scout_probability", lambda asset: 1.0)  # would always fire if reachable
 
         intent = build_order_intent(market, up_book, down_book, activity, rng, now=0.0)
