@@ -444,6 +444,60 @@ class TestAdverseMoveContinuationSizeMultiplier:
             assert max(curve.values()) < bc._ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER_CAP
 
 
+class TestAdverseMoveHedgeTriggerMultiplier:
+    """Hedge TRIGGER (not size) vs adverse-move magnitude, added
+    2026-09-10 -- distinct from TestAdverseMoveSizeMultiplier /
+    TestAdverseMoveContinuationSizeMultiplier (whether he hedges at all,
+    not how big it is once he does). Survived regime/attempt_index/TTC
+    confound checks before being built. Deliberately scoped to
+    adverse_move >= 0 -- the favorable-move side showed a different,
+    non-monotonic pattern (SCOUT-classification bleed-through) and is
+    left as a strict 1.0 no-op."""
+
+    def test_neutral_for_assets_not_in_the_table(self):
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            assert bc.adverse_move_hedge_trigger_multiplier(asset, 0.2) == 1.0
+
+    def test_neutral_when_adverse_move_is_unavailable(self):
+        assert bc.adverse_move_hedge_trigger_multiplier("Bitcoin", None) == 1.0
+
+    def test_neutral_for_favorable_moves_negative_adverse_move(self):
+        # Deliberately unmodeled -- a strict no-op, not extrapolated or
+        # clamped to the curve's first point.
+        assert bc.adverse_move_hedge_trigger_multiplier("Bitcoin", -0.01) == 1.0
+        assert bc.adverse_move_hedge_trigger_multiplier("Bitcoin", -5.0) == 1.0
+
+    def test_exact_at_each_calibrated_point(self):
+        for asset, curve in bc.ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER.items():
+            for move, expected in curve.items():
+                got = bc.adverse_move_hedge_trigger_multiplier(asset, float(move))
+                assert abs(got - expected) < 1e-9, f"{asset}@{move}: {got} != {expected}"
+
+    def test_interpolates_between_points(self):
+        # Bitcoin: 0.07->0.7856, 0.15->1.0786 -- the midpoint move value
+        # must interpolate to (roughly) the midpoint multiplier.
+        mid_move = (0.07 + 0.15) / 2
+        mid_val = bc.adverse_move_hedge_trigger_multiplier("Bitcoin", mid_move)
+        assert 0.7856 < mid_val < 1.0786
+
+    def test_flat_beyond_the_measured_range_no_extrapolation(self):
+        at_max = bc.adverse_move_hedge_trigger_multiplier("Bitcoin", 0.30)
+        above_max = bc.adverse_move_hedge_trigger_multiplier("Bitcoin", 0.99)
+        assert at_max == above_max
+
+    def test_largest_adverse_move_scores_higher_than_move_at_zero(self):
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            curve = bc.ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER[asset]
+            at_zero = bc.adverse_move_hedge_trigger_multiplier(asset, 0.0)
+            most_adverse = max(curve)
+            high_val = bc.adverse_move_hedge_trigger_multiplier(asset, most_adverse)
+            assert high_val > at_zero, f"{asset}: expected the most-adverse move to score above move==0"
+
+    def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
+        for asset, curve in bc.ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER.items():
+            assert max(curve.values()) < bc._ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP
+
+
 class TestWeekendHedgeMultiplier:
     """Weekend-conditioned first-hedge trigger, added 2026-09-10 --
     real, well-powered (z=9.9, n=10,183/3,902) finding that his

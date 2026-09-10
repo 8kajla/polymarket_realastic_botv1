@@ -153,7 +153,8 @@ def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
 
 def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
                   liquidity: Optional[float] = None,
-                  is_weekend: Optional[bool] = None) -> Optional[str]:
+                  is_weekend: Optional[bool] = None,
+                  dominant_current_price: Optional[float] = None) -> Optional[str]:
     """
     Returns the hedge side ("Up"/"Down") if THIS entry should be a
     deliberate insurance leg on the opposite side from the first entry,
@@ -212,6 +213,17 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
     liquidity above: the underlying measurement is "did this market ever
     go dual-sided", not a continuation-shaped quantity. Optional (default
     None -> no-op) for the same reason as every other optional param here.
+
+    ADVERSE-MOVE-conditioned TRIGGER (2026-09-10, same night as the SIZE
+    versions in behavior_config.py): `dominant_current_price` (the
+    dominant side's live book price, NOT the hedge side's) combines with
+    activity.first_entry_price to compute adverse_move, which scales the
+    FIRST-hedge probability via bc.adverse_move_hedge_trigger_multiplier
+    -- confirmed real and survives regime/attempt_index/TTC confound
+    checks, see that function's docstring. Distinct measurement from the
+    SIZE multipliers (whether he hedges at all, not how big it is once he
+    does) but the same since-origin adverse_move definition. Optional
+    (default None -> no-op) for the same reason as liquidity/is_weekend.
     """
     if activity.entry_count < 1 or activity.first_entry_regime is None:
         return None
@@ -228,6 +240,11 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
         if config.ENABLE_WEEKEND_HEDGE_MULTIPLIER:
             weekend_mult = bc.weekend_hedge_multiplier(asset, is_weekend)
             p = max(0.0, min(1.0, p * weekend_mult))
+        if (config.ENABLE_ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER
+                and activity.first_entry_price is not None and dominant_current_price is not None):
+            adverse_move = activity.first_entry_price - dominant_current_price
+            trigger_mult = bc.adverse_move_hedge_trigger_multiplier(asset, adverse_move)
+            p = max(0.0, min(1.0, p * trigger_mult))
     else:
         p = bc.hedge_continuation_probability(activity.hedge_count)
     if p > 0 and rng.random() < p:
@@ -374,8 +391,22 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     is_weekend = datetime.fromtimestamp(now if now is not None else time.time(),
                                          tz=timezone.utc).weekday() >= 5
 
+    # ADDED 2026-09-10: dominant side's live book price, for decide_hedge's
+    # adverse-move-conditioned trigger multiplier -- must come from the
+    # DOMINANT side's own book (not the eventual hedge side's), computed
+    # here since decide_hedge doesn't have book access itself, same reason
+    # `held_side_price` is looked up fresh below rather than cached on
+    # MarketActivityState.
+    dominant_side_now = activity.dominant_side()
+    dominant_book = None
+    if dominant_side_now == "Up":
+        dominant_book = up_book
+    elif dominant_side_now == "Down":
+        dominant_book = down_book
+    dominant_current_price = dominant_book.best_bid if dominant_book is not None else None
+
     hedge_side = decide_hedge(market.asset, activity, rng, liquidity=market.liquidity,
-                               is_weekend=is_weekend)
+                               is_weekend=is_weekend, dominant_current_price=dominant_current_price)
     is_hedge = hedge_side is not None
     if is_hedge:
         side = hedge_side

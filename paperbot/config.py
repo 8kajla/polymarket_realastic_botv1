@@ -374,6 +374,17 @@ ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER (see its
+# docstring in behavior_config.py). Added 2026-09-10, same night --
+# distinct from the two SIZE flags above, this one scales WHETHER a hedge
+# triggers at all (hedge_attempt_hazard's output), not how big it is once
+# one happens. Default TRUE everywhere, explicit FALSE for paperbot-mini
+# (the $100 control instance).
+ENABLE_ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER = os.environ.get(
+    "ENABLE_ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Hard cap on hedge_count. Added 2026-09-09, hours after
 # HEDGE_CONTINUATION_PROBABILITY shipped (behavior_config.py) let
 # decide_hedge fire more than once per market -- CONFIRMED LIVE this

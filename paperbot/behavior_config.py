@@ -1059,6 +1059,110 @@ def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) ->
 
 
 # ---------------------------------------------------------------------------
+# ADVERSE-MOVE-conditioned hedge TRIGGER (as opposed to SIZE -- see
+# ADVERSE_MOVE_SIZE_MULTIPLIER/ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER
+# above, which cover how BIG a hedge is once one happens). Added
+# 2026-09-10, same night: real, well-powered finding that WHETHER he
+# hedges at all also scales with adverse_move magnitude, on top of (not
+# explained by) primary_regime and attempt_index, both already modeled
+# by hedge_attempt_hazard above.
+#
+# adverse_move = primary_entry_price - primary_current_price (positive =
+# against the primary side), same since-origin definition as the size
+# multipliers. Deliberately scoped to adverse_move >= 0 ONLY -- the
+# favorable-move side (price moved a lot IN his favor) shows a real but
+# DIFFERENT, non-monotonic (U-shaped) pattern that looks like the same
+# SCOUT-bleeding-into-CHEAP-classification effect already documented in
+# HEDGE_SIZE_RATIO's own CHEAP-band fix note above (an opportunistic
+# "harvest the now-cheap confirmed loser" bet gets counted as a "hedge"
+# by the is_hedge==opposite-side-of-dominant classification, even though
+# it isn't economically insurance). Left unmodeled here on purpose, same
+# discipline as this file's other multipliers leaving what isn't cleanly
+# measured at a no-op -- adverse_move_hedge_trigger_multiplier returns
+# 1.0 for any adverse_move < 0.
+#
+# Survived every confound check this file's other multipliers were held
+# to, run BEFORE building, not after:
+#   - primary_regime-controlled: monotonic in 11/12 (asset, regime)
+#     cells (adverse-only slice). One exception (Solana/HIGH) was noisy
+#     at n=199 -- not independently confirmed there, same disclosure
+#     pattern as the continuation-hedge multiplier's Solana/HIGH caveat.
+#   - attempt_index-controlled: fixing attempt_index==1 EXACTLY (zero
+#     confound by construction) still shows a clean gradient: BTC
+#     12.1%->33.4% (z~14.7), ETH 8.7%->14.7% (z~5.5), SOL 8.9%->17.6%
+#     (z~7.5) across adverse-move quartiles. Holds independently at
+#     attempt_index 2/3/4+ too.
+#   - TTC confound: unlike the SIZE multipliers (where TTC was ~0
+#     correlation and cleanly ruled out), here adverse_move IS correlated
+#     with TTC (r=-0.29 BTC/-0.12 ETH/-0.23 SOL -- bigger moves tend to
+#     happen later, which makes mechanical sense). Controlled directly by
+#     TTC-stratifying (early ttc>150s vs late ttc<=150s, attempt_index==1
+#     only): the adverse-move gradient survives independently in BOTH
+#     strata for all three assets (e.g. BTC early 8.0%->22.5%, late
+#     26.6%->44.8%) -- lateness raises the baseline (already modeled via
+#     the hazard curve), adverse_move adds a real, separate gradient on
+#     top of it.
+#
+# Per-asset (pooled across attempt indices 1-4+, adverse-only), 4
+# quartile points, RATE-based mean-neutral multiplier on
+# hedge_attempt_hazard's output -- same construction as
+# HEDGE_LIQUIDITY_MULTIPLIER (a rate, not a skewed size ratio, so mean
+# rather than median is the right center here). First breakpoint pinned
+# at move=0.0 (the empirical q0 median move was 0.01-0.02, close enough
+# to round to the no-op boundary) using its own measured multiplier --
+# NOT forced to 1.0, so there IS a real, disclosed discontinuity right at
+# the adverse/favorable boundary (multiplier drops from 1.0 just below
+# zero to ~0.61-0.78 just above it, before climbing back above 1.0 at
+# larger adverse moves). This reflects real data, not measurement noise:
+# right around zero is the calm trough between the favorable side's
+# SCOUT-bleed spike (excluded above) and the adverse side's genuine
+# escalation -- kept as-measured rather than smoothed into a fake
+# continuous curve, same "never smoothed to look more uniform" rule this
+# whole file follows (see module docstring).
+ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER = {
+    "Bitcoin": {0.0: 0.6123, 0.07: 0.7856, 0.15: 1.0786, 0.30: 1.5235},
+    "Ethereum": {0.0: 0.7620, 0.07: 0.8913, 0.14: 0.8900, 0.26: 1.4567},
+    "Solana": {0.0: 0.7804, 0.08: 0.8631, 0.15: 0.9977, 0.27: 1.3587},
+}
+_ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP = 3.0  # same cap as
+# HEDGE_LIQUIDITY_MULTIPLIER -- measured range tops out at ~1.52 (Bitcoin
+# q3), comfortably inside it.
+
+
+def adverse_move_hedge_trigger_multiplier(asset: str, adverse_move: Optional[float]) -> float:
+    """Continuous, mean-neutral multiplier on hedge_attempt_hazard's
+    output as a function of how far price has moved against the primary
+    position since entry. 1.0 (no-op) for any asset not in
+    ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER, when adverse_move is
+    unavailable, OR when adverse_move < 0 (favorable move -- deliberately
+    unmodeled, see this section's docstring). Flat beyond the measured
+    range, same discipline as every other multiplier in this file. Final
+    result clamped to _ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP -- the
+    caller (decide_hedge) is still responsible for clamping the final
+    PROBABILITY to [0, 1], same as it already does for
+    hedge_liquidity_multiplier/weekend_hedge_multiplier."""
+    if adverse_move is None or adverse_move < 0:
+        return 1.0
+    curve = ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER.get(asset)
+    if curve is None:
+        return 1.0
+    points = sorted(curve.items())
+    lo_move, lo_val = points[0]
+    hi_move, hi_val = points[-1]
+    move = max(lo_move, min(hi_move, adverse_move))
+    result = hi_val
+    for i in range(len(points) - 1):
+        p_move, p_val = points[i]
+        q_move, q_val = points[i + 1]
+        if p_move <= move <= q_move:
+            frac = (move - p_move) / (q_move - p_move) if q_move > p_move else 0.0
+            result = p_val + frac * (q_val - p_val)
+            break
+    cap = _ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
+
+
+# ---------------------------------------------------------------------------
 # HEDGE CONTINUATION. Added 2026-09-09, closing the multi-hedge gap found
 # this session: decide_hedge above only ever fired ONCE per market
 # (hedge_placed permanently locked it after the first success). Real data
