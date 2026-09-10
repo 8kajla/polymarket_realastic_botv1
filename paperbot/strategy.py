@@ -449,6 +449,14 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                 ratio *= bc.adverse_move_size_multiplier(market.asset, adverse_move)
         else:
             ratio = bc.hedge_continuation_size_ratio(activity.hedge_count + 1)
+            # ADDED 2026-09-10: direct extension of the hedge_count==0 case
+            # above to continuation hedges -- same since-ORIGIN adverse_move
+            # definition (deep-research-confirmed to beat a since-last-hedge
+            # alternative), see ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER's
+            # docstring in behavior_config.py.
+            if config.ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER and activity.first_entry_price is not None:
+                adverse_move = activity.first_entry_price - (1.0 - price)
+                ratio *= bc.adverse_move_continuation_size_multiplier(market.asset, adverse_move)
         jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)
         notional = max(dominant_cost * ratio * jitter, 0.0)
         is_floor_lot = False

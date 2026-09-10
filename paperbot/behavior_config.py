@@ -1130,6 +1130,83 @@ def hedge_continuation_size_ratio(hedge_index: int) -> float:
 
 
 # ---------------------------------------------------------------------------
+# ADVERSE-MOVE-conditioned CONTINUATION hedge size. Added 2026-09-10, same
+# night as ADVERSE_MOVE_SIZE_MULTIPLIER above (which covers hedge_count==0
+# only) -- direct extension of the same confirmed mechanism to hedge_count
+# >= 1 (2nd/3rd/4th+ hedges), using the same since-ORIGIN adverse_move
+# definition (primary_entry_price - primary_current_price_at_this_hedge).
+#
+# NOT just assumed to generalize -- deep-research pass run before building:
+#   - Regime-controlled (fit separately per first_entry_regime): holds in
+#     11 of 12 (asset, regime) cells, r=0.23-0.64, t=4.36-58.17. ONE cell
+#     fails this file's own |t|>=2.58 bar: Solana/HIGH, t=2.46 (n=108,
+#     thin). Every other cell, including small BTC/HIGH (t=4.36, n=66),
+#     clears comfortably. Not chased further per this file's own thin-cell
+#     discipline -- the pooled-per-asset curve below is not regime-split,
+#     so this doesn't block it, but Solana/HIGH specifically shouldn't be
+#     treated as independently confirmed.
+#   - TTC confound ruled out again: r(adverse_move, seconds_to_close) is
+#     ~0 (-0.076 to 0.028 across assets) -- not a lateness proxy here
+#     either.
+#   - REAL open question tested, not assumed: does continuation-hedge size
+#     track cumulative move SINCE HIS ORIGINAL ENTRY, or incremental move
+#     SINCE HIS LAST HEDGE? Tested both as competing hypotheses --
+#     since-origin wins clearly (r=0.44-0.57 pooled) over since-last-hedge
+#     (r=0.13-0.23, still significant but meaningfully weaker). Confirms
+#     reusing MarketActivityState.first_entry_price (not re-anchoring at
+#     each hedge) is the empirically better model, not just a convenient
+#     reuse of existing plumbing.
+#
+# Per-asset (all continuation-hedge indices 2/3/4+ pooled -- same
+# parsimony rationale as ADVERSE_MOVE_SIZE_MULTIPLIER: per-index slopes
+# were consistent, r=0.24-0.50 BTC / 0.18-0.36 ETH / 0.13-0.27 SOL across
+# individual indices, checked before pooling), 4 quartile points, median-
+# based, median-neutral multiplier on HEDGE_CONTINUATION_SIZE_RATIO's base
+# value -- same construction as ADVERSE_MOVE_SIZE_MULTIPLIER (median over
+# mean for the same right-skew reason). Interpolated as-measured: BTC dips
+# slightly at q3 (matching the first-hedge multiplier's own shape); ETH
+# and SOL are fully monotonic here, unlike the first-hedge case -- kept as
+# real, not forced to match the other table's shape.
+ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER = {
+    "Bitcoin": {-0.41: 0.2700, -0.09: 0.6799, 0.12: 2.5175, 0.34: 2.1524},
+    "Ethereum": {-0.58: 0.3775, -0.28: 0.3701, 0.02: 2.7088, 0.27: 3.0832},
+    "Solana": {-0.56: 0.3890, -0.30: 0.5251, -0.02: 1.6234, 0.22: 3.8519},
+}
+_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER_CAP = 6.0  # same cap as
+# ADVERSE_MOVE_SIZE_MULTIPLIER -- measured range tops out at ~3.85 (Solana
+# q3), comfortably inside it.
+
+
+def adverse_move_continuation_size_multiplier(asset: str, adverse_move: Optional[float]) -> float:
+    """Continuous, median-neutral multiplier on HEDGE_CONTINUATION_SIZE_RATIO's
+    base value, as a function of how far price has moved against the
+    primary position since the market's ORIGINAL entry (not since the
+    most recent hedge -- see this section's docstring for why that
+    reference point won the direct comparison). 1.0 (no-op) for any asset
+    not in ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER, or when adverse_move
+    is unavailable. Flat beyond the measured range, same discipline as
+    every other multiplier in this file. Final result clamped to
+    _ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER_CAP."""
+    curve = ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER.get(asset)
+    if curve is None or adverse_move is None:
+        return 1.0
+    points = sorted(curve.items())
+    lo_move, lo_val = points[0]
+    hi_move, hi_val = points[-1]
+    move = max(lo_move, min(hi_move, adverse_move))
+    result = hi_val
+    for i in range(len(points) - 1):
+        p_move, p_val = points[i]
+        q_move, q_val = points[i + 1]
+        if p_move <= move <= q_move:
+            frac = (move - p_move) / (q_move - p_move) if q_move > p_move else 0.0
+            result = p_val + frac * (q_val - p_val)
+            break
+    cap = _ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
+
+
+# ---------------------------------------------------------------------------
 # SCOUT sizing for the market's very FIRST entry. Added 2026-09-09, closing
 # a confirmed structural gap in the hedge model above: decide_hedge() can
 # only ever fire once entry_count >= 1 -- there's nothing to hedge against

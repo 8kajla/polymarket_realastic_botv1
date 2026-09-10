@@ -986,8 +986,14 @@ class TestBuildOrderIntentHedge:
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
             <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
 
-    def test_adverse_move_multiplier_does_not_affect_continuation_hedges(self, monkeypatch):
-        # Same scoping rule as liquidity/weekend: only the first hedge.
+    def test_adverse_move_size_multiplier_itself_does_not_leak_into_continuation_hedges(self, monkeypatch):
+        # The hedge_count==0-only multiplier (ADVERSE_MOVE_SIZE_MULTIPLIER)
+        # must not apply to a continuation hedge -- but ADVERSE_MOVE_
+        # CONTINUATION_SIZE_MULTIPLIER (added the same night, see below)
+        # DOES apply here, using the same computed adverse_move. Disable
+        # the continuation multiplier via its own flag to isolate this
+        # specific scoping rule from that separate mechanism.
+        monkeypatch.setattr(config, "ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER", False)
         market = make_market(end_time=1000.0, asset="Bitcoin")
         up_book = make_liquid_book(price=0.80, token_id="up")
         down_book = make_liquid_book(price=0.30, token_id="down")
@@ -1000,7 +1006,76 @@ class TestBuildOrderIntentHedge:
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
-        expected_ratio = bc.hedge_continuation_size_ratio(2)  # unaffected by the adverse-move multiplier
+        expected_ratio = bc.hedge_continuation_size_ratio(2)  # neither multiplier applied
+        dominant_cost = 10.0
+        expected_notional = dominant_cost * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_continuation_hedge_size_scales_with_adverse_move(self, monkeypatch):
+        """build_order_intent's continuation-hedge sizing, added 2026-09-10:
+        hedge_count>=1 must include ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER
+        on top of HEDGE_CONTINUATION_SIZE_RATIO, using the same since-
+        ORIGIN adverse_move as the first-hedge case (first_entry_price vs
+        the hedge side's current book price)."""
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")     # CORE primary, entered at 0.80
+        down_book = make_liquid_book(price=0.30, token_id="down")  # hedge side -> dominant now at 1-0.30=0.70
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE", price=0.80)
+        activity.record_entry("Down", notional_usd=1.0, regime="CORE", is_hedge=True)
+        assert activity.hedge_count == 1
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        assert intent is not None
+        assert intent.is_hedge is True
+        adverse_move = 0.80 - (1.0 - 0.30)  # == 0.10, since-origin (first_entry_price), not since-last-hedge
+        expected_ratio = bc.hedge_continuation_size_ratio(2) * bc.adverse_move_continuation_size_multiplier("Bitcoin", adverse_move)
+        dominant_cost = 10.0
+        expected_notional = dominant_cost * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_continuation_adverse_move_multiplier_respects_the_per_instance_feature_flag(self, monkeypatch):
+        # Explicit instruction: paperbot-mini stays on the OLD behavior
+        # (as a control) via ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER=false.
+        monkeypatch.setattr(config, "ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER", False)
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.30, token_id="down")
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE", price=0.80)
+        activity.record_entry("Down", notional_usd=1.0, regime="CORE", is_hedge=True)
+        assert activity.hedge_count == 1
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        expected_ratio = bc.hedge_continuation_size_ratio(2)  # multiplier must be a strict no-op
+        dominant_cost = 10.0
+        expected_notional = dominant_cost * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_continuation_adverse_move_multiplier_is_a_noop_when_first_entry_price_was_never_recorded(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.30, token_id="down")
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE")  # no price= kwarg
+        activity.record_entry("Down", notional_usd=1.0, regime="CORE", is_hedge=True)
+        assert activity.first_entry_price is None
+        assert activity.hedge_count == 1
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        expected_ratio = bc.hedge_continuation_size_ratio(2)  # no multiplier applied
         dominant_cost = 10.0
         expected_notional = dominant_cost * expected_ratio
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
