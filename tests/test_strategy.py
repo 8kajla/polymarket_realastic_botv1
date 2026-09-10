@@ -202,6 +202,59 @@ class TestSizingDecision:
         # these must match exactly, not just approximately.
         assert low == high
 
+    def test_ttc_multiplier_defaults_to_a_noop_when_not_passed(self):
+        # Every pre-existing call site/test that doesn't pass
+        # seconds_remaining must be completely unaffected by this feature.
+        rng_a = random.Random(11)
+        rng_b = random.Random(11)
+        notional_no_arg, _ = decide_size("Bitcoin", "HIGH", "first", 0.95, rng_a)
+        notional_explicit_none, _ = decide_size("Bitcoin", "HIGH", "first", 0.95, rng_b,
+                                                  seconds_remaining=None)
+        assert notional_no_arg == notional_explicit_none
+
+    def test_ttc_multiplier_scales_size_with_time_remaining(self):
+        # Bitcoin HIGH: confirmed to grow sharply toward close. Average
+        # over many draws late in the window should land meaningfully
+        # above early in the window, holding regime/price/position fixed.
+        def avg_notional(seconds_remaining, n=400):
+            rng = random.Random(13)
+            total = 0.0
+            for _ in range(n):
+                notional, _ = decide_size("Bitcoin", "HIGH", "4th_plus", 0.95, rng,
+                                           seconds_remaining=seconds_remaining)
+                total += notional
+            return total / n
+
+        early_avg = avg_notional(270.0)
+        late_avg = avg_notional(90.0)
+        assert early_avg < late_avg
+
+    def test_ttc_multiplier_is_a_noop_for_assets_not_calibrated(self):
+        rng_a = random.Random(17)
+        rng_b = random.Random(17)
+        notional_early, _ = decide_size("Dogecoin", "CORE", "first", 0.85, rng_a,
+                                         seconds_remaining=270.0)
+        notional_late, _ = decide_size("Dogecoin", "CORE", "first", 0.85, rng_b,
+                                        seconds_remaining=90.0)
+        assert notional_early == notional_late
+
+    def test_ttc_multiplier_respects_the_per_instance_feature_flag(self, monkeypatch):
+        # Explicit instruction: paperbot-mini stays on the OLD behavior
+        # (as a control) via ENABLE_TTC_SIZE_MULTIPLIER=false -- confirm
+        # the flag actually suppresses the multiplier, not just that the
+        # env var parses.
+        monkeypatch.setattr(config, "ENABLE_TTC_SIZE_MULTIPLIER", False)
+        rng_a = random.Random(19)
+        rng_b = random.Random(19)
+        notional_early, _ = decide_size("Bitcoin", "HIGH", "4th_plus", 0.95, rng_a,
+                                         seconds_remaining=270.0)
+        notional_late, _ = decide_size("Bitcoin", "HIGH", "4th_plus", 0.95, rng_b,
+                                        seconds_remaining=90.0)
+        assert notional_early == notional_late, (
+            "with the flag off, ttc must be a strict no-op even for a "
+            "calibrated (asset, regime) cell"
+        )
+
 
 class TestBuildOrderIntent:
     def test_returns_none_under_timing_cutoff(self):
@@ -265,6 +318,28 @@ class TestBuildOrderIntent:
         # sized off the CHEAP curve at Down's real price, not a HIGH notional / 0.04
         cheap_median = bc.median_entry_notional(market.asset, "CHEAP", "first")
         assert intent.notional_usd < cheap_median * 2  # generous jitter allowance
+
+    def test_seconds_remaining_is_threaded_through_to_ttc_size_multiplier(self):
+        """End-to-end: build_order_intent computes seconds_remaining from
+        the real market/now and passes it into decide_size, actually
+        moving the resulting notional -- not just that the multiplier
+        function itself works in isolation (already covered in
+        TestTtcSizeMultiplier) or that decide_size applies it when called
+        directly (already covered in TestSizingDecision)."""
+        up_book = make_liquid_book(price=0.95, token_id="up")  # HIGH band, Bitcoin-calibrated
+        down_book = make_liquid_book(price=0.04, token_id="down")
+
+        def notional_at(seconds_remaining, seed=0):
+            market = make_market(end_time=1000.0, asset="Bitcoin")
+            activity = MarketActivityState()
+            intent = build_order_intent(market, up_book, down_book, activity, random.Random(seed),
+                                         now=1000.0 - seconds_remaining)
+            return intent.notional_usd if intent is not None else None
+
+        early = notional_at(270.0)
+        late = notional_at(90.0)
+        assert early is not None and late is not None
+        assert early != late, "seconds_remaining must actually reach decide_size, not be dropped"
 
     def test_floor_lot_still_skips_below_the_runtime_minimum(self):
         """Floor-lot's whole point is a tiny, often-below-minimum notional
@@ -565,6 +640,35 @@ class TestBuildOrderIntentHedge:
         expected_notional = dominant_cost * expected_ratio
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
             <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_hedge_sizing_is_unaffected_by_time_to_close(self, monkeypatch):
+        """TTC_SIZE_MULTIPLIER is deliberately scoped to the ordinary
+        entry-curve path only (decide_size's own docstring) -- the raw
+        trade data it was measured from doesn't distinguish hedge-shaped
+        trades from ordinary ones, so it must never touch
+        HEDGE_SIZE_RATIO's formula. Bitcoin IS calibrated in
+        TTC_SIZE_MULTIPLIER (unlike BNB, used in the other hedge tests
+        above), so this specifically exercises the case where a no-op
+        would be silently wrong if the scoping broke."""
+        market_early = make_market(end_time=1000.0, asset="Bitcoin")
+        market_late = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")    # CORE primary
+        down_book = make_liquid_book(price=0.15, token_id="down")  # CHEAP hedge side
+
+        def hedge_at(now):
+            activity = MarketActivityState()
+            activity.record_entry("Up", notional_usd=10.0, regime="CORE")
+            monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng: "Down")
+            return build_order_intent(market_early if now < 500 else market_late,
+                                       up_book, down_book, activity, random.Random(0), now=now)
+
+        intent_early = hedge_at(now=1000.0 - 270.0)  # 270s remaining
+        intent_late = hedge_at(now=1000.0 - 90.0)    # 90s remaining -- same seed, different ttc
+
+        assert intent_early.notional_usd == intent_late.notional_usd, (
+            "hedge notional must be identical regardless of time-to-close -- "
+            "the ttc multiplier must not leak into HEDGE_SIZE_RATIO's formula"
+        )
 
     def test_no_hedge_falls_through_to_normal_flow(self, monkeypatch):
         market = make_market(end_time=1000.0, asset="Bitcoin")

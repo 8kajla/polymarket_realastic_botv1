@@ -474,6 +474,99 @@ def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
     return max(1.0 / _WITHIN_BAND_MULTIPLIER_CAP, min(_WITHIN_BAND_MULTIPLIER_CAP, raw))
 
 
+# ---------------------------------------------------------------------------
+# TIME-TO-CLOSE size scaling. Added 2026-09-10: the whole session's own
+# reverse-engineering work found a real, structural signal (a market
+# entering its 60s TWAP window makes the outcome increasingly computable
+# as close approaches) AND, critically, confirmed the trader actually
+# ACTS on it via SIZING, not just presence -- unlike a separately-tested
+# "price velocity" signal that turned out to be a passive market fact he
+# does NOT size against (checked and rejected the same night, same
+# methodology, before touching any code here).
+#
+# Measured directly: mean $ per trade in 4 buckets by seconds-remaining
+# (270/210/150/90s midpoints), per (asset, regime), 14-day window,
+# BTC/ETH/SOL only (the three live-traded assets). Ratio to the n-weighted
+# overall mean for that (asset, regime) -- mean-neutral by construction,
+# same principle as WITHIN_BAND_SIZE_SLOPE above: this only redistributes
+# size across time-within-window, it doesn't change the already-
+# calibrated ENTRY_SIZING_USD average.
+#
+# Real, asset-consistent shapes found (all three assets agree in
+# direction, magnitude varies):
+#   CHEAP: shrinks toward close (a still-unlikely outcome gets LESS
+#     appealing as time runs out) -- ~15-33% below the window-open level.
+#   MID:   grows toward close (an undecided market nearing its real
+#     decision point) -- Bitcoin mildly (+18%), Ethereum/Solana
+#     dramatically (+63%/+98%).
+#   CORE:  roughly flat -- price level alone already captures most of
+#     what matters here, matching the earlier price-convergence finding
+#     that CORE is a weaker/messier signal cell generally.
+#   HIGH:  grows sharply toward close -- Bitcoin roughly doubles
+#     (0.67x -> 1.17x), Ethereum/Solana similar. The clearest, cleanest
+#     signal of the four, matching "size scales with TWAP-locked-in
+#     confidence."
+#
+# n>=100 trust bar per bucket (comparable order of magnitude to
+# WITHIN_BAND_SIZE_SLOPE's own trusted correlations). The one bucket per
+# asset that fell short (HIGH's 240-300s/270 midpoint -- thin because
+# HIGH-band trades this early in a window are rare for all three assets,
+# n=71/20/29) is CLAMPED to the next trusted bucket's ratio (210) rather
+# than used raw -- a real thin-sample ratio would either be noise or,
+# worse, get silently trusted at face value; clamping is the same
+# "don't extrapolate past what the data supports" caution
+# _WITHIN_BAND_MULTIPLIER_CAP applies below, just at the input-trust
+# stage instead of the output-clamp stage.
+#
+# Linear interpolation between bucket midpoints for continuous ttc
+# values; flat (equal to the nearest endpoint) outside [90, 270] --
+# no extrapolation past the measured window. Dogecoin/Hyperliquid/BNB
+# omitted (not live-traded, no data) -- ttc_size_multiplier returns 1.0
+# (no-op) for any asset/regime not in this table, same fallback pattern
+# as within_band_size_multiplier.
+TTC_SIZE_MULTIPLIER = {
+    "Bitcoin": {
+        "CHEAP": {270: 1.1502, 210: 1.063, 150: 0.9984, 90: 0.8641},
+        "MID": {270: 0.9221, 210: 0.9878, 150: 1.045, 90: 1.0869},
+        "CORE": {270: 0.9122, 210: 1.0321, 150: 1.0093, 90: 1.0001},
+        "HIGH": {270: 0.6673, 210: 0.6673, 150: 0.9282, 90: 1.1731},
+    },
+    "Ethereum": {
+        "CHEAP": {270: 1.1222, 210: 1.0766, 150: 0.9583, 90: 0.8513},
+        "MID": {270: 0.773, 210: 0.9392, 150: 1.0528, 90: 1.2595},
+        "CORE": {270: 1.0162, 210: 1.041, 150: 0.9756, 90: 0.9792},
+        "HIGH": {270: 0.7042, 210: 0.7042, 150: 0.9046, 90: 1.1689},
+    },
+    "Solana": {
+        "CHEAP": {270: 1.1344, 210: 0.9901, 150: 1.0373, 90: 0.8356},
+        "MID": {270: 0.7752, 210: 0.9129, 150: 1.1741, 90: 1.5376},
+        "CORE": {270: 0.9691, 210: 0.9821, 150: 1.0242, 90: 1.007},
+        "HIGH": {270: 0.7084, 210: 0.7084, 150: 0.9776, 90: 1.1434},
+    },
+}
+_TTC_MULTIPLIER_MIDPOINTS = (270, 210, 150, 90)
+
+
+def ttc_size_multiplier(asset: str, regime: str, seconds_remaining: float) -> float:
+    """Continuous, mean-neutral size multiplier as a function of time
+    remaining in the market's 5-minute window. 1.0 (no-op) for any
+    (asset, regime) not in TTC_SIZE_MULTIPLIER (Dogecoin/Hyperliquid/BNB,
+    or an unrecognized regime). Flat beyond the measured [90, 270]
+    range -- clamped to the nearest endpoint's value, never extrapolated."""
+    curve = TTC_SIZE_MULTIPLIER.get(asset, {}).get(regime)
+    if curve is None:
+        return 1.0
+    ttc = max(90.0, min(270.0, seconds_remaining))
+    for i in range(len(_TTC_MULTIPLIER_MIDPOINTS) - 1):
+        hi_mid, lo_mid = _TTC_MULTIPLIER_MIDPOINTS[i], _TTC_MULTIPLIER_MIDPOINTS[i + 1]
+        if lo_mid <= ttc <= hi_mid:
+            hi_val, lo_val = curve[hi_mid], curve[lo_mid]
+            frac = (ttc - lo_mid) / (hi_mid - lo_mid)
+            return lo_val + frac * (hi_val - lo_val)
+    # ttc exactly at an endpoint (270 or 90) falls through the loop above
+    return curve[_TTC_MULTIPLIER_MIDPOINTS[0] if ttc >= 270 else _TTC_MULTIPLIER_MIDPOINTS[-1]]
+
+
 def side_persistence_for(asset: str, held_side_regime: str) -> float:
     """P(keep the currently-held side) given the regime that side is
     CURRENTLY trading in (i.e. the regime it would land in if persisted --

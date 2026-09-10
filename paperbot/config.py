@@ -298,6 +298,28 @@ def maker_rebate_usd(shares: float, price: float) -> float:
     return taker_fee * CRYPTO_MAKER_REBATE_SHARE
 
 # ---------------------------------------------------------------------------
+# Feature flag for TTC_SIZE_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-10 alongside that feature itself.
+# Default TRUE -- this is meant to be the new, correct default behavior
+# everywhere, same as every other calibration shipped tonight.
+#
+# Explicit exception, per direct instruction: the $100 real-viability
+# instance (paperbot-mini) is deliberately being kept on the OLD (no ttc
+# scaling) behavior for now, as a running control -- to see how that
+# config performs over a real long run BEFORE this change is layered on
+# top of it, rather than changing two things (the $100 config's own
+# tuning AND this new feature) at once and losing the ability to
+# attribute results to either one cleanly. Set via env var (same pattern
+# as BANKROLL_USD/SIZE_SCALE_FACTOR/MAX_HEDGE_COUNT_PER_MARKET) so this
+# survives every future restart of that instance, not just "whichever
+# deploy happened to not restart it" -- a crash-restart or a future
+# unrelated redeploy must not silently pull mini back onto the new
+# behavior.
+ENABLE_TTC_SIZE_MULTIPLIER = os.environ.get(
+    "ENABLE_TTC_SIZE_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Hard cap on hedge_count. Added 2026-09-09, hours after
 # HEDGE_CONTINUATION_PROBABILITY shipped (behavior_config.py) let
 # decide_hedge fire more than once per market -- CONFIRMED LIVE this

@@ -233,13 +233,16 @@ def timing_ok(market: Market, now: Optional[float] = None) -> bool:
 
 
 def decide_size(asset: str, regime: str, position_tier: str, price: float,
-                 rng: random.Random) -> tuple[float, bool]:
+                 rng: random.Random, seconds_remaining: Optional[float] = None) -> tuple[float, bool]:
     """
     Returns (notional_usd, is_floor_lot). Rolls the floor-lot tier first for
     assets where it's modeled (Part 4); falls back to the normal
     entry-count sizing curve (Part 3) with a small symmetric jitter around
     the confirmed median, since only medians -- not full distributions --
     were measured.
+
+    seconds_remaining is Optional (default None -> no-op) so every
+    existing call site/test that doesn't pass it keeps working unchanged.
     """
     floor_p = bc.floor_lot_probability(asset, regime, position_tier)
     if floor_p > 0 and rng.random() < floor_p:
@@ -256,12 +259,28 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # three dormant assets), so this can't silently change behavior
     # outside the two regimes it was actually calibrated on.
     within_band = bc.within_band_size_multiplier(asset, regime, price)
+    # TIME-TO-CLOSE scaling (2026-09-10 finding): confirmed the trader
+    # actually SIZES differently by time remaining, holding price level
+    # fixed -- not just present more late-window (already known), a real
+    # sizing reaction (unlike a separately-tested price-velocity signal
+    # that turned out to be a passive fact he doesn't act on, and was
+    # deliberately NOT implemented after that check). Mean-neutral by
+    # construction, same principle as within_band above. See
+    # TTC_SIZE_MULTIPLIER's docstring in behavior_config.py for the exact
+    # per-asset-per-regime shapes and the real numbers behind them.
+    # Scoped to THIS ordinary entry-curve path only, not
+    # HEDGE_SIZE_RATIO's separate formula -- the raw trade data this was
+    # measured from doesn't distinguish hedge-shaped trades from ordinary
+    # ones, so extrapolating it onto the hedge formula isn't validated by
+    # what was actually measured.
+    ttc_mult = bc.ttc_size_multiplier(asset, regime, seconds_remaining) \
+        if seconds_remaining is not None and config.ENABLE_TTC_SIZE_MULTIPLIER else 1.0
     # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a
     # deliberately small-bankroll instance -- see its docstring in
     # config.py. Applied here (not to the floor-lot branch above) so the
     # tiny, independently-calibrated probe tier is never pushed below a
     # real exchange minimum by a scale-down meant for the ordinary curve.
-    return max(median * jitter * within_band * config.SIZE_SCALE_FACTOR, 0.0), False
+    return max(median * jitter * within_band * ttc_mult * config.SIZE_SCALE_FACTOR, 0.0), False
 
 
 def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
@@ -292,6 +311,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     """
     if not timing_ok(market, now):
         return None
+
+    seconds_remaining = market.seconds_remaining(now)
 
     hedge_side = decide_hedge(market.asset, activity, rng)
     is_hedge = hedge_side is not None
@@ -381,9 +402,11 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                 market.asset, regime, position_tier, notional, min_size * price, min_size, price,
             )
             is_hedge = False
-            notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng)
+            notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
+                                                  seconds_remaining=seconds_remaining)
     else:
-        notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng)
+        notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
+                                              seconds_remaining=seconds_remaining)
 
     is_scout = False
     if not is_hedge and not is_floor_lot and activity.entry_count == 0:

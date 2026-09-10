@@ -222,6 +222,67 @@ class TestWithinBandSizeMultiplier:
         # edge of the band this must still be bounded, not blow up.
         mult = bc.within_band_size_multiplier("Ethereum", "HIGH", 1.0)
         assert mult <= 5.0
+
+
+class TestTtcSizeMultiplier:
+    """Time-to-close size scaling, added 2026-09-10 -- confirmed the
+    trader actually SIZES differently by time remaining (not just present
+    more late-window), unlike a separately-tested price-velocity signal
+    that was checked the same way and rejected for not being something he
+    actually acts on. See TTC_SIZE_MULTIPLIER's docstring for the real
+    numbers this was calibrated from."""
+
+    def test_neutral_for_assets_not_in_the_table(self):
+        # Dogecoin/Hyperliquid/BNB aren't live-traded -- no data, must
+        # stay a strict no-op regardless of regime/ttc.
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            for regime in ("CHEAP", "MID", "CORE", "HIGH"):
+                assert bc.ttc_size_multiplier(asset, regime, 150.0) == 1.0
+
+    def test_neutral_for_an_unrecognized_regime(self):
+        assert bc.ttc_size_multiplier("Bitcoin", "NOT_A_REGIME", 150.0) == 1.0
+
+    def test_exact_at_each_calibrated_midpoint(self):
+        # At exactly a bucket midpoint, the interpolated value must equal
+        # the calibrated value exactly (not an interpolation artifact).
+        for asset, regimes in bc.TTC_SIZE_MULTIPLIER.items():
+            for regime, curve in regimes.items():
+                for midpoint, expected in curve.items():
+                    got = bc.ttc_size_multiplier(asset, regime, float(midpoint))
+                    assert abs(got - expected) < 1e-9, f"{asset}/{regime}@{midpoint}: {got} != {expected}"
+
+    def test_interpolates_between_midpoints(self):
+        # Bitcoin/HIGH: 210->0.6673, 150->0.9282 -- the midpoint of those
+        # two (ttc=180) must fall exactly between them.
+        low = bc.ttc_size_multiplier("Bitcoin", "HIGH", 210.0)
+        high = bc.ttc_size_multiplier("Bitcoin", "HIGH", 150.0)
+        mid = bc.ttc_size_multiplier("Bitcoin", "HIGH", 180.0)
+        assert abs(mid - (low + high) / 2) < 1e-9
+
+    def test_flat_beyond_the_measured_range_no_extrapolation(self):
+        # Below 90s or above 270s must clamp to the nearest endpoint, not
+        # extrapolate past what the data supports.
+        at_90 = bc.ttc_size_multiplier("Bitcoin", "HIGH", 90.0)
+        below_90 = bc.ttc_size_multiplier("Bitcoin", "HIGH", 10.0)
+        assert at_90 == below_90
+
+        at_270 = bc.ttc_size_multiplier("Bitcoin", "HIGH", 270.0)
+        above_270 = bc.ttc_size_multiplier("Bitcoin", "HIGH", 295.0)
+        assert at_270 == above_270
+
+    def test_high_regime_grows_toward_close_for_every_live_asset(self):
+        # The cleanest, most consistent real signal found: HIGH-band size
+        # grows sharply as close approaches, for all three live assets.
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            early = bc.ttc_size_multiplier(asset, "HIGH", 270.0)
+            late = bc.ttc_size_multiplier(asset, "HIGH", 90.0)
+            assert late > early, f"{asset}: expected HIGH size to grow toward close"
+
+    def test_cheap_regime_shrinks_toward_close_for_every_live_asset(self):
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            early = bc.ttc_size_multiplier(asset, "CHEAP", 270.0)
+            late = bc.ttc_size_multiplier(asset, "CHEAP", 90.0)
+            assert late < early, f"{asset}: expected CHEAP size to shrink toward close"
         mult_low = bc.within_band_size_multiplier("Ethereum", "HIGH", 0.90)
         assert mult_low >= 1.0 / 5.0
 
