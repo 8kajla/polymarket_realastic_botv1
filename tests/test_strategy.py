@@ -334,6 +334,61 @@ class TestSizingDecision:
             "with the flag off, cross-market size momentum must be a strict no-op"
         )
 
+    def test_bankroll_pnl_defaults_to_a_noop_when_not_passed(self):
+        # Ethereum, not Bitcoin -- BANKROLL_PNL_SIZE_MULTIPLIER deliberately
+        # excludes Bitcoin (see its docstring in behavior_config.py).
+        rng_a = random.Random(53)
+        rng_b = random.Random(53)
+        notional_no_arg, _ = decide_size("Ethereum", "MID", "first", 0.5, rng_a)
+        notional_explicit_none, _ = decide_size("Ethereum", "MID", "first", 0.5, rng_b,
+                                                 bankroll_pnl_residual=None)
+        assert notional_no_arg == notional_explicit_none
+
+    def test_bankroll_pnl_scales_first_entry_size_down_as_pnl_rises(self):
+        # The whole finding: sizes DOWN after accumulated profit, UP after
+        # a drawdown.
+        def avg_notional(pnl, n=400):
+            rng = random.Random(59)
+            total = 0.0
+            for _ in range(n):
+                notional, _ = decide_size("Ethereum", "MID", "first", 0.5, rng,
+                                           bankroll_pnl_residual=pnl)
+                total += notional
+            return total / n
+
+        after_drawdown = avg_notional(-200.0)
+        after_profit = avg_notional(400.0)
+        assert after_profit < after_drawdown
+
+    def test_bankroll_pnl_is_a_noop_for_bitcoin(self):
+        # Deliberately excluded, not just uncalibrated -- see
+        # BANKROLL_PNL_SIZE_MULTIPLIER's docstring.
+        rng_a = random.Random(61)
+        rng_b = random.Random(61)
+        notional_no_pnl, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng_a)
+        notional_with_pnl, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng_b,
+                                            bankroll_pnl_residual=400.0)
+        assert notional_no_pnl == notional_with_pnl
+
+    def test_bankroll_pnl_only_applies_to_the_first_tier(self):
+        rng_a = random.Random(67)
+        rng_b = random.Random(67)
+        notional_no_pnl, _ = decide_size("Ethereum", "MID", "4th_plus", 0.5, rng_a)
+        notional_with_pnl, _ = decide_size("Ethereum", "MID", "4th_plus", 0.5, rng_b,
+                                            bankroll_pnl_residual=400.0)
+        assert notional_no_pnl == notional_with_pnl
+
+    def test_bankroll_pnl_respects_the_per_instance_feature_flag(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_BANKROLL_PNL_SIZE_MULTIPLIER", False)
+        rng_a = random.Random(71)
+        rng_b = random.Random(71)
+        notional_no_pnl, _ = decide_size("Ethereum", "MID", "first", 0.5, rng_a)
+        notional_with_pnl, _ = decide_size("Ethereum", "MID", "first", 0.5, rng_b,
+                                            bankroll_pnl_residual=400.0)
+        assert notional_no_pnl == notional_with_pnl, (
+            "with the flag off, bankroll-linked sizing must be a strict no-op"
+        )
+
     def test_ttc_multiplier_defaults_to_a_noop_when_not_passed(self):
         # Every pre-existing call site/test that doesn't pass
         # seconds_remaining must be completely unaffected by this feature.

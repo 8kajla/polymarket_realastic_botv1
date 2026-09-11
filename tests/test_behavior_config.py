@@ -723,6 +723,44 @@ class TestCrossMarketSizeMomentumMultiplier:
             assert low < high, f"{asset}: expected increasing multiplier, got {low}/{high}"
 
 
+class TestBankrollPnlSizeMultiplier:
+    """Bankroll-linked sizing, added 2026-09-12 -- real, well-powered
+    finding for Ethereum/Solana ONLY (Bitcoin deliberately excluded, not
+    just uncalibrated -- see the docstring in behavior_config.py): first-
+    entry size scales DOWN after his own accumulated realized profit and
+    UP after a drawdown. Survived time-detrending, a partial-correlation
+    confound check against ADVERSE_MOVE_SIZE_MULTIPLIER, and a temporal-
+    stability check across the Aug 7 TWAP change."""
+
+    def test_noop_for_unknown_asset_or_missing_pnl(self):
+        assert bc.bankroll_pnl_size_multiplier("Bitcoin", 100.0) == 1.0
+        assert bc.bankroll_pnl_size_multiplier("Dogecoin", 100.0) == 1.0
+        assert bc.bankroll_pnl_size_multiplier("Ethereum", None) == 1.0
+
+    def test_bitcoin_is_deliberately_excluded_not_just_uncalibrated(self):
+        assert "Bitcoin" not in bc.BANKROLL_PNL_SIZE_MULTIPLIER
+
+    def test_decreases_as_realized_pnl_increases(self):
+        # The whole finding: sizes DOWN after accumulated profit, UP
+        # after a drawdown -- multiplier must be strictly decreasing.
+        for asset, curve in bc.BANKROLL_PNL_SIZE_MULTIPLIER.items():
+            xs = sorted(curve.keys())
+            low_pnl_mult = bc.bankroll_pnl_size_multiplier(asset, xs[0])
+            high_pnl_mult = bc.bankroll_pnl_size_multiplier(asset, xs[-1])
+            assert low_pnl_mult > high_pnl_mult, (
+                f"{asset}: expected a lower-pnl point to size bigger than a higher-pnl "
+                f"point, got {low_pnl_mult}/{high_pnl_mult}"
+            )
+
+    def test_flat_beyond_the_measured_range(self):
+        for asset, curve in bc.BANKROLL_PNL_SIZE_MULTIPLIER.items():
+            xs = sorted(curve.keys())
+            assert (bc.bankroll_pnl_size_multiplier(asset, xs[0] - 10000)
+                    == bc.bankroll_pnl_size_multiplier(asset, xs[0]))
+            assert (bc.bankroll_pnl_size_multiplier(asset, xs[-1] + 10000)
+                    == bc.bankroll_pnl_size_multiplier(asset, xs[-1]))
+
+
 class TestAccuracyScoutMultiplier:
     """Accuracy-conditioned scout rate, added 2026-09-11 -- real, cross-
     asset-POOLED (only the pooled version was circularity-checked), so

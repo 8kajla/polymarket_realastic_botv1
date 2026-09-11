@@ -615,6 +615,19 @@ ENABLE_ACCURACY_SCOUT_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for BANKROLL_PNL_SIZE_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-12 -- real, well-powered, confound-
+# checked (survives time-detrending AND a partial-correlation check
+# against the already-shipped ADVERSE_MOVE_SIZE_MULTIPLIER) finding that
+# Ethereum/Solana first-entry size scales DOWN after accumulated profit
+# and UP after a drawdown. Also confirmed temporally stable across the
+# Aug 7 TWAP change. Default TRUE everywhere, explicit FALSE for
+# paperbot-mini (the frozen control instance).
+ENABLE_BANKROLL_PNL_SIZE_MULTIPLIER = os.environ.get(
+    "ENABLE_BANKROLL_PNL_SIZE_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Hard cap on hedge_count. Added 2026-09-09, hours after
 # HEDGE_CONTINUATION_PROBABILITY shipped (behavior_config.py) let
 # decide_hedge fire more than once per market -- CONFIRMED LIVE this

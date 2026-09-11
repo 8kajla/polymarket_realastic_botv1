@@ -810,6 +810,83 @@ def cross_market_size_momentum_multiplier(asset: str, prev_size_residual: Option
 
 
 # ---------------------------------------------------------------------------
+# BANKROLL-linked sizing. Added 2026-09-12: real, well-powered finding for
+# Ethereum/Solana specifically (NOT Bitcoin -- see below) that his first-
+# entry size correlates NEGATIVELY with his own running realized P&L for
+# that asset -- he sizes DOWN after accumulating profit, UP after a
+# drawdown. The opposite of reinvestment/compounding (that hypothesis was
+# tested first and rejected -- wrong direction); this reads as "protect
+# accumulated gains, take bigger swings to recover from a drawdown."
+#
+# Validated to the same bar as every implemented finding this session:
+#   - real and well-powered (n=1094-1104, |t|=6.56-10.58)
+#   - survives removing each variable's own linear time-trend (ruling out
+#     "both just happened to drift over the window" -- SOL -0.305->-0.263,
+#     ETH -0.194->-0.154)
+#   - survives as a PARTIAL correlation controlling for a rolling average
+#     of the already-shipped ADVERSE_MOVE_SIZE_MULTIPLIER's own adverse-
+#     move signal (~84-93% of the raw effect remains: SOL -0.305->-0.284,
+#     ETH -0.194->-0.163) -- confirmed this is NOT a downstream echo of
+#     that within-market mechanism, it's a genuinely separate, additional,
+#     cross-market/account-level signal
+#   - temporally stable across the Aug 7 TWAP change: same negative
+#     direction, same rough magnitude, in both eras (pre-TWAP sample is
+#     sparser/noisier -- SOL -0.184, ETH -0.095 -- but agrees in sign and
+#     order of magnitude with the cleaner post-TWAP numbers above)
+#
+# Bitcoin explicitly excluded, not just uncalibrated: his BTC sizing is
+# 2-2.4x tighter/more consistent than ETH/SOL (log-residual stdev 1.05 vs
+# 2.19/2.54), leaving far less room for ANY external factor -- including
+# this one -- to register as a detectable relationship, even under BTC's
+# own asset-specific P&L (t moves from -1.44 to -1.92, same direction,
+# still short of the bar). Consistent with BTC being his flagship, most
+# rule-following asset elsewhere this session too (the cleanest match to
+# theoretical Kelly math in HIGH, the flattest hedge-fraction-of-arbitrage
+# across regimes). Not a data gap to fill in later -- a real asset
+# asymmetry, same treatment as CHEAP/MID once was before being separately
+# validated for WITHIN_BAND_SIZE_SLOPE.
+#
+# Quartile points of (cumulative realized P&L for this asset, mean-
+# neutral multiplier), built the same way as every other table here:
+# quartile-bucket means, normalized so the population average is 1.0.
+BANKROLL_PNL_SIZE_MULTIPLIER = {
+    "Ethereum": {-238.98: 1.1724, -17.38: 0.9851, 191.66: 0.9824, 416.47: 0.8601},
+    "Solana": {-356.36: 1.2420, -262.25: 1.1362, -87.82: 0.8390, 54.75: 0.7830},
+}
+_BANKROLL_PNL_SIZE_MULTIPLIER_CAP = 3.0
+
+
+def bankroll_pnl_size_multiplier(asset: str, cum_realized_pnl: Optional[float]) -> float:
+    """Continuous, mean-neutral multiplier on decide_size's ordinary
+    output for a market's first entry, as a function of this asset's own
+    running realized P&L (BANKROLL_PNL_SIZE_MULTIPLIER's calibration is
+    against `Ledger.realized_pnl_by_asset()`'s own directional-only
+    total, NOT the with-rebates figure -- match that when calling this).
+    1.0 (no-op) for any asset not in BANKROLL_PNL_SIZE_MULTIPLIER
+    (Bitcoin and the three dormant assets, by design -- see the docstring
+    above for why Bitcoin is deliberately excluded, not just
+    uncalibrated), or when cum_realized_pnl is unavailable. Flat beyond
+    the measured range, same discipline as every other multiplier here."""
+    curve = BANKROLL_PNL_SIZE_MULTIPLIER.get(asset)
+    if curve is None or cum_realized_pnl is None:
+        return 1.0
+    points = sorted(curve.items())
+    lo_x, lo_val = points[0]
+    hi_x, hi_val = points[-1]
+    x = max(lo_x, min(hi_x, cum_realized_pnl))
+    result = hi_val
+    for i in range(len(points) - 1):
+        p_x, p_val = points[i]
+        q_x, q_val = points[i + 1]
+        if p_x <= x <= q_x:
+            frac = (x - p_x) / (q_x - p_x) if q_x > p_x else 0.0
+            result = p_val + frac * (q_val - p_val)
+            break
+    cap = _BANKROLL_PNL_SIZE_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
+
+
+# ---------------------------------------------------------------------------
 # Dual-sided "hedge" behavior. Confirmed from the full historical dataset
 # (see deep_analysis.py / deep_analysis_output.json and hedge_calibration.py
 # in the repo): when the trader's early second entry into a market lands on

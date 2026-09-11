@@ -1488,6 +1488,54 @@ class TestDrawdownCircuitBreaker:
         assert captured["max_notional_usd"] is None
 
 
+class TestBankrollPnlSizingWiring:
+    """PaperBot._evaluate_one_market threading Ledger.realized_pnl_by_asset()
+    through to build_order_intent's bankroll_pnl_residual, added 2026-09-12.
+    Deliberately recomputed from source every call (Ledger.realized_pnl_by_
+    asset() itself, no new incremental state) -- same discipline as every
+    other financial quantity in this codebase."""
+
+    def test_passes_the_assets_own_realized_pnl(self, monkeypatch):
+        bot = PaperBot(assets=["Ethereum"], seed=1)
+        bot.ledger = Ledger()  # isolate from any real state on disk
+        order = make_filled_order("cond-x", order_id=1, asset="Ethereum", price=0.30, size=5.0)
+        bot.fill_sim.orders[order.order_id] = order
+        bot.ledger.settle_order(order, winning_side="Up")  # Up wins -> a real, nonzero pnl
+        expected_pnl = bot.ledger.realized_pnl_by_asset()["Ethereum"]
+        assert expected_pnl != 0.0
+
+        market = make_market_for_asset("Ethereum")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        captured = {}
+
+        def spy_build_order_intent(*args, **kwargs):
+            captured["bankroll_pnl_residual"] = kwargs.get("bankroll_pnl_residual")
+            return None
+
+        monkeypatch.setattr(botmod, "build_order_intent", spy_build_order_intent)
+        bot._evaluate_one_market(market, now=1000.0)
+
+        assert captured["bankroll_pnl_residual"] == pytest.approx(expected_pnl)
+
+    def test_passes_none_for_an_asset_with_no_settled_history(self, monkeypatch):
+        bot = PaperBot(assets=["Ethereum"], seed=1)
+        bot.ledger = Ledger()  # isolate from any real state on disk -- no records at all
+        market = make_market_for_asset("Ethereum")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        captured = {}
+
+        def spy_build_order_intent(*args, **kwargs):
+            captured["bankroll_pnl_residual"] = kwargs.get("bankroll_pnl_residual")
+            return None
+
+        monkeypatch.setattr(botmod, "build_order_intent", spy_build_order_intent)
+        bot._evaluate_one_market(market, now=1000.0)
+
+        assert captured["bankroll_pnl_residual"] is None
+
+
 class TestOrderIdCollisionAcrossRestarts:
     """Direct regression test for a confirmed severe live bug (2026-09-08):
     order_id was a plain per-process counter starting at 1 on every

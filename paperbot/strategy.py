@@ -380,7 +380,8 @@ def timing_ok(market: Market, now: Optional[float] = None) -> bool:
 def decide_size(asset: str, regime: str, position_tier: str, price: float,
                  rng: random.Random, seconds_remaining: Optional[float] = None,
                  hours_since_resumption: Optional[float] = None,
-                 size_momentum_residual: Optional[float] = None) -> tuple[float, bool]:
+                 size_momentum_residual: Optional[float] = None,
+                 bankroll_pnl_residual: Optional[float] = None) -> tuple[float, bool]:
     """
     Returns (notional_usd, is_floor_lot). Rolls the floor-lot tier first for
     assets where it's modeled (Part 4); falls back to the normal
@@ -388,9 +389,10 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     the confirmed median, since only medians -- not full distributions --
     were measured.
 
-    seconds_remaining, hours_since_resumption, and size_momentum_residual
-    are all Optional (default None -> no-op) so every existing call
-    site/test that doesn't pass them keeps working unchanged.
+    seconds_remaining, hours_since_resumption, size_momentum_residual, and
+    bankroll_pnl_residual are all Optional (default None -> no-op) so
+    every existing call site/test that doesn't pass them keeps working
+    unchanged.
     """
     floor_p = bc.floor_lot_probability(asset, regime, position_tier)
     if floor_p > 0 and rng.random() < floor_p:
@@ -433,6 +435,21 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     if (position_tier == "first" and config.ENABLE_CROSS_MARKET_SIZE_MOMENTUM
             and size_momentum_residual is not None):
         momentum_mult = bc.cross_market_size_momentum_multiplier(asset, size_momentum_residual)
+    # BANKROLL-linked sizing (2026-09-12 finding): Ethereum/Solana first-
+    # entry size scales DOWN after his own accumulated realized profit and
+    # UP after a drawdown -- see BANKROLL_PNL_SIZE_MULTIPLIER's docstring
+    # in behavior_config.py for the full validation trail (survives time-
+    # detrending and a partial-correlation check against the adverse-move
+    # multipliers; Bitcoin deliberately excluded, not just uncalibrated).
+    # Scoped to position_tier=="first" only, same reasoning as momentum
+    # above. bankroll_pnl_residual is Ledger.realized_pnl_by_asset()'s own
+    # directional (no-rebate) total for this asset, recomputed from source
+    # by bot.py at decision time -- this file has no bankroll memory of
+    # its own.
+    bankroll_mult = 1.0
+    if (position_tier == "first" and config.ENABLE_BANKROLL_PNL_SIZE_MULTIPLIER
+            and bankroll_pnl_residual is not None):
+        bankroll_mult = bc.bankroll_pnl_size_multiplier(asset, bankroll_pnl_residual)
     # TIME-TO-CLOSE scaling (2026-09-10 finding): confirmed the trader
     # actually SIZES differently by time remaining, holding price level
     # fixed -- not just present more late-window (already known), a real
@@ -464,8 +481,8 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # config.py. Applied here (not to the floor-lot branch above) so the
     # tiny, independently-calibrated probe tier is never pushed below a
     # real exchange minimum by a scale-down meant for the ordinary curve.
-    return max(median * jitter * within_band * momentum_mult * ttc_mult * resumption_mult
-               * config.SIZE_SCALE_FACTOR, 0.0), False
+    return max(median * jitter * within_band * momentum_mult * bankroll_mult * ttc_mult
+               * resumption_mult * config.SIZE_SCALE_FACTOR, 0.0), False
 
 
 def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
@@ -478,7 +495,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                         prev_hedge_rate: Optional[float] = None,
                         size_momentum_residual: Optional[float] = None,
                         rolling_accuracy: Optional[float] = None,
-                        max_notional_usd: Optional[float] = None) -> Optional[OrderIntent]:
+                        max_notional_usd: Optional[float] = None,
+                        bankroll_pnl_residual: Optional[float] = None) -> Optional[OrderIntent]:
     """
     Runs the full per-market pipeline (steps 1-6 of Part 5) and returns an
     OrderIntent, or None if this market isn't tradeable right now. Does NOT
@@ -502,7 +520,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     should have been a normal small CHEAP-band size.
 
     `previous_market_won`, `prev_hedge_rate`, `size_momentum_residual`,
-    and `rolling_accuracy` (all added 2026-09-11) are per-asset
+    `rolling_accuracy` (all added 2026-09-11), and `bankroll_pnl_residual`
+    (added 2026-09-12) are per-asset
     cross-market state that only bot.py can maintain (this module has no
     memory across markets of its own) -- all Optional (default None ->
     no-op for every one of them) so every existing call site/test keeps
@@ -671,12 +690,14 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
                                                   seconds_remaining=seconds_remaining,
                                                   hours_since_resumption=hours_since_resumption,
-                                                  size_momentum_residual=size_momentum_residual)
+                                                  size_momentum_residual=size_momentum_residual,
+                                                  bankroll_pnl_residual=bankroll_pnl_residual)
     else:
         notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
                                               seconds_remaining=seconds_remaining,
                                               hours_since_resumption=hours_since_resumption,
-                                              size_momentum_residual=size_momentum_residual)
+                                              size_momentum_residual=size_momentum_residual,
+                                              bankroll_pnl_residual=bankroll_pnl_residual)
 
     is_scout = False
     if not is_hedge and not is_floor_lot and activity.entry_count == 0:

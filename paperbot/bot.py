@@ -500,7 +500,8 @@ class PaperBot:
             prev_hedge_rate=self.last_hedge_rate_by_asset.get(market.asset),
             size_momentum_residual=self.ewma_size_residual_by_asset.get(market.asset),
             rolling_accuracy=self._rolling_accuracy(market.asset),
-            max_notional_usd=max_notional_usd)
+            max_notional_usd=max_notional_usd,
+            bankroll_pnl_residual=self.ledger.realized_pnl_by_asset().get(market.asset))
         if intent is None:
             return
 
