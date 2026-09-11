@@ -483,6 +483,82 @@ ENABLE_CROSS_MARKET_SIDE_PERSISTENCE = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for the CHEAP/MID cells of WITHIN_BAND_SIZE_SLOPE (see
+# cheap-mid-within-band-scaling-gap in project memory / the extended
+# comment above WITHIN_BAND_SIZE_SLOPE in behavior_config.py). Added
+# 2026-09-11 -- the strongest-validated finding of the whole research
+# pass (cross-asset r=0.23-0.41, temporally stable across the Aug 7 TWAP
+# change). Gated at the CALL SITE in strategy.decide_size, not inside
+# behavior_config.py (that file never imports config -- same discipline
+# as every other multiplier). Default TRUE everywhere, explicit FALSE for
+# paperbot-mini (the $100 control instance).
+ENABLE_CHEAP_MID_WITHIN_BAND_SCALING = os.environ.get(
+    "ENABLE_CHEAP_MID_WITHIN_BAND_SCALING", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for CROSS_MARKET_HEDGE_RATE_MULTIPLIER (see its docstring
+# in behavior_config.py). Added 2026-09-11 -- the most speculative of
+# this pass's cross-market multipliers (real r=0.25-0.35 on raw hedge
+# count, but the mechanism isn't fully pinned down; calibrated on the
+# smaller-but-real RATE version, r=0.10, to avoid double-counting general
+# activity clustering). Default TRUE everywhere, explicit FALSE for
+# paperbot-mini.
+ENABLE_CROSS_MARKET_HEDGE_RATE_MULTIPLIER = os.environ.get(
+    "ENABLE_CROSS_MARKET_HEDGE_RATE_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for CONVICTION_HEDGE_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-11 -- real, regime/weekend/liquidity
+# confound-checked finding that a market's own below-median first-entry
+# size predicts that SAME market needing more hedging later (mechanism
+# unexplained, but the predictor itself survives every confound checked).
+# Default TRUE everywhere, explicit FALSE for paperbot-mini.
+ENABLE_CONVICTION_HEDGE_MULTIPLIER = os.environ.get(
+    "ENABLE_CONVICTION_HEDGE_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for the win/loss-conditioned upgrade to
+# CROSS_MARKET_SIDE_PERSISTENCE (see its docstring in behavior_config.py).
+# Added 2026-09-11 -- shares the same underlying table/function as
+# ENABLE_CROSS_MARKET_SIDE_PERSISTENCE above, but gates specifically
+# whether the previous market's WIN/LOSS outcome is passed in to
+# condition the probability (vs falling back to the win/loss-averaged
+# rate). Kept as its own flag so paperbot-mini's existing
+# ENABLE_CROSS_MARKET_SIDE_PERSISTENCE=false continues to fully disable
+# this mechanism as one unit, while still letting either half be toggled
+# independently elsewhere if ever needed. Default TRUE everywhere,
+# explicit FALSE for paperbot-mini.
+ENABLE_WIN_LOSS_SIDE_PERSISTENCE = os.environ.get(
+    "ENABLE_WIN_LOSS_SIDE_PERSISTENCE", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER (see its
+# docstring in behavior_config.py). Added 2026-09-11 -- real, cross-asset,
+# temporally-stable finding that first-entry size persists (slow EWMA
+# decay) across consecutive markets, independent of the within-market
+# WITHIN_BAND_SIZE_SLOPE/TTC/resumption multipliers it stacks with.
+# Default TRUE everywhere, explicit FALSE for paperbot-mini.
+ENABLE_CROSS_MARKET_SIZE_MOMENTUM = os.environ.get(
+    "ENABLE_CROSS_MARKET_SIZE_MOMENTUM", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for ACCURACY_SCOUT_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-11 -- real, cross-asset-pooled,
+# circularity-checked finding that recent per-asset accuracy predicts
+# scout-vs-commit rate on the next first entry. The biggest architectural
+# lift of this pass: requires bot.py's new real-time resolution-feedback
+# rolling accuracy tracker (see resolution_tick). Default TRUE
+# everywhere, explicit FALSE for paperbot-mini.
+ENABLE_ACCURACY_SCOUT_MULTIPLIER = os.environ.get(
+    "ENABLE_ACCURACY_SCOUT_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Hard cap on hedge_count. Added 2026-09-09, hours after
 # HEDGE_CONTINUATION_PROBABILITY shipped (behavior_config.py) let
 # decide_hedge fire more than once per market -- CONFIRMED LIVE this

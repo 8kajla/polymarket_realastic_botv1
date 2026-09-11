@@ -249,9 +249,31 @@ class TestSizingDecision:
         high_avg = avg_notional(0.99)
         assert low_avg < high_avg
 
-    def test_within_band_multiplier_is_a_noop_in_cheap_and_mid(self):
-        # CHEAP/MID weren't calibrated for this -- price shouldn't move
-        # the average size within those regimes via this mechanism.
+    def test_within_band_multiplier_scales_size_in_cheap_and_mid_too(self):
+        # UPGRADED 2026-09-11 (cheap-mid-within-band-scaling-gap): CHEAP/
+        # MID are now real, calibrated cells too (the strongest-validated
+        # finding of that session's research pass) -- price should move
+        # the average size within those regimes, same as CORE/HIGH
+        # already did, whenever ENABLE_CHEAP_MID_WITHIN_BAND_SCALING is on
+        # (the default).
+        def avg_notional(regime, price, n=400):
+            rng = random.Random(9)
+            total = 0.0
+            for _ in range(n):
+                notional, is_floor = decide_size("Bitcoin", regime, "4th_plus", price, rng)
+                if not is_floor:
+                    total += notional
+            return total / n
+
+        low = avg_notional("MID", 0.31)
+        high = avg_notional("MID", 0.69)
+        assert low < high
+
+    def test_within_band_multiplier_is_a_noop_in_cheap_and_mid_when_flag_off(self, monkeypatch):
+        # paperbot-mini opts out via ENABLE_CHEAP_MID_WITHIN_BAND_SCALING=
+        # false, preserving the original CORE/HIGH-only behavior exactly.
+        monkeypatch.setattr(config, "ENABLE_CHEAP_MID_WITHIN_BAND_SCALING", False)
+
         def avg_notional(regime, price, n=400):
             rng = random.Random(9)
             total = 0.0
@@ -268,6 +290,49 @@ class TestSizingDecision:
         # to desync the draw sequence) -- a true no-op multiplier means
         # these must match exactly, not just approximately.
         assert low == high
+
+    def test_cross_market_size_momentum_defaults_to_a_noop_when_not_passed(self):
+        rng_a = random.Random(37)
+        rng_b = random.Random(37)
+        notional_no_arg, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng_a)
+        notional_explicit_none, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng_b,
+                                                 size_momentum_residual=None)
+        assert notional_no_arg == notional_explicit_none
+
+    def test_cross_market_size_momentum_scales_first_entry_size(self):
+        def avg_notional(residual, n=400):
+            rng = random.Random(41)
+            total = 0.0
+            for _ in range(n):
+                notional, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng,
+                                           size_momentum_residual=residual)
+                total += notional
+            return total / n
+
+        low = avg_notional(-1.3)
+        high = avg_notional(1.1)
+        assert low < high
+
+    def test_cross_market_size_momentum_only_applies_to_the_first_tier(self):
+        # The finding was measured on first-entry size specifically --
+        # later position tiers in the same market must be unaffected.
+        rng_a = random.Random(43)
+        rng_b = random.Random(43)
+        notional_no_residual, _ = decide_size("Bitcoin", "MID", "4th_plus", 0.5, rng_a)
+        notional_with_residual, _ = decide_size("Bitcoin", "MID", "4th_plus", 0.5, rng_b,
+                                                 size_momentum_residual=1.1)
+        assert notional_no_residual == notional_with_residual
+
+    def test_cross_market_size_momentum_respects_the_per_instance_feature_flag(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_CROSS_MARKET_SIZE_MOMENTUM", False)
+        rng_a = random.Random(47)
+        rng_b = random.Random(47)
+        notional_no_residual, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng_a)
+        notional_with_residual, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng_b,
+                                                 size_momentum_residual=1.1)
+        assert notional_no_residual == notional_with_residual, (
+            "with the flag off, cross-market size momentum must be a strict no-op"
+        )
 
     def test_ttc_multiplier_defaults_to_a_noop_when_not_passed(self):
         # Every pre-existing call site/test that doesn't pass
@@ -413,7 +478,7 @@ class TestBuildOrderIntent:
 
         monkeypatch.setattr(stratmod, "decide_side",
                              lambda asset, activity, rng, held_side_price=None,
-                             previous_market_first_side=None: "Down")
+                             previous_market_first_side=None, previous_market_won=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -661,14 +726,24 @@ class TestDecideHedge:
         decide_hedge("BNB", activity, random.Random(0))
         assert calls == [("continuation", 1)]
 
-    def test_bitcoin_high_regime_cumulative_probability_matches_calibration(self):
+    def test_bitcoin_high_regime_cumulative_probability_matches_calibration(self, monkeypatch):
         """CHANGED 2026-09-08: the calibrated 0.2967 for Bitcoin/HIGH is
         now a CUMULATIVE probability across the whole multi-attempt
         hazard window (hedge_attempt_hazard), not a single-shot rate at
         entry_count==1 -- simulate the real decide_hedge call pattern
         (one activity, entry_count advancing 1..10, stopping at the
         first trigger) across many independent markets and check the
-        empirical hedge-at-all rate reproduces the calibrated target."""
+        empirical hedge-at-all rate reproduces the calibrated target.
+
+        CONVICTION_HEDGE_MULTIPLIER disabled here (added 2026-09-11): this
+        test uses a fixed, arbitrary first-entry notional (10.0), not one
+        representative of Bitcoin/HIGH's real distribution -- letting the
+        conviction multiplier apply would test that multiplier's own bias
+        at this one specific input, not whether the base cumulative-
+        probability model still reproduces its calibrated target. See
+        TestConvictionHedgeMultiplierIntegration below for dedicated
+        coverage of the conviction mechanism itself."""
+        monkeypatch.setattr(config, "ENABLE_CONVICTION_HEDGE_MULTIPLIER", False)
         n = 2000
         triggered = 0
         for seed in range(n):
@@ -998,7 +1073,7 @@ class TestBuildOrderIntentHedge:
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="CORE")
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -1027,7 +1102,7 @@ class TestBuildOrderIntentHedge:
         activity.record_entry("Down", notional_usd=1.0, regime="CORE", is_hedge=True)
         assert activity.hedge_count == 1
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -1057,7 +1132,7 @@ class TestBuildOrderIntentHedge:
         def hedge_at(now):
             activity = MarketActivityState()
             activity.record_entry("Up", notional_usd=10.0, regime="CORE")
-            monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down")
+            monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
             return build_order_intent(market_early if now < 500 else market_late,
                                        up_book, down_book, activity, random.Random(0), now=now)
 
@@ -1075,7 +1150,7 @@ class TestBuildOrderIntentHedge:
         down_book = make_liquid_book(price=0.79, token_id="down")
         activity = MarketActivityState()
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: None)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: None)
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
         assert intent is not None
@@ -1101,7 +1176,7 @@ class TestBuildOrderIntentHedge:
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="CORE")
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -1126,7 +1201,7 @@ class TestBuildOrderIntentHedge:
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="CORE", price=0.80)
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -1150,7 +1225,7 @@ class TestBuildOrderIntentHedge:
         activity.record_entry("Up", notional_usd=10.0, regime="CORE")  # no price= kwarg
         assert activity.first_entry_price is None
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -1169,7 +1244,7 @@ class TestBuildOrderIntentHedge:
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="CORE", price=0.80)
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -1194,7 +1269,7 @@ class TestBuildOrderIntentHedge:
         activity.record_entry("Down", notional_usd=1.0, regime="CORE", is_hedge=True)
         assert activity.hedge_count == 1
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -1218,7 +1293,7 @@ class TestBuildOrderIntentHedge:
         activity.record_entry("Down", notional_usd=1.0, regime="CORE", is_hedge=True)
         assert activity.hedge_count == 1
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -1243,7 +1318,7 @@ class TestBuildOrderIntentHedge:
         activity.record_entry("Down", notional_usd=1.0, regime="CORE", is_hedge=True)
         assert activity.hedge_count == 1
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -1263,7 +1338,7 @@ class TestBuildOrderIntentHedge:
         assert activity.first_entry_price is None
         assert activity.hedge_count == 1
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -1286,7 +1361,8 @@ class TestBuildOrderIntentHedge:
 
         captured = {}
 
-        def spy_decide_hedge(asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None):
+        def spy_decide_hedge(asset, activity, rng, liquidity=None, is_weekend=None,
+                              dominant_current_price=None, prev_hedge_rate=None):
             captured["is_weekend"] = is_weekend
             return "Down"
 
@@ -1314,7 +1390,8 @@ class TestBuildOrderIntentHedge:
 
         captured = {}
 
-        def spy_decide_hedge(asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None):
+        def spy_decide_hedge(asset, activity, rng, liquidity=None, is_weekend=None,
+                              dominant_current_price=None, prev_hedge_rate=None):
             captured["dominant_current_price"] = dominant_current_price
             return None  # no hedge -- just observing what's passed in
 
@@ -1332,7 +1409,8 @@ class TestBuildOrderIntentHedge:
 
         captured = {}
 
-        def spy_decide_hedge(asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None):
+        def spy_decide_hedge(asset, activity, rng, liquidity=None, is_weekend=None,
+                              dominant_current_price=None, prev_hedge_rate=None):
             captured["dominant_current_price"] = dominant_current_price
             return None
 
@@ -1349,11 +1427,12 @@ class TestBuildOrderIntentHedge:
         activity = MarketActivityState()  # no entries yet -- this is the first entry
         monkeypatch.setattr(stratmod, "decide_hedge",
                              lambda asset, activity, rng, liquidity=None, is_weekend=None,
-                             dominant_current_price=None: None)
+                             dominant_current_price=None, prev_hedge_rate=None: None)
 
         captured = {}
 
-        def spy_decide_side(asset, activity, rng, held_side_price=None, previous_market_first_side=None):
+        def spy_decide_side(asset, activity, rng, held_side_price=None, previous_market_first_side=None,
+                             previous_market_won=None):
             captured["previous_market_first_side"] = previous_market_first_side
             return "Up"
 
@@ -1374,11 +1453,12 @@ class TestBuildOrderIntentHedge:
         activity = MarketActivityState()
         monkeypatch.setattr(stratmod, "decide_hedge",
                              lambda asset, activity, rng, liquidity=None, is_weekend=None,
-                             dominant_current_price=None: None)
+                             dominant_current_price=None, prev_hedge_rate=None: None)
 
         captured = {}
 
-        def spy_decide_side(asset, activity, rng, held_side_price=None, previous_market_first_side=None):
+        def spy_decide_side(asset, activity, rng, held_side_price=None, previous_market_first_side=None,
+                             previous_market_won=None):
             captured["previous_market_first_side"] = previous_market_first_side
             return "Up"
 
@@ -1404,7 +1484,7 @@ class TestBuildOrderIntentScout:
         down_book = make_liquid_book(price=0.25, token_id="down")
         activity = MarketActivityState()
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: None)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: None)
         monkeypatch.setattr(bc, "scout_probability", lambda asset: 1.0)
         monkeypatch.setattr(bc, "scout_size_ratio", lambda asset: 0.5)
 
@@ -1430,7 +1510,7 @@ class TestBuildOrderIntentScout:
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=5.0, regime="CHEAP")  # entry_count now 1
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: None)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: None)
         monkeypatch.setattr(bc, "scout_probability", lambda asset: 1.0)  # would always fire if reachable
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
@@ -1445,7 +1525,7 @@ class TestBuildOrderIntentScout:
         rng = random.Random(0)
         rng.random = lambda: 0.0  # forces the floor-lot roll ahead of the scout check
 
-        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: None)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: None)
         monkeypatch.setattr(bc, "scout_probability", lambda asset: 1.0)  # would always fire if reachable
 
         intent = build_order_intent(market, up_book, down_book, activity, rng, now=0.0)

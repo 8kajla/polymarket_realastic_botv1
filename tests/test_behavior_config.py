@@ -155,16 +155,32 @@ class TestCrossMarketSidePersistence:
     def test_neutral_for_assets_not_in_the_table(self):
         for asset in ("Dogecoin", "Hyperliquid", "BNB"):
             assert bc.cross_market_side_persistence(asset) == 0.5
+            assert bc.cross_market_side_persistence(asset, True) == 0.5
+            assert bc.cross_market_side_persistence(asset, False) == 0.5
+
+    def test_win_loss_averaged_fallback_when_outcome_unknown(self):
+        # UPGRADED 2026-09-11: previous_market_won=None (the default)
+        # returns the win/loss-AVERAGED rate, not the old flat value --
+        # see cross_market_side_persistence's docstring.
+        for asset, spec in bc.CROSS_MARKET_SIDE_PERSISTENCE.items():
+            expected = (spec["after_win"] + spec["after_loss"]) / 2.0
+            assert bc.cross_market_side_persistence(asset) == expected
 
     def test_exact_values_for_the_three_calibrated_assets(self):
-        assert bc.cross_market_side_persistence("Bitcoin") == 0.5538
-        assert bc.cross_market_side_persistence("Ethereum") == 0.5265
-        assert bc.cross_market_side_persistence("Solana") == 0.5429
+        assert bc.cross_market_side_persistence("Bitcoin", True) == 0.5148
+        assert bc.cross_market_side_persistence("Bitcoin", False) == 0.6013
+        assert bc.cross_market_side_persistence("Ethereum", True) == 0.4675
+        assert bc.cross_market_side_persistence("Ethereum", False) == 0.5736
+        assert bc.cross_market_side_persistence("Solana", True) == 0.4812
+        assert bc.cross_market_side_persistence("Solana", False) == 0.6068
 
-    def test_all_calibrated_values_are_above_fifty_fifty(self):
-        # The whole finding: persistence, not indifference.
-        for asset, p in bc.CROSS_MARKET_SIDE_PERSISTENCE.items():
-            assert 0.5 < p < 1.0, f"{asset} value {p} should be a real persistence above 50%"
+    def test_persistence_is_stronger_after_a_loss_than_after_a_win(self):
+        # The whole finding: NOT hot-hand, NOT gambler's fallacy -- he
+        # sticks with his read MORE after a setback than after a win.
+        for asset, spec in bc.CROSS_MARKET_SIDE_PERSISTENCE.items():
+            assert spec["after_loss"] > spec["after_win"], (
+                f"{asset}: expected after_loss > after_win, got {spec}"
+            )
 
 
 class TestFloorLotProbability:
@@ -212,15 +228,15 @@ class TestWithinBandSizeMultiplier:
     behavior_config.WITHIN_BAND_SIZE_SLOPE's docstring."""
 
     def test_neutral_everywhere_not_specifically_calibrated(self):
-        # CHEAP/MID, and the three dormant assets even in CORE/HIGH, must
-        # be an exact no-op -- this feature was only verified for
-        # Bitcoin/Ethereum/Solana's CORE and HIGH bands.
-        for asset in bc.ASSET_NAMES:
-            for regime in ("CHEAP", "MID"):
-                assert bc.within_band_size_multiplier(asset, regime, 0.5) == 1.0
+        # UPGRADED 2026-09-11: CHEAP/MID were validated (cheap-mid-within-
+        # band-scaling-gap) and now have real cells for BTC/ETH/SOL -- see
+        # WITHIN_BAND_SIZE_SLOPE. The three dormant assets, in EVERY
+        # regime including CORE/HIGH, must still be an exact no-op --
+        # this function was only ever calibrated for Bitcoin/Ethereum/
+        # Solana.
         for asset in ("Dogecoin", "Hyperliquid", "BNB"):
-            for regime in ("CORE", "HIGH"):
-                assert bc.within_band_size_multiplier(asset, regime, 0.8) == 1.0
+            for regime in bc.REGIME_NAMES:
+                assert bc.within_band_size_multiplier(asset, regime, 0.5) == 1.0
 
     def test_mean_neutral_at_the_calibrated_band_mean_price(self):
         # At exactly band_mean_price, the multiplier must be 1.0 -- that's
@@ -631,4 +647,100 @@ class TestHedgeCalibration:
 
     def test_unknown_asset_or_regime_falls_back_safely(self):
         assert bc.hedge_trigger_probability("NotAnAsset", "CHEAP") == 0.0
+
+
+class TestCrossMarketHedgeRateMultiplier:
+    """Cross-market hedge-RATE persistence, added 2026-09-11 -- real
+    (r=0.25-0.35 all three assets on raw count), calibrated on the
+    RATE version specifically to avoid double-counting general activity
+    clustering. Most speculative of this session's cross-market
+    multipliers (mechanism not fully pinned down) -- see
+    cross_market_hedge_rate_multiplier's docstring."""
+
+    def test_noop_for_unknown_asset_or_missing_rate(self):
+        assert bc.cross_market_hedge_rate_multiplier("Dogecoin", 0.3) == 1.0
+        assert bc.cross_market_hedge_rate_multiplier("Bitcoin", None) == 1.0
+
+    def test_mean_neutral_at_the_lowest_calibrated_point_is_below_one(self):
+        # A prior market with ZERO hedging predicts BELOW-average hedging
+        # this market (the whole point of the finding: hedge-heavy
+        # markets predict hedge-heavy markets, and vice versa).
+        for asset in bc.CROSS_MARKET_HEDGE_RATE_MULTIPLIER:
+            assert bc.cross_market_hedge_rate_multiplier(asset, 0.0) < 1.0
+
+    def test_increases_with_prev_hedge_rate(self):
+        for asset, curve in bc.CROSS_MARKET_HEDGE_RATE_MULTIPLIER.items():
+            rates = sorted(curve.keys())
+            low = bc.cross_market_hedge_rate_multiplier(asset, rates[0])
+            high = bc.cross_market_hedge_rate_multiplier(asset, rates[-1])
+            assert low < high, f"{asset}: expected increasing multiplier, got {low}/{high}"
+
+    def test_flat_beyond_the_measured_range(self):
+        for asset, curve in bc.CROSS_MARKET_HEDGE_RATE_MULTIPLIER.items():
+            rates = sorted(curve.keys())
+            assert (bc.cross_market_hedge_rate_multiplier(asset, -5.0)
+                    == bc.cross_market_hedge_rate_multiplier(asset, rates[0]))
+            assert (bc.cross_market_hedge_rate_multiplier(asset, 5.0)
+                    == bc.cross_market_hedge_rate_multiplier(asset, rates[-1]))
+
+
+class TestConvictionHedgeMultiplier:
+    """Own-market conviction (first-entry size vs regime median) predicts
+    THIS market's eventual hedge need, added 2026-09-11 -- real, survives
+    regime/weekend/liquidity confounds. Scoped to MID/CORE/HIGH only
+    (CHEAP shows no such relationship)."""
+
+    def test_noop_for_unscoped_regime_or_missing_ratio(self):
+        assert bc.conviction_hedge_multiplier("Bitcoin", "CHEAP", 0.5) == 1.0
+        assert bc.conviction_hedge_multiplier("Bitcoin", "MID", None) == 1.0
+        assert bc.conviction_hedge_multiplier("Dogecoin", "MID", 0.5) == 1.0
+
+    def test_decreases_with_conviction(self):
+        # The finding: a BELOW-median first entry (negative log-ratio)
+        # predicts MORE hedging than an above-median one.
+        for asset, regimes in bc.CONVICTION_HEDGE_MULTIPLIER.items():
+            for regime, curve in regimes.items():
+                xs = sorted(curve.keys())
+                low = bc.conviction_hedge_multiplier(asset, regime, xs[0])
+                high = bc.conviction_hedge_multiplier(asset, regime, xs[-1])
+                assert low > high, f"{asset}/{regime}: expected decreasing, got {low}/{high}"
+
+
+class TestCrossMarketSizeMomentumMultiplier:
+    """Cross-market sizing momentum, added 2026-09-11 -- real, cross-asset,
+    slow EWMA-like decay, temporally stable across the Aug 7 TWAP change.
+    Scoped to first-entry size only."""
+
+    def test_noop_for_unknown_asset_or_missing_residual(self):
+        assert bc.cross_market_size_momentum_multiplier("Dogecoin", 0.5) == 1.0
+        assert bc.cross_market_size_momentum_multiplier("Bitcoin", None) == 1.0
+
+    def test_increases_with_prior_residual(self):
+        for asset, curve in bc.CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER.items():
+            xs = sorted(curve.keys())
+            low = bc.cross_market_size_momentum_multiplier(asset, xs[0])
+            high = bc.cross_market_size_momentum_multiplier(asset, xs[-1])
+            assert low < high, f"{asset}: expected increasing multiplier, got {low}/{high}"
+
+
+class TestAccuracyScoutMultiplier:
+    """Accuracy-conditioned scout rate, added 2026-09-11 -- real, cross-
+    asset-POOLED (only the pooled version was circularity-checked), so
+    this multiplier is a single shared curve, not per-asset."""
+
+    def test_noop_when_accuracy_unavailable(self):
+        assert bc.accuracy_scout_multiplier(None) == 1.0
+
+    def test_decreases_with_accuracy(self):
+        # The finding: worse recent accuracy -> more scouting (higher
+        # multiplier); better accuracy -> less scouting.
+        xs = sorted(bc.ACCURACY_SCOUT_MULTIPLIER.keys())
+        low_acc = bc.accuracy_scout_multiplier(xs[0])
+        high_acc = bc.accuracy_scout_multiplier(xs[-1])
+        assert low_acc > high_acc
+
+    def test_flat_beyond_the_measured_range(self):
+        xs = sorted(bc.ACCURACY_SCOUT_MULTIPLIER.keys())
+        assert bc.accuracy_scout_multiplier(0.0) == bc.accuracy_scout_multiplier(xs[0])
+        assert bc.accuracy_scout_multiplier(1.5) == bc.accuracy_scout_multiplier(xs[-1])
         assert bc.hedge_size_ratio("NotAnAsset", "CHEAP") == bc._DEFAULT_HEDGE_SIZE_RATIO

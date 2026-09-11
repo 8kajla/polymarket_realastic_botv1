@@ -19,10 +19,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
 import random
 import signal
 import sys
 import time
+from collections import deque
 
 import requests
 
@@ -52,6 +54,23 @@ logger = logging.getLogger("paperbot.bot")
 # opens a fresh connection instead of reusing one -- but noisy and
 # avoidable). Sized with headroom above the current worst case.
 SESSION_POOL_SIZE = 30
+
+# ADDED 2026-09-11: per-asset EWMA decay for ewma_size_residual_by_asset
+# (see its docstring in PaperBot.__init__), calibrated to roughly match
+# the real, measured autocorrelation decay of size residuals across
+# consecutive markets (barely weakens lag1->lag10: r=0.1445->0.1163, a
+# ratio of ~0.805 over 9 lags -- see cross-market-sizing-momentum-gap in
+# project memory). Solving (1-alpha)^9 ~= 0.805 gives alpha ~= 0.024;
+# rounded to a clean, still-slow value. Deliberately NOT close to 1.0
+# (which would make this behave like a simple last-market lookup, the
+# lag-1-only model the real data explicitly does NOT support).
+SIZE_MOMENTUM_EWMA_ALPHA = 0.03
+
+# ADDED 2026-09-11: how many of the most recent resolved markets'
+# dominant-side correctness feed rolling_accuracy_by_asset (see its
+# docstring in PaperBot.__init__) -- matches
+# ACCURACY_SCOUT_MULTIPLIER's own calibration window (behavior_config.py).
+ACCURACY_ROLLING_WINDOW = 10
 
 
 def _make_session() -> requests.Session:
@@ -113,6 +132,62 @@ class PaperBot:
         # is exactly the kind of discontinuity that finding excluded via
         # its own gap<=1h filter).
         self.last_first_entry_side_by_asset: dict[str, str] = {}
+        # ADDED 2026-09-11, alongside this session's 6-finding
+        # implementation pass -- four more per-asset cross-market
+        # trackers, same in-memory-only/resets-on-restart discipline as
+        # last_first_entry_side_by_asset above.
+        #
+        # last_hedge_rate_by_asset: the MOST RECENT market's hedge_count/
+        # entry_count, per asset -- feeds decide_hedge's
+        # CROSS_MARKET_HEDGE_RATE_MULTIPLIER. Set in _retire_market (once
+        # a market's entry count is final), not resolution_tick (hedge
+        # rate doesn't depend on the eventual win/loss outcome, so there's
+        # no need to wait for resolution the way win/loss persistence and
+        # accuracy below do).
+        self.last_hedge_rate_by_asset: dict[str, float] = {}
+        # last_first_entry_won_by_asset: whether the MOST RECENT market's
+        # first-entry side actually won, per asset -- feeds decide_side's
+        # win/loss-conditioned CROSS_MARKET_SIDE_PERSISTENCE upgrade.
+        # Unlike last_hedge_rate_by_asset, this genuinely can't be known
+        # until Gamma reports a decisive outcome -- populated inside
+        # resolution_tick via _retired_activity_snapshot below, not at
+        # retire time.
+        self.last_first_entry_won_by_asset: dict[str, bool] = {}
+        # ewma_size_residual_by_asset: a slow-decaying (see
+        # _SIZE_MOMENTUM_EWMA_ALPHA below) exponentially-weighted running
+        # average of log(first_entry_notional / regime_median), per asset
+        # -- feeds decide_size's CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER.
+        # Updated in _evaluate_one_market right after an order actually
+        # places (using the REALIZED first-entry notional, same "update
+        # from what actually happened" pattern as
+        # last_first_entry_side_by_asset), never read-then-immediately-
+        # written in the same step (the read that feeds THIS market's own
+        # sizing always reflects only markets before it).
+        self.ewma_size_residual_by_asset: dict[str, float] = {}
+        # rolling_accuracy_by_asset: a per-asset deque of the last
+        # ACCURACY_ROLLING_WINDOW resolved markets' correctness (True =
+        # activity.dominant_side() matched the real winning_side) -- feeds
+        # decide_size's scout-probability ACCURACY_SCOUT_MULTIPLIER. The
+        # first-ever real-time resolution-feedback loop in this codebase;
+        # resolution_tick previously only used winning_side for
+        # settle_order()'s P&L math, never fed it back into strategy
+        # state. Populated inside resolution_tick via
+        # _retired_activity_snapshot below.
+        self.rolling_accuracy_by_asset: dict[str, deque] = {}
+        # _retired_activity_snapshot: bridges _retire_market (where
+        # MarketActivityState is popped, since strategy_tick will never
+        # evaluate that market again) to resolution_tick (where the real
+        # winning_side eventually becomes known, often much later and
+        # sometimes never -- see the ABANDONED path). Without this,
+        # first_entry_side/dominant_side would already be gone by the
+        # time resolution_tick needs them for
+        # last_first_entry_won_by_asset/rolling_accuracy_by_asset above.
+        # Only markets with at least one real entry are snapshotted (see
+        # _retire_market) -- an untraded market has nothing to feed back.
+        # Cleaned up (popped, whether or not an outcome was ever learned)
+        # in _forget_resolution_tracking, alongside every other per-cid
+        # resolution-tracking dict.
+        self._retired_activity_snapshot: dict[str, dict] = {}
         self._resolution_last_attempt: dict[str, float] = {}
         self._resolution_failure_count: dict[str, int] = {}
         self._resolution_first_seen: dict[str, float] = {}
@@ -236,6 +311,22 @@ class PaperBot:
         # resolution_tick, once settlement/abandonment is actually done
         # with them -- not here, since some may still be open at retire
         # time for a few ticks while expiry catches up.)
+        activity = self.activity.get(market.condition_id)
+        if activity is not None and activity.entry_count > 0:
+            # ADDED 2026-09-11: snapshot the two things this market's
+            # eventual resolution needs to feed forward, BEFORE popping
+            # activity below -- see last_hedge_rate_by_asset/
+            # last_first_entry_won_by_asset/rolling_accuracy_by_asset's
+            # docstrings in __init__. Only for markets that actually had a
+            # real entry -- an untraded market has nothing worth carrying
+            # forward, same gating last_first_entry_side_by_asset already
+            # uses (is_first_entry in _evaluate_one_market).
+            self.last_hedge_rate_by_asset[market.asset] = activity.hedge_count / activity.entry_count
+            self._retired_activity_snapshot[market.condition_id] = {
+                "asset": market.asset,
+                "first_entry_side": activity.first_entry_side,
+                "dominant_side": activity.dominant_side(),
+            }
         self.activity.pop(market.condition_id, None)
         self.last_price_by_token.pop(market.token_id_up, None)
         self.halted_conditions.discard(market.condition_id)
@@ -257,6 +348,16 @@ class PaperBot:
         if self._resumption_started_at is None:
             return None
         return (now - self._resumption_started_at) / 3600.0
+
+    def _rolling_accuracy(self, asset: str) -> Optional[float]:
+        """Fraction correct over rolling_accuracy_by_asset's window for
+        this asset, or None if no resolved markets have been observed for
+        it yet this run (matches every other Optional cross-market signal
+        here -- None means no-op, not 0.0/"always wrong")."""
+        window = self.rolling_accuracy_by_asset.get(asset)
+        if not window:
+            return None
+        return sum(1 for correct in window if correct) / len(window)
 
     def _record_global_trade(self, now: float) -> None:
         """Called AFTER a trade actually places this tick (never before --
@@ -307,7 +408,11 @@ class PaperBot:
             market, up_book, down_book, activity, self.rng,
             recent_price_delta=delta, now=now,
             hours_since_resumption=hours_since_resumption,
-            previous_market_first_side=self.last_first_entry_side_by_asset.get(market.asset))
+            previous_market_first_side=self.last_first_entry_side_by_asset.get(market.asset),
+            previous_market_won=self.last_first_entry_won_by_asset.get(market.asset),
+            prev_hedge_rate=self.last_hedge_rate_by_asset.get(market.asset),
+            size_momentum_residual=self.ewma_size_residual_by_asset.get(market.asset),
+            rolling_accuracy=self._rolling_accuracy(market.asset))
         if intent is None:
             return
 
@@ -346,6 +451,26 @@ class PaperBot:
             # Feeds the NEXT market's first-entry decision -- see
             # CROSS_MARKET_SIDE_PERSISTENCE's docstring in behavior_config.py.
             self.last_first_entry_side_by_asset[market.asset] = intent.side
+            # ADDED 2026-09-11: updates ewma_size_residual_by_asset from
+            # the REALIZED first-entry notional (matches the pattern
+            # directly above) -- feeds the NEXT market's
+            # CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER. Guarded the same way
+            # decide_hedge guards its own median lookup: an unknown
+            # (asset, regime, "first") cell (the three dormant assets)
+            # raises BehaviorLookupError, in which case this tracker is
+            # simply left unset for that asset, same as if no prior market
+            # had ever been observed.
+            try:
+                regime_median = bc.median_entry_notional(market.asset, intent.regime, "first")
+            except bc.BehaviorLookupError:
+                regime_median = 0.0
+            if regime_median > 0 and intent.notional_usd > 0:
+                residual = math.log(intent.notional_usd / regime_median)
+                prev_state = self.ewma_size_residual_by_asset.get(market.asset, 0.0)
+                self.ewma_size_residual_by_asset[market.asset] = (
+                    (1.0 - SIZE_MOMENTUM_EWMA_ALPHA) * prev_state
+                    + SIZE_MOMENTUM_EWMA_ALPHA * residual
+                )
         self._record_global_trade(now)
 
     def available_cash(self) -> float | None:
@@ -521,6 +646,12 @@ class PaperBot:
         self._resolution_last_attempt.pop(cid, None)
         self._resolution_failure_count.pop(cid, None)
         self._resolution_first_seen.pop(cid, None)
+        # ADDED 2026-09-11: the snapshot is only useful for the ONE
+        # RESOLVED call that consumes it (see resolution_tick) -- dropped
+        # here unconditionally (RESOLVED and ABANDONED alike, same as
+        # every other per-cid dict above) so it can't grow unbounded on
+        # an abandoned market that never gets a real snapshot .pop() call.
+        self._retired_activity_snapshot.pop(cid, None)
 
     async def resolution_tick(self, now: float | None = None) -> None:
         """
@@ -683,6 +814,34 @@ class PaperBot:
                 "realized_pnl_total=%.4f",
                 market.slug, market.asset, winning_side, len(settled), self.ledger.realized_pnl(),
             )
+            # ADDED 2026-09-11: the first-ever real-time resolution-
+            # feedback loop in this codebase -- feeds winning_side (known
+            # only right here, right now) back into TWO per-asset
+            # cross-market trackers that decide_side/decide_size read on
+            # the NEXT market. snapshot was captured in _retire_market,
+            # before activity got popped there (this market is long gone
+            # from self.activity by the time resolution ever completes).
+            snapshot = self._retired_activity_snapshot.get(cid)
+            if snapshot is not None:
+                asset = snapshot["asset"]
+                first_entry_side = snapshot["first_entry_side"]
+                if first_entry_side is not None:
+                    # Feeds decide_side's win/loss-conditioned
+                    # CROSS_MARKET_SIDE_PERSISTENCE upgrade -- see
+                    # cross_market_side_persistence's docstring in
+                    # behavior_config.py.
+                    self.last_first_entry_won_by_asset[asset] = (first_entry_side == winning_side)
+                dominant_side = snapshot["dominant_side"]
+                if dominant_side is not None:
+                    # Feeds decide_size's ACCURACY_SCOUT_MULTIPLIER --
+                    # measured against the DOMINANT (by-cost) side
+                    # specifically, not first_entry_side, per
+                    # accuracy-conditioned-scout-rate-gap in project
+                    # memory (a genuinely different quantity from the
+                    # win/loss-persistence tracker above).
+                    window = self.rolling_accuracy_by_asset.setdefault(
+                        asset, deque(maxlen=ACCURACY_ROLLING_WINDOW))
+                    window.append(dominant_side == winning_side)
             del self.pending_resolution[cid]
             self._forget_resolution_tracking(cid)
             self.fill_sim.remove_orders_for_condition(cid)

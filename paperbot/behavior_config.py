@@ -457,13 +457,41 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
 # actually supports it.
 WITHIN_BAND_SIZE_SLOPE = {
     "Bitcoin": {"CORE": {"slope": 4.19, "band_mean_price": 0.795},
-                "HIGH": {"slope": 13.47, "band_mean_price": 0.947}},
+                "HIGH": {"slope": 13.47, "band_mean_price": 0.947},
+                "CHEAP": {"slope": 4.7433, "band_mean_price": 0.1529},
+                "MID": {"slope": 2.9664, "band_mean_price": 0.4900}},
     "Ethereum": {"CORE": {"slope": 3.21, "band_mean_price": 0.799},
-                 "HIGH": {"slope": 21.09, "band_mean_price": 0.955}},
+                 "HIGH": {"slope": 21.09, "band_mean_price": 0.955},
+                 "CHEAP": {"slope": 4.8979, "band_mean_price": 0.1212},
+                 "MID": {"slope": 3.4679, "band_mean_price": 0.4726}},
     "Solana": {"CORE": {"slope": 4.50, "band_mean_price": 0.801},
-               "HIGH": {"slope": 28.16, "band_mean_price": 0.949}},
+               "HIGH": {"slope": 28.16, "band_mean_price": 0.949},
+               "CHEAP": {"slope": 3.9698, "band_mean_price": 0.1350},
+               "MID": {"slope": 3.1983, "band_mean_price": 0.4563}},
 }
 _WITHIN_BAND_MULTIPLIER_CAP = 5.0  # symmetric: multiplier clamped to [1/cap, cap]
+# CHEAP/MID cells ADDED 2026-09-11: the original 2026-09-08 pass only
+# checked CORE/HIGH ("CHEAP/MID... were not checked with this rigor and
+# get a neutral 1.0x multiplier" -- see the comment above this table).
+# A follow-up research pass found CHEAP/MID show an EQUALLY strong
+# relationship, not weaker: CHEAP r=0.23-0.33, MID r=0.33-0.41 across all
+# three assets (t=49-125, all comfortably clearing this file's own
+# |t|>=2.58 bar) -- confirmed cross-asset AND temporally stable across
+# the Aug 7 TWAP mechanism change (pre/post-TWAP both real and
+# consistent in both regimes). This is the most thoroughly validated
+# addition to this file: real, cross-asset, and stable across the
+# platform's biggest structural change. Slopes fit the same way as
+# CORE/HIGH (OLS of log(usdcSize) on price, band_mean_price = the mean
+# price the slope was measured around).
+#
+# Gated separately from CORE/HIGH's own (flag-less, pre-existing)
+# behavior -- CORE/HIGH predate this session's mini-control-flagging
+# convention and stay unconditional for every instance; only the
+# CHEAP/MID addition needs its own flag so paperbot-mini can opt out of
+# it specifically. Gated at the CALL SITE in strategy.decide_size (via
+# config.ENABLE_CHEAP_MID_WITHIN_BAND_SCALING), not inside
+# within_band_size_multiplier() itself -- this file never imports
+# config, same discipline as every other table here.
 
 
 def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
@@ -674,18 +702,111 @@ def side_persistence_for(asset: str, held_side_regime: str) -> float:
 # market momentum would predict -- ruling out "he's just correctly
 # tracking a real trend" as the mechanism. This is a genuine behavioral
 # signature of the decision process itself.
+# UPGRADED 2026-09-11: was a single flat probability per asset (below,
+# now kept only as the WIN/LOSS-AVERAGED fallback). Real, cross-asset
+# refinement found the same night: the flat rate is really an average of
+# two quite different regimes -- persistence is much stronger after the
+# previous market's first-entry side LOST than after it WON (BTC
+# 51.48%/60.13% z=-5.80; ETH 46.75%/57.36% z=-3.28; SOL 48.12%/60.68%
+# z=-3.92, all clearing this file's |z|>=2.58 bar on the win/loss
+# difference itself, not just the aggregate rate). Interpretation: NOT
+# hot-hand (would predict MORE persistence after a win) and NOT classic
+# gambler's fallacy (would predict avoiding the same side after a loss)
+# -- closer to the opposite of gambler's fallacy: a single 5-minute
+# market not confirming his directional read doesn't disprove it, so he
+# sticks with it MORE after a setback, not less.
+#
+# Checked and bounded before shipping: does NOT extend to hedge
+# propensity (after-win 66.51% vs after-loss 65.83% dual-sided rate,
+# z=-0.48 -- side-specific only); does NOT compound with consecutive-loss
+# streak length (1/2/3+ losses all statistically indistinguishable,
+# z well under 1 -- a binary trigger, not gradual evidence accumulation,
+# so only ONE prior outcome is needed, not a streak counter); regime-
+# conditioned shape does NOT generalize (BTC/SOL show MID/CORE strongest
+# and CHEAP null, ETH shows the OPPOSITE -- CHEAP significant, MID/CORE
+# null) -- deliberately NOT modeled with regime granularity here, using
+# the flat asset-level after-win/after-loss split instead, per that
+# cross-asset contradiction. Confirmed the CURRENT (post-TWAP) era shows
+# a notably STRONGER effect than pre-TWAP (gap roughly doubled, 4.18pp ->
+# 10.14pp) -- but the numbers below are still the safer POOLED whole-
+# history values (not post-TWAP-only), since a full per-asset post-TWAP
+# split wasn't computed for all three assets before this was implemented.
 CROSS_MARKET_SIDE_PERSISTENCE = {
-    "Bitcoin": 0.5538,
-    "Ethereum": 0.5265,
-    "Solana": 0.5429,
+    "Bitcoin": {"after_win": 0.5148, "after_loss": 0.6013},
+    "Ethereum": {"after_win": 0.4675, "after_loss": 0.5736},
+    "Solana": {"after_win": 0.4812, "after_loss": 0.6068},
 }
 
 
-def cross_market_side_persistence(asset: str) -> float:
+def cross_market_side_persistence(asset: str, previous_market_won: Optional[bool] = None) -> float:
     """P(this market's first entry matches the previous market's first
-    entry side). 0.5 (no-op, matches the old uniform-random behavior) for
-    any asset not in CROSS_MARKET_SIDE_PERSISTENCE."""
-    return CROSS_MARKET_SIDE_PERSISTENCE.get(asset, 0.5)
+    entry side), conditioned on whether that previous market's
+    first-entry side actually won. `previous_market_won` is Optional
+    (default None) for two reasons: (1) every existing call site that
+    predates this upgrade keeps working, returning the win/loss-averaged
+    rate as a neutral fallback instead of crashing; (2) the caller
+    genuinely doesn't know the previous market's outcome yet on a cold
+    start (no prior resolution observed this run). 0.5 (no-op, matches
+    the original uniform-random behavior) for any asset not in
+    CROSS_MARKET_SIDE_PERSISTENCE."""
+    spec = CROSS_MARKET_SIDE_PERSISTENCE.get(asset)
+    if spec is None:
+        return 0.5
+    if previous_market_won is None:
+        return (spec["after_win"] + spec["after_loss"]) / 2.0
+    return spec["after_win"] if previous_market_won else spec["after_loss"]
+
+
+# ---------------------------------------------------------------------------
+# CROSS-MARKET sizing momentum. Added 2026-09-11: real, cross-asset
+# finding (BTC r=0.146, ETH r=0.066, SOL r=0.097) that the PREVIOUS
+# market's first-entry size, relative to that (asset, regime)'s own
+# typical size, predicts the CURRENT market's first-entry size the same
+# way -- a slow, EWMA-like decay (barely weakens lag1->lag10: 0.1445->
+# 0.1163), not a one-shot echo. Temporally stable across the Aug 7 TWAP
+# change (pre r=0.107/post r=0.140). Does NOT extend to hedge sizing
+# (r=0.036, too weak to trust) -- scoped to first-entry size only.
+#
+# Because the real decay is slow rather than lag-1-only, the CALLER
+# (bot.py) is expected to feed this a per-asset EWMA of past residuals,
+# not a raw last-market lookup -- this function itself is agnostic to
+# how its input was computed, same separation of concerns as every other
+# multiplier here (behavior_config never owns bot-level state).
+#
+# Per-asset, quartile points of log(previous residual state) -> mean-
+# neutral multiplier on the CURRENT market's first-entry notional.
+CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER = {
+    "Bitcoin": {-1.32: 0.7978, -0.26: 1.0128, 0.29: 1.0191, 1.10: 1.1702},
+    "Ethereum": {-2.11: 0.9366, -0.39: 0.8591, 0.38: 1.0435, 1.22: 1.1608},
+    "Solana": {-2.79: 0.9290, -0.37: 0.9170, 0.32: 0.9898, 1.17: 1.1642},
+}
+_CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER_CAP = 3.0
+
+
+def cross_market_size_momentum_multiplier(asset: str, prev_size_residual: Optional[float]) -> float:
+    """Continuous, mean-neutral multiplier on decide_size's ordinary
+    output for a market's first entry, as a function of a per-asset
+    rolling residual-size state (log scale, caller-maintained EWMA). 1.0
+    (no-op) for any asset not in CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER,
+    or when prev_size_residual is unavailable (e.g. no prior market
+    tracked yet this run). Flat beyond the measured range."""
+    curve = CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER.get(asset)
+    if curve is None or prev_size_residual is None:
+        return 1.0
+    points = sorted(curve.items())
+    lo_x, lo_val = points[0]
+    hi_x, hi_val = points[-1]
+    x = max(lo_x, min(hi_x, prev_size_residual))
+    result = hi_val
+    for i in range(len(points) - 1):
+        p_x, p_val = points[i]
+        q_x, q_val = points[i + 1]
+        if p_x <= x <= q_x:
+            frac = (x - p_x) / (q_x - p_x) if q_x > p_x else 0.0
+            result = p_val + frac * (q_val - p_val)
+            break
+    cap = _CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
 
 
 # ---------------------------------------------------------------------------
@@ -1206,6 +1327,142 @@ def adverse_move_hedge_trigger_multiplier(asset: str, adverse_move: Optional[flo
 
 
 # ---------------------------------------------------------------------------
+# CROSS-MARKET hedge-RATE persistence. Added 2026-09-11: real, cross-asset
+# finding (r=0.25-0.35, among the strongest correlations found all
+# night) that how hedge-heavy the PREVIOUS market was predicts how
+# hedge-heavy the CURRENT one will be -- survives being confound-checked
+# against current-market regime (fixed to MID, still r=0.2525) and
+# against weekend (survives independently in both subsets). Calibrated
+# on RATE (hedges / total decisions in a market), not raw hedge count --
+# a follow-up check found raw count partly conflates genuine hedge
+# propensity with "markets with more total activity have more hedges
+# too"; rate isolates the propensity-specific signal (smaller effect,
+# r=0.10, but not double-counting general activity clustering).
+#
+# HONEST CAVEAT, disclosed rather than smoothed over: the decay shape
+# barely weakens even out to 20 markets back (~100+ minutes), which is
+# more consistent with some real market-condition persistence (which a
+# bot already inherits for free from live prices) than a purely
+# HIS-OWN-specific behavioral echo -- tested the most obvious version of
+# that alternative (real prior-30min realized volatility -> hedge count)
+# directly and it does NOT explain the pattern (wrong sign), which
+# restores some confidence, but the mechanism isn't fully pinned down.
+# Treat this as the most speculative of tonight's cross-market
+# multipliers.
+#
+# Per-asset, quartile points of PREVIOUS market's hedge rate -> mean-
+# neutral multiplier on hedge_attempt_hazard's output for the CURRENT
+# market. Ethereum has only 3 points (its first two empirical quartiles
+# both landed at prev_rate=0.0 -- merged into one point using each
+# quartile's own n as weight) instead of 4.
+CROSS_MARKET_HEDGE_RATE_MULTIPLIER = {
+    "Bitcoin": {0.0: 0.7761, 0.0843: 1.0300, 0.3638: 1.1056, 0.6138: 1.0883},
+    "Ethereum": {0.0: 0.8023, 0.2353: 1.1693, 0.5663: 1.2258},
+    "Solana": {0.0: 0.7585, 0.0882: 1.0570, 0.3419: 1.0927, 0.5972: 1.0917},
+}
+_CROSS_MARKET_HEDGE_RATE_MULTIPLIER_CAP = 3.0  # same cap tier as HEDGE_LIQUIDITY_MULTIPLIER
+
+
+def cross_market_hedge_rate_multiplier(asset: str, prev_hedge_rate: Optional[float]) -> float:
+    """Continuous, mean-neutral multiplier on hedge_attempt_hazard's
+    output as a function of the PREVIOUS market's hedge rate
+    (hedges/total decisions). 1.0 (no-op) for any asset not in
+    CROSS_MARKET_HEDGE_RATE_MULTIPLIER, or when prev_hedge_rate is
+    unavailable (e.g. no previous market yet this run). Flat beyond the
+    measured range, same discipline as every other multiplier in this
+    file."""
+    curve = CROSS_MARKET_HEDGE_RATE_MULTIPLIER.get(asset)
+    if curve is None or prev_hedge_rate is None:
+        return 1.0
+    points = sorted(curve.items())
+    lo_rate, lo_val = points[0]
+    hi_rate, hi_val = points[-1]
+    rate = max(lo_rate, min(hi_rate, prev_hedge_rate))
+    result = hi_val
+    for i in range(len(points) - 1):
+        p_rate, p_val = points[i]
+        q_rate, q_val = points[i + 1]
+        if p_rate <= rate <= q_rate:
+            frac = (rate - p_rate) / (q_rate - p_rate) if q_rate > p_rate else 0.0
+            result = p_val + frac * (q_val - p_val)
+            break
+    cap = _CROSS_MARKET_HEDGE_RATE_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
+
+
+# ---------------------------------------------------------------------------
+# CONVICTION-conditioned hedge trigger. Added 2026-09-11: real, regime-
+# confound-checked finding that the market's own FIRST-entry size,
+# relative to that (asset, regime)'s own typical first-entry size,
+# predicts whether THIS SAME market ends up hedged -- a smaller-than-
+# typical first entry means a higher chance of hedging later, holding
+# regime fixed. Survives weekend and liquidity confounds too. Scoped to
+# MID/CORE/HIGH only -- CHEAP shows no such relationship (checked and
+# confirmed flat: 4.05%/9.76%/16.75%/17.68%-style near-constant win-rate
+# and hedge patterns across conviction levels there, consistent with
+# CHEAP being scout/floor-lot-dominated with little real size variance
+# to carry signal). Confirmed temporally stable across the Aug 7 TWAP
+# change (both eras show the same real decline, MID regime).
+#
+# HONEST CAVEAT: the WHY is unresolved. Tested and ruled out the most
+# obvious explanation (smaller first entry = lower conviction = more
+# often WRONG, needing correction) directly -- trade-count win rate does
+# NOT differ between below/above-median first entries in any regime.
+# Whatever the real mechanism is, it isn't a simple accuracy pathway.
+# Real, usable, currently-unexploited signal; not a solved mystery.
+#
+# Per-asset per-regime, quartile points of log(first_entry_size /
+# regime_median_first_entry_size) -> mean-neutral multiplier on
+# hedge_attempt_hazard's output for THIS SAME market (not cross-market --
+# uses activity.first_entry_price/notional already recorded for the
+# CURRENT market, available the moment a hedge decision is evaluated).
+CONVICTION_HEDGE_MULTIPLIER = {
+    "Bitcoin": {
+        "MID": {-1.2847: 1.1663, -0.2979: 1.0246, 0.3362: 0.9836, 1.1762: 0.8256},
+        "CORE": {-1.2467: 1.2145, -0.2764: 1.0425, 0.2869: 0.9565, 1.0314: 0.7868},
+        "HIGH": {-1.4306: 1.1379, -0.2219: 1.0862, 0.2480: 0.9310, 0.9495: 0.8448},
+    },
+    "Ethereum": {
+        "MID": {-1.7387: 1.0774, -0.3069: 1.0851, 0.3249: 0.9659, 1.2327: 0.8715},
+        "CORE": {-1.7015: 1.1179, -0.3338: 1.0792, 0.2698: 0.9817, 1.0705: 0.8216},
+        "HIGH": {-2.0675: 1.1027, -0.4785: 0.9398, 0.3429: 1.2335, 1.3050: 0.7245},
+    },
+    "Solana": {
+        "MID": {-2.9161: 1.0375, -0.2787: 1.0097, 0.2772: 0.9953, 1.1344: 0.9575},
+        "CORE": {-2.2315: 1.1244, -0.2211: 1.0358, 0.2642: 0.9608, 1.0403: 0.8790},
+        "HIGH": {-1.7171: 1.2411, -0.2722: 1.1757, 0.3308: 1.0669, 1.1614: 0.5193},
+    },
+}
+_CONVICTION_HEDGE_MULTIPLIER_CAP = 3.0
+
+
+def conviction_hedge_multiplier(asset: str, regime: str, conviction_log_ratio: Optional[float]) -> float:
+    """Continuous, mean-neutral multiplier on hedge_attempt_hazard's
+    output as a function of log(this market's first-entry size /
+    (asset, regime)'s typical first-entry size). 1.0 (no-op) for any
+    (asset, regime) not in CONVICTION_HEDGE_MULTIPLIER (includes CHEAP
+    and the three dormant assets by design), or when
+    conviction_log_ratio is unavailable. Flat beyond the measured range."""
+    curve = CONVICTION_HEDGE_MULTIPLIER.get(asset, {}).get(regime)
+    if curve is None or conviction_log_ratio is None:
+        return 1.0
+    points = sorted(curve.items())
+    lo_x, lo_val = points[0]
+    hi_x, hi_val = points[-1]
+    x = max(lo_x, min(hi_x, conviction_log_ratio))
+    result = hi_val
+    for i in range(len(points) - 1):
+        p_x, p_val = points[i]
+        q_x, q_val = points[i + 1]
+        if p_x <= x <= q_x:
+            frac = (x - p_x) / (q_x - p_x) if q_x > p_x else 0.0
+            result = p_val + frac * (q_val - p_val)
+            break
+    cap = _CONVICTION_HEDGE_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
+
+
+# ---------------------------------------------------------------------------
 # HEDGE CONTINUATION. Added 2026-09-09, closing the multi-hedge gap found
 # this session: decide_hedge above only ever fired ONCE per market
 # (hedge_placed permanently locked it after the first success). Real data
@@ -1401,6 +1658,70 @@ def adverse_move_continuation_size_multiplier(asset: str, adverse_move: Optional
 # accumulates. Dogecoin/Hyperliquid/BNB default to 0.0 probability
 # (no-op, unchanged first-entry behavior) since there's no live data to
 # calibrate them from at all right now.
+# ACCURACY-conditioned scout rate. Added 2026-09-11: real, cross-asset-
+# POOLED finding (BTC-only was marginal, z=2.18; pooling all three assets
+# strengthens it to z=6.94) that his ROLLING recent accuracy (correctness
+# of his last ~10 markets' dominant-side calls, per asset) predicts how
+# often his NEXT first entry is scout-sized (tentative/small) rather than
+# a full-conviction entry -- worse recent accuracy, more scouting.
+# Pooled rather than per-asset because only the pooled version was
+# thoroughly circularity-checked (below); a per-asset table would imply a
+# precision this finding wasn't actually validated at.
+#
+# CIRCULARITY CHECKED, not assumed: scout bets are separately known to be
+# less accurate than committed bets, so "recent accuracy" computed from
+# ALL recent trades is partly mechanically caused by recent scouting
+# itself -- a spurious self-referential loop, not a real predictive
+# signal. Re-tested using accuracy computed from ONLY non-scout trades in
+# the rolling window: survives, actually strengthens (z=4.80). Does NOT
+# extend to overall sizing beyond the scout/commit decision itself (r=
+# 0.0156, t=1.24 for general entry sizing vs rolling accuracy) -- scoped
+# strictly to SCOUT_PROBABILITY.
+#
+# BIGGEST ARCHITECTURAL LIFT of this session's implementation pass: the
+# bot has never before needed real-time resolution feedback during
+# trading (resolution_tick previously only fed settle_order() for P&L,
+# never fed back into strategy state) -- bot.py now maintains a rolling
+# per-asset accuracy tracker (deque of the last 10 markets' correctness,
+# dominant_side vs actual winning_side) populated inside resolution_tick.
+#
+# Rolling-accuracy bucket -> mean-neutral multiplier on SCOUT_PROBABILITY.
+# Pooled across BTC/ETH/SOL (overall pooled scout rate = 0.07475).
+ACCURACY_SCOUT_MULTIPLIER = {
+    0.3: 1.8753,
+    0.6: 1.3751,
+    0.8: 0.7228,
+    1.0: 0.4133,
+}
+_ACCURACY_SCOUT_MULTIPLIER_CAP = 3.0
+
+
+def accuracy_scout_multiplier(rolling_accuracy: Optional[float]) -> float:
+    """Continuous, mean-neutral multiplier on scout_probability's output
+    as a function of a per-asset rolling recent-accuracy fraction
+    (caller-maintained, last ~10 resolved markets' dominant-side
+    correctness). 1.0 (no-op) when rolling_accuracy is unavailable (e.g.
+    fewer than a few resolved markets observed yet this run). Flat
+    beyond the measured range, same discipline as every other multiplier
+    in this file."""
+    if rolling_accuracy is None:
+        return 1.0
+    points = sorted(ACCURACY_SCOUT_MULTIPLIER.items())
+    lo_x, lo_val = points[0]
+    hi_x, hi_val = points[-1]
+    x = max(lo_x, min(hi_x, rolling_accuracy))
+    result = hi_val
+    for i in range(len(points) - 1):
+        p_x, p_val = points[i]
+        q_x, q_val = points[i + 1]
+        if p_x <= x <= q_x:
+            frac = (x - p_x) / (q_x - p_x) if q_x > p_x else 0.0
+            result = p_val + frac * (q_val - p_val)
+            break
+    cap = _ACCURACY_SCOUT_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
+
+
 SCOUT_PROBABILITY = {
     "Bitcoin":  0.390,
     "Ethereum": 0.285,

@@ -7,6 +7,7 @@ the fill simulator directly (bot.py wires those together).
 from __future__ import annotations
 
 import logging
+import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -38,6 +39,24 @@ class MarketActivityState:
     # measures -- see behavior_config.adverse_move_size_multiplier's
     # docstring.
     first_entry_price: Optional[float] = None
+    # ADDED 2026-09-11, alongside the win/loss-conditioned
+    # CROSS_MARKET_SIDE_PERSISTENCE upgrade: the SIDE of the market's
+    # first entry specifically -- distinct from last_side (the currently-
+    # held side, which can change as later entries flip it) and from
+    # dominant_side() (the side with more $ committed, which can differ
+    # from the first entry when a hedge later outpaces it). The win/loss
+    # persistence finding was measured against the FIRST entry's side
+    # winning or losing specifically, so this needs its own field rather
+    # than reusing either existing one.
+    first_entry_side: Optional[str] = None
+    # ADDED 2026-09-11, alongside CONVICTION_HEDGE_MULTIPLIER: the dollar
+    # notional of the market's first entry specifically (not the
+    # cumulative cost_by_side, which grows with every later entry too) --
+    # needed to compute "how this market's own conviction compares to
+    # this (asset, regime)'s typical first-entry size" at hedge-decision
+    # time. See conviction_hedge_multiplier's docstring in
+    # behavior_config.py.
+    first_entry_notional: Optional[float] = None
     cost_by_side: dict = field(default_factory=lambda: {"Up": 0.0, "Down": 0.0})
     # CHANGED 2026-09-09 (was: hedge_placed: bool, permanently locking
     # after the market's first hedge-shaped entry). CONFIRMED LIVE:
@@ -68,6 +87,9 @@ class MarketActivityState:
             self.first_entry_regime = regime
         if self.entry_count == 0 and price is not None:
             self.first_entry_price = price
+        if self.entry_count == 0:
+            self.first_entry_side = side
+            self.first_entry_notional = notional_usd
         self.cost_by_side[side] = self.cost_by_side.get(side, 0.0) + notional_usd
         self.entry_count += 1
         self.last_side = side
@@ -123,7 +145,8 @@ class OrderIntent:
 
 def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
                  held_side_price: Optional[float] = None,
-                 previous_market_first_side: Optional[str] = None) -> str:
+                 previous_market_first_side: Optional[str] = None,
+                 previous_market_won: Optional[bool] = None) -> str:
     """If the market already has an established side, keep it with
     probability side_persistence_for(asset, regime of the currently-held
     side); otherwise flip.
@@ -153,10 +176,21 @@ def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
     (should not happen in practice once last_side is set, but avoids a
     crash over a defensive gap) -- deliberately not a silent 50/50, since
     that would understate the trader's strong observed persistence in
-    every regime."""
+    every regime.
+
+    WIN/LOSS-CONDITIONED (2026-09-11): `previous_market_won` (whether the
+    previous market's first-entry side actually won) refines the flat
+    cross-market persistence rate above into two regimes -- much stronger
+    after a loss than after a win, not hot-hand and not gambler's
+    fallacy; see bc.cross_market_side_persistence's docstring for the
+    full derivation. Optional (default None -> falls back to the
+    win/loss-AVERAGED rate, same as before this parameter existed) so
+    every existing call site keeps working unchanged; build_order_intent
+    is responsible for tracking and passing in the prior market's real
+    outcome per asset (only knowable once resolution_tick observes it)."""
     if activity.last_side is None:
         if previous_market_first_side is not None:
-            persistence = bc.cross_market_side_persistence(asset)
+            persistence = bc.cross_market_side_persistence(asset, previous_market_won)
             if rng.random() < persistence:
                 return previous_market_first_side
             return "Down" if previous_market_first_side == "Up" else "Up"
@@ -171,7 +205,8 @@ def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
 def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
                   liquidity: Optional[float] = None,
                   is_weekend: Optional[bool] = None,
-                  dominant_current_price: Optional[float] = None) -> Optional[str]:
+                  dominant_current_price: Optional[float] = None,
+                  prev_hedge_rate: Optional[float] = None) -> Optional[str]:
     """
     Returns the hedge side ("Up"/"Down") if THIS entry should be a
     deliberate insurance leg on the opposite side from the first entry,
@@ -241,6 +276,28 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
     SIZE multipliers (whether he hedges at all, not how big it is once he
     does) but the same since-origin adverse_move definition. Optional
     (default None -> no-op) for the same reason as liquidity/is_weekend.
+
+    CROSS-MARKET HEDGE-RATE-conditioned (2026-09-11): `prev_hedge_rate`
+    (the PREVIOUS market's hedge_count/entry_count for this asset) scales
+    the FIRST-hedge probability only, via bc.cross_market_hedge_rate_
+    multiplier -- real, cross-asset (r=0.25-0.35 all three), survives
+    regime/weekend confounds, though the mechanism isn't fully pinned
+    down (see that function's docstring for the honest caveat). Optional
+    (default None -> no-op) for the same reason as every other optional
+    param here; build_order_intent tracks and passes in the prior
+    market's hedge rate per asset.
+
+    CONVICTION-conditioned (2026-09-11): computed INTERNALLY (not a new
+    parameter) from activity.first_entry_notional vs this (asset,
+    first_entry_regime)'s typical first-entry size, via bc.conviction_
+    hedge_multiplier -- real, regime-confound-checked finding that a
+    market's own below-median first entry predicts THIS SAME market
+    needing more hedging later (mechanism unexplained but the predictor
+    survives regime/weekend/liquidity confounds). Computed internally
+    (not threaded in from build_order_intent) because activity already
+    carries everything needed (first_entry_notional, first_entry_regime)
+    -- unlike prev_hedge_rate above, which is genuinely cross-market
+    state this function has no other way to see.
     """
     if activity.entry_count < 1 or activity.first_entry_regime is None:
         return None
@@ -262,6 +319,20 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
             adverse_move = activity.first_entry_price - dominant_current_price
             trigger_mult = bc.adverse_move_hedge_trigger_multiplier(asset, adverse_move)
             p = max(0.0, min(1.0, p * trigger_mult))
+        if config.ENABLE_CROSS_MARKET_HEDGE_RATE_MULTIPLIER and prev_hedge_rate is not None:
+            rate_mult = bc.cross_market_hedge_rate_multiplier(asset, prev_hedge_rate)
+            p = max(0.0, min(1.0, p * rate_mult))
+        if (config.ENABLE_CONVICTION_HEDGE_MULTIPLIER
+                and activity.first_entry_notional is not None):
+            try:
+                regime_median = bc.median_entry_notional(asset, activity.first_entry_regime, "first")
+            except bc.BehaviorLookupError:
+                regime_median = 0.0
+            if regime_median > 0 and activity.first_entry_notional > 0:
+                conviction_log_ratio = math.log(activity.first_entry_notional / regime_median)
+                conviction_mult = bc.conviction_hedge_multiplier(
+                    asset, activity.first_entry_regime, conviction_log_ratio)
+                p = max(0.0, min(1.0, p * conviction_mult))
     else:
         p = bc.hedge_continuation_probability(activity.hedge_count)
     if p > 0 and rng.random() < p:
@@ -308,7 +379,8 @@ def timing_ok(market: Market, now: Optional[float] = None) -> bool:
 
 def decide_size(asset: str, regime: str, position_tier: str, price: float,
                  rng: random.Random, seconds_remaining: Optional[float] = None,
-                 hours_since_resumption: Optional[float] = None) -> tuple[float, bool]:
+                 hours_since_resumption: Optional[float] = None,
+                 size_momentum_residual: Optional[float] = None) -> tuple[float, bool]:
     """
     Returns (notional_usd, is_floor_lot). Rolls the floor-lot tier first for
     assets where it's modeled (Part 4); falls back to the normal
@@ -316,9 +388,9 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     the confirmed median, since only medians -- not full distributions --
     were measured.
 
-    seconds_remaining and hours_since_resumption are both Optional
-    (default None -> no-op) so every existing call site/test that doesn't
-    pass them keeps working unchanged.
+    seconds_remaining, hours_since_resumption, and size_momentum_residual
+    are all Optional (default None -> no-op) so every existing call
+    site/test that doesn't pass them keeps working unchanged.
     """
     floor_p = bc.floor_lot_probability(asset, regime, position_tier)
     if floor_p > 0 and rng.random() < floor_p:
@@ -335,6 +407,32 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # three dormant assets), so this can't silently change behavior
     # outside the two regimes it was actually calibrated on.
     within_band = bc.within_band_size_multiplier(asset, regime, price)
+    # CHEAP/MID gating (2026-09-11): WITHIN_BAND_SIZE_SLOPE now also has
+    # real, cross-asset-validated, temporally-stable CHEAP/MID cells (see
+    # cheap-mid-within-band-scaling-gap in project memory) -- but unlike
+    # CORE/HIGH, those cells are gated by a dedicated flag rather than
+    # being unconditionally live, so paperbot-mini's existing
+    # WITHIN_BAND_SIZE_SLOPE behavior (CORE/HIGH only) stays exactly
+    # unchanged when ENABLE_CHEAP_MID_WITHIN_BAND_SCALING=false, instead
+    # of silently picking up two new regimes' worth of scaling the moment
+    # this file's table was extended. Gated HERE (the call site), not
+    # inside within_band_size_multiplier itself -- behavior_config.py
+    # never imports config, same discipline as every other multiplier.
+    if regime in ("CHEAP", "MID") and not config.ENABLE_CHEAP_MID_WITHIN_BAND_SCALING:
+        within_band = 1.0
+    # CROSS-MARKET sizing momentum (2026-09-11 finding): a market's first
+    # entry echoes the PREVIOUS market's own size residual (slow EWMA
+    # decay, not lag-1-only) -- see CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER's
+    # docstring in behavior_config.py. Scoped to position_tier=="first"
+    # only, since that's the quantity the finding was measured on (later
+    # entries in the same market already have their own within-market
+    # signals). size_momentum_residual is bot.py's per-asset EWMA state,
+    # threaded through build_order_intent -- this file has no cross-market
+    # memory of its own.
+    momentum_mult = 1.0
+    if (position_tier == "first" and config.ENABLE_CROSS_MARKET_SIZE_MOMENTUM
+            and size_momentum_residual is not None):
+        momentum_mult = bc.cross_market_size_momentum_multiplier(asset, size_momentum_residual)
     # TIME-TO-CLOSE scaling (2026-09-10 finding): confirmed the trader
     # actually SIZES differently by time remaining, holding price level
     # fixed -- not just present more late-window (already known), a real
@@ -366,8 +464,8 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # config.py. Applied here (not to the floor-lot branch above) so the
     # tiny, independently-calibrated probe tier is never pushed below a
     # real exchange minimum by a scale-down meant for the ordinary curve.
-    return max(median * jitter * within_band * ttc_mult * resumption_mult * config.SIZE_SCALE_FACTOR,
-                0.0), False
+    return max(median * jitter * within_band * momentum_mult * ttc_mult * resumption_mult
+               * config.SIZE_SCALE_FACTOR, 0.0), False
 
 
 def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
@@ -375,7 +473,11 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                         recent_price_delta: Optional[float] = None,
                         now: Optional[float] = None,
                         hours_since_resumption: Optional[float] = None,
-                        previous_market_first_side: Optional[str] = None) -> Optional[OrderIntent]:
+                        previous_market_first_side: Optional[str] = None,
+                        previous_market_won: Optional[bool] = None,
+                        prev_hedge_rate: Optional[float] = None,
+                        size_momentum_residual: Optional[float] = None,
+                        rolling_accuracy: Optional[float] = None) -> Optional[OrderIntent]:
     """
     Runs the full per-market pipeline (steps 1-6 of Part 5) and returns an
     OrderIntent, or None if this market isn't tradeable right now. Does NOT
@@ -397,6 +499,14 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     corrected down to Down's real ~0.03 price, producing a HIGH-regime
     notional divided by a CHEAP-regime price -- a 1354-share order that
     should have been a normal small CHEAP-band size.
+
+    `previous_market_won`, `prev_hedge_rate`, `size_momentum_residual`,
+    and `rolling_accuracy` (all added 2026-09-11) are per-asset
+    cross-market state that only bot.py can maintain (this module has no
+    memory across markets of its own) -- all Optional (default None ->
+    no-op for every one of them) so every existing call site/test keeps
+    working unchanged. See decide_side/decide_hedge/decide_size's own
+    docstrings for what each one feeds.
     """
     if not timing_ok(market, now):
         return None
@@ -423,8 +533,10 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         dominant_book = down_book
     dominant_current_price = dominant_book.best_bid if dominant_book is not None else None
 
-    hedge_side = decide_hedge(market.asset, activity, rng, liquidity=market.liquidity,
-                               is_weekend=is_weekend, dominant_current_price=dominant_current_price)
+    hedge_side = decide_hedge(
+        market.asset, activity, rng, liquidity=market.liquidity,
+        is_weekend=is_weekend, dominant_current_price=dominant_current_price,
+        prev_hedge_rate=prev_hedge_rate)
     is_hedge = hedge_side is not None
     if is_hedge:
         side = hedge_side
@@ -443,7 +555,9 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         side = decide_side(
             market.asset, activity, rng, held_side_price=held_side_price,
             previous_market_first_side=(previous_market_first_side
-                                         if config.ENABLE_CROSS_MARKET_SIDE_PERSISTENCE else None))
+                                         if config.ENABLE_CROSS_MARKET_SIDE_PERSISTENCE else None),
+            previous_market_won=(previous_market_won
+                                  if config.ENABLE_WIN_LOSS_SIDE_PERSISTENCE else None))
     side_book = up_book if side == "Up" else down_book
 
     price = side_book.best_bid
@@ -538,11 +652,13 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             is_hedge = False
             notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
                                                   seconds_remaining=seconds_remaining,
-                                                  hours_since_resumption=hours_since_resumption)
+                                                  hours_since_resumption=hours_since_resumption,
+                                                  size_momentum_residual=size_momentum_residual)
     else:
         notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
                                               seconds_remaining=seconds_remaining,
-                                              hours_since_resumption=hours_since_resumption)
+                                              hours_since_resumption=hours_since_resumption,
+                                              size_momentum_residual=size_momentum_residual)
 
     is_scout = False
     if not is_hedge and not is_floor_lot and activity.entry_count == 0:
@@ -555,7 +671,20 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # -tiny mechanism keyed off share-count minimums, not first-entry
         # tentativeness -- scaling it down further would just inflate its
         # already-expected skip rate for no modeling benefit).
-        if rng.random() < bc.scout_probability(market.asset):
+        #
+        # ACCURACY-conditioned (2026-09-11): scout_probability's base rate
+        # is scaled by bc.accuracy_scout_multiplier(rolling_accuracy) --
+        # real, cross-asset-pooled, circularity-checked finding that worse
+        # recent accuracy predicts more scouting. rolling_accuracy is
+        # bot.py's per-asset rolling correctness tracker, populated inside
+        # resolution_tick (see ACCURACY_SCOUT_MULTIPLIER's docstring in
+        # behavior_config.py for the biggest architectural lift of this
+        # implementation pass). Clamped to [0, 1] since it's still a
+        # probability after scaling.
+        scout_p = bc.scout_probability(market.asset)
+        if config.ENABLE_ACCURACY_SCOUT_MULTIPLIER and rolling_accuracy is not None:
+            scout_p = max(0.0, min(1.0, scout_p * bc.accuracy_scout_multiplier(rolling_accuracy)))
+        if rng.random() < scout_p:
             is_scout = True
             notional = notional * bc.scout_size_ratio(market.asset)
 

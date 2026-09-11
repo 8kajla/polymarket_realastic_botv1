@@ -130,20 +130,142 @@ class TestCrossMarketSideTracking:
 
         captured = {}
 
-        def spy_decide_side(asset, activity, rng, held_side_price=None, previous_market_first_side=None):
+        def spy_decide_side(asset, activity, rng, held_side_price=None, previous_market_first_side=None,
+                             previous_market_won=None):
             captured["previous_market_first_side"] = previous_market_first_side
             return "Up"
 
         monkeypatch.setattr(stratmod, "decide_side", spy_decide_side)
         monkeypatch.setattr(stratmod, "decide_hedge",
                              lambda asset, activity, rng, liquidity=None, is_weekend=None,
-                             dominant_current_price=None: None)
+                             dominant_current_price=None, prev_hedge_rate=None: None)
 
         market2 = make_market_for_asset("Bitcoin", condition_id="cond-2", end_time=3000.0)
         wire_market(bot, market2, bid=0.30, ask=0.31, depth=200.0)
         asyncio.run(bot.strategy_tick(now=2000.0))
 
         assert captured["previous_market_first_side"] == tracked_side
+
+
+class TestCrossMarketFeedbackTracking:
+    """The four new per-asset cross-market trackers added 2026-09-11
+    alongside this session's 6-finding implementation pass -- see their
+    docstrings in PaperBot.__init__. Confirms the bot-level plumbing
+    (retire-time snapshot, resolution-time feedback, EWMA updates); the
+    statistical multipliers themselves are covered at the
+    behavior_config.py/strategy.py level."""
+
+    def test_retire_market_records_hedge_rate_and_snapshot_for_traded_markets(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_market_for_asset("Bitcoin")
+        wire_market(bot, market)
+        activity = bot.activity[market.condition_id]
+        activity.record_entry("Up", notional_usd=10.0, regime="MID", price=0.5)
+        activity.record_entry("Down", notional_usd=2.0, regime="MID", is_hedge=True, price=0.5)
+
+        asyncio.run(bot._retire_market(market))
+
+        assert bot.last_hedge_rate_by_asset["Bitcoin"] == pytest.approx(0.5)  # 1 hedge / 2 entries
+        snap = bot._retired_activity_snapshot[market.condition_id]
+        assert snap == {"asset": "Bitcoin", "first_entry_side": "Up", "dominant_side": "Up"}
+        assert market.condition_id not in bot.activity
+
+    def test_retire_market_skips_snapshot_for_untraded_markets(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=2)
+        market = make_market_for_asset("Bitcoin")
+        wire_market(bot, market)  # activity created, but never traded
+
+        asyncio.run(bot._retire_market(market))
+
+        assert "Bitcoin" not in bot.last_hedge_rate_by_asset
+        assert market.condition_id not in bot._retired_activity_snapshot
+
+    def test_resolution_tick_records_a_win_and_updates_accuracy(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=3)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        bot._retired_activity_snapshot[cid] = {
+            "asset": "Bitcoin", "first_entry_side": "Up", "dominant_side": "Up",
+        }
+
+        def fake_fetch(slug, session=None, timeout=10.0):
+            return {"closed": True, "outcomes": '["Up", "Down"]', "outcomePrices": '["1", "0"]'}
+
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", fake_fetch)
+        asyncio.run(bot.resolution_tick(now=1000.0))
+
+        assert bot.last_first_entry_won_by_asset["Bitcoin"] is True
+        assert list(bot.rolling_accuracy_by_asset["Bitcoin"]) == [True]
+        assert cid not in bot._retired_activity_snapshot  # cleaned up alongside the rest
+
+    def test_resolution_tick_records_a_loss(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=4)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        bot._retired_activity_snapshot[cid] = {
+            "asset": "Bitcoin", "first_entry_side": "Down", "dominant_side": "Down",
+        }
+
+        def fake_fetch(slug, session=None, timeout=10.0):
+            return {"closed": True, "outcomes": '["Up", "Down"]', "outcomePrices": '["1", "0"]'}
+
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", fake_fetch)
+        asyncio.run(bot.resolution_tick(now=1000.0))
+
+        assert bot.last_first_entry_won_by_asset["Bitcoin"] is False
+        assert list(bot.rolling_accuracy_by_asset["Bitcoin"]) == [False]
+
+    def test_resolution_without_a_snapshot_leaves_trackers_untouched(self, monkeypatch):
+        # No traded market -- _retire_market never wrote a snapshot for
+        # this cid. Must not crash, must not fabricate a tracker entry.
+        bot = PaperBot(assets=["Bitcoin"], seed=5)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+
+        def fake_fetch(slug, session=None, timeout=10.0):
+            return {"closed": True, "outcomes": '["Up", "Down"]', "outcomePrices": '["1", "0"]'}
+
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", fake_fetch)
+        asyncio.run(bot.resolution_tick(now=1000.0))
+
+        assert bot.last_first_entry_won_by_asset == {}
+        assert bot.rolling_accuracy_by_asset == {}
+
+    def test_rolling_accuracy_is_none_before_any_resolved_market(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=6)
+        assert bot._rolling_accuracy("Bitcoin") is None
+
+    def test_rolling_accuracy_computes_the_fraction_correct(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=7)
+        bot.rolling_accuracy_by_asset["Bitcoin"] = botmod.deque(
+            [True, True, False, True], maxlen=botmod.ACCURACY_ROLLING_WINDOW)
+        assert bot._rolling_accuracy("Bitcoin") == pytest.approx(0.75)
+
+    def test_first_entry_updates_the_size_momentum_ewma(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=8)
+        market = make_market_for_asset("Bitcoin")
+        wire_market(bot, market, bid=0.50, ask=0.51, depth=200.0)
+        assert "Bitcoin" not in bot.ewma_size_residual_by_asset
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        assert market.condition_id in bot.resting_order_ids
+        assert "Bitcoin" in bot.ewma_size_residual_by_asset
+
+    def test_second_entry_does_not_move_the_size_momentum_ewma(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=9)
+        market = make_market_for_asset("Bitcoin")
+        wire_market(bot, market, bid=0.50, ask=0.51, depth=200.0)
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        assert market.condition_id in bot.resting_order_ids
+        del bot.resting_order_ids[market.condition_id]  # free the market for a 2nd entry
+        state_after_first = bot.ewma_size_residual_by_asset["Bitcoin"]
+
+        asyncio.run(bot.strategy_tick(now=1001.0))
+
+        # Whatever the 2nd entry turned out to be (ordinary continuation
+        # or a hedge), is_first_entry was False -- the EWMA must not move.
+        assert bot.ewma_size_residual_by_asset["Bitcoin"] == state_after_first
 
 
 class TestHedgeLegEndToEnd:
@@ -173,9 +295,10 @@ class TestHedgeLegEndToEnd:
         del bot.resting_order_ids[market.condition_id]
 
         # Force the hedge roll to trigger deterministically for this test.
-        monkeypatch.setattr(stratmod, "decide_hedge",
-                             lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None: "Down" if activity.dominant_side() == "Up"
-                             else "Up")
+        monkeypatch.setattr(
+            stratmod, "decide_hedge",
+            lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None,
+            prev_hedge_rate=None: "Down" if activity.dominant_side() == "Up" else "Up")
 
         asyncio.run(bot.strategy_tick(now=1001.0))
 
