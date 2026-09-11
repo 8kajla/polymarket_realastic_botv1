@@ -207,6 +207,22 @@ class PaperBot:
         # truth. See log_pnl_summary and committed_capital()'s docstring.
         self._peak_committed_capital: float = 0.0
 
+        # DRAWDOWN CIRCUIT BREAKER state (2026-09-11, $100-bankroll safety
+        # work) -- see config.MAX_HOURLY_DRAWDOWN_PCT's docstring for the
+        # full rationale and the real 7.3%/hour worst-case measurement
+        # this was calibrated against. _equity_history is a rolling
+        # (timestamp, equity) log, trimmed to the last
+        # config.DRAWDOWN_LOOKBACK_MINUTES in _update_drawdown_tracking --
+        # bounded by time, not count, since tick rate can vary.
+        # _drawdown_pause_until is None outside a pause; once set, it's a
+        # hard deadline (never a counter), matching the same "a peak/
+        # deadline is a ratchet, not a balance" reasoning as
+        # _peak_committed_capital above. Both are full no-ops (empty list,
+        # forever None) unless BANKROLL_USD and MAX_HOURLY_DRAWDOWN_PCT are
+        # both set -- see current_equity()'s docstring.
+        self._equity_history: list[tuple[float, float]] = []
+        self._drawdown_pause_until: Optional[float] = None
+
         # RESUMPTION-CAUTION ramp state (2026-09-10) -- see
         # behavior_config.resumption_size_multiplier's docstring for the
         # real 3-phase shape this replicates. Global (bot-wide), not
@@ -373,8 +389,62 @@ class PaperBot:
                 self._resumption_started_at = now
         self._last_trade_at = now
 
+    def _update_drawdown_tracking(self, now: float) -> None:
+        """
+        Added 2026-09-11, $100-bankroll safety work. Full no-op unless
+        BOTH config.BANKROLL_USD and config.MAX_HOURLY_DRAWDOWN_PCT are
+        set -- see the latter's docstring in config.py for the full
+        rationale and the real 7.3%/hour measurement this was calibrated
+        against.
+
+        Records the current equity, trims the rolling history to the
+        last config.DRAWDOWN_LOOKBACK_MINUTES, and -- if equity has
+        fallen at least MAX_HOURLY_DRAWDOWN_PCT from the highest point
+        seen within that window -- opens (or extends) a pause on brand-
+        new markets for config.DRAWDOWN_PAUSE_MINUTES. Does NOT re-arm a
+        pause that's already active (a pause is a fixed deadline set
+        once when the breaker first trips, not something later ticks
+        keep pushing further out while the drawdown persists -- an
+        already-open pause is doing its job; there's no need to make it
+        longer just because equity is still down when it's checked
+        again).
+        """
+        if config.BANKROLL_USD is None or config.MAX_HOURLY_DRAWDOWN_PCT is None:
+            return
+        equity = self.current_equity()
+        if equity is None:
+            return
+        self._equity_history.append((now, equity))
+        cutoff = now - config.DRAWDOWN_LOOKBACK_MINUTES * 60.0
+        while self._equity_history and self._equity_history[0][0] < cutoff:
+            self._equity_history.pop(0)
+
+        if self._drawdown_pause_until is not None and now >= self._drawdown_pause_until:
+            logger.info("CIRCUIT_BREAKER_RESUME: drawdown pause on new markets has elapsed")
+            self._drawdown_pause_until = None
+
+        peak_equity = max(e for _, e in self._equity_history)
+        if (self._drawdown_pause_until is None and peak_equity > 0
+                and (peak_equity - equity) / peak_equity >= config.MAX_HOURLY_DRAWDOWN_PCT):
+            self._drawdown_pause_until = now + config.DRAWDOWN_PAUSE_MINUTES * 60.0
+            logger.warning(
+                "CIRCUIT_BREAKER_TRIP: equity $%.4f is down %.1f%% from its $%.4f peak over the last "
+                "%.0f min (limit %.1f%%) -- pausing new markets for %.0f min; existing positions "
+                "(hedges included) continue to be managed normally",
+                equity, 100.0 * (peak_equity - equity) / peak_equity, peak_equity,
+                config.DRAWDOWN_LOOKBACK_MINUTES, 100.0 * config.MAX_HOURLY_DRAWDOWN_PCT,
+                config.DRAWDOWN_PAUSE_MINUTES,
+            )
+
+    def _new_markets_paused(self) -> bool:
+        """True while the drawdown circuit breaker is active. Always
+        False when config.MAX_HOURLY_DRAWDOWN_PCT is unset (the default)
+        -- see _update_drawdown_tracking's docstring."""
+        return self._drawdown_pause_until is not None
+
     async def strategy_tick(self, now: float | None = None) -> None:
         now = now if now is not None else time.time()
+        self._update_drawdown_tracking(now)
         for cid, market in self.markets_by_condition.items():
             if cid in self.halted_conditions:
                 continue
@@ -404,6 +474,23 @@ class PaperBot:
         hours_since_resumption = self._hours_since_resumption(now)
         is_first_entry = activity.entry_count == 0  # captured BEFORE record_entry increments it
 
+        if is_first_entry and self._new_markets_paused():
+            # DRAWDOWN CIRCUIT BREAKER (2026-09-11): only blocks brand-new
+            # markets -- a market already open (is_first_entry False)
+            # still gets its later entries and hedges exactly as normal,
+            # since managing existing exposure is the opposite of what
+            # this is meant to stop. See _update_drawdown_tracking's
+            # docstring.
+            logger.info("CIRCUIT_BREAKER_SKIP asset=%s: new-market entries paused after a drawdown",
+                        market.asset)
+            return
+
+        max_notional_usd = None
+        if config.MAX_ORDER_PCT_OF_EQUITY is not None:
+            equity = self.current_equity()
+            if equity is not None:
+                max_notional_usd = max(0.0, equity) * config.MAX_ORDER_PCT_OF_EQUITY
+
         intent = build_order_intent(
             market, up_book, down_book, activity, self.rng,
             recent_price_delta=delta, now=now,
@@ -412,7 +499,8 @@ class PaperBot:
             previous_market_won=self.last_first_entry_won_by_asset.get(market.asset),
             prev_hedge_rate=self.last_hedge_rate_by_asset.get(market.asset),
             size_momentum_residual=self.ewma_size_residual_by_asset.get(market.asset),
-            rolling_accuracy=self._rolling_accuracy(market.asset))
+            rolling_accuracy=self._rolling_accuracy(market.asset),
+            max_notional_usd=max_notional_usd)
         if intent is None:
             return
 
@@ -515,6 +603,31 @@ class PaperBot:
         written_off = sum(self._abandoned_filled_costs)
         return (config.BANKROLL_USD + self.ledger.realized_pnl()
                 - self.committed_capital() - written_off)
+
+    def current_equity(self) -> float | None:
+        """
+        Added 2026-09-11, $100-bankroll safety work: total capital this
+        account currently has, whether it's sitting as free cash or tied
+        up in open/unsettled orders -- the denominator
+        MAX_ORDER_PCT_OF_EQUITY and MAX_HOURLY_DRAWDOWN_PCT both measure
+        against, so both shrink automatically as losses accumulate
+        instead of staying pinned to the ORIGINAL bankroll forever.
+
+        Deliberately NOT `available_cash() + committed_capital()` even
+        though that's arithmetically equal (committed_capital() cancels
+        out of available_cash()'s own formula) -- computed directly here
+        to avoid two separate calls into committed_capital() (called once
+        already inside available_cash()) recomputing the same fill_sim
+        scan twice for one logical quantity.
+
+        None in the default (unconstrained) mode, same as available_cash()
+        -- current equity is undefined without a bankroll to measure it
+        against.
+        """
+        if config.BANKROLL_USD is None:
+            return None
+        written_off = sum(self._abandoned_filled_costs)
+        return config.BANKROLL_USD + self.ledger.realized_pnl() - written_off
 
     def committed_capital(self) -> float:
         """

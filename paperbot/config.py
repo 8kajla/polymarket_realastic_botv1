@@ -343,6 +343,62 @@ if BANKROLL_USD is not None:
 SIZE_SCALE_FACTOR = float(os.environ.get("SIZE_SCALE_FACTOR", "1.0"))
 
 # ---------------------------------------------------------------------------
+# Hard per-order cap, as a fraction of CURRENT EQUITY -- not a fixed dollar
+# amount. Added 2026-09-11 for the $100-bankroll instance, specifically to
+# guarantee no single order (however the calibrated multipliers above
+# happen to stack -- within-band, cross-market momentum, TTC, resumption
+# can theoretically compound to ~50x in a rare joint-tail case) can ever
+# risk more than a small, bounded slice of what's actually left.
+#
+# CONFIRMED (before shipping) this can't collide with the exchange's own
+# per-share minimum the way a rigid dollar cap could: real logs showed
+# that minimum floor (5 shares * price) doesn't shrink with
+# SIZE_SCALE_FACTOR, so a percent-of-equity cap tight enough to matter
+# could, in isolation, sit BELOW that floor once equity drops even
+# slightly (e.g. 5% of $95 = $4.75, already at the HIGH-regime floor).
+# Fixed by construction, not by picking a "safe enough" number: this is
+# applied as a CLAMP-DOWN ONLY, inside build_order_intent, strictly
+# BEFORE the pre-existing exchange-minimum bump-up step -- so if the
+# clamp pushes a notional below the legal minimum, that already-existing
+# bump-up logic raises it right back to the minimum exactly as it does
+# today for any other reason. This can never, by itself, cause a trade
+# to be skipped that would otherwise have happened -- it only prevents
+# the upside from ballooning. None (default) is a full no-op; only
+# meaningful when BANKROLL_USD is also set (current equity is undefined
+# otherwise). Not applied to the floor-lot tier, same scoping precedent
+# as SIZE_SCALE_FACTOR above (that tier is already tiny and separately
+# calibrated).
+MAX_ORDER_PCT_OF_EQUITY = os.environ.get("MAX_ORDER_PCT_OF_EQUITY")
+if MAX_ORDER_PCT_OF_EQUITY is not None:
+    MAX_ORDER_PCT_OF_EQUITY = float(MAX_ORDER_PCT_OF_EQUITY)
+
+# ---------------------------------------------------------------------------
+# Rolling drawdown circuit breaker. Added 2026-09-11, same $100-bankroll
+# safety work: if current equity (BANKROLL_USD + realized P&L - abandoned-
+# market write-offs -- see PaperBot.current_equity()) has fallen at least
+# MAX_HOURLY_DRAWDOWN_PCT from its own peak within the last
+# DRAWDOWN_LOOKBACK_MINUTES, the bot stops opening brand-new markets
+# (activity.entry_count == 0) for DRAWDOWN_PAUSE_MINUTES. It keeps
+# managing every market ALREADY open -- hedges included -- since
+# abandoning management of an open position mid-flight the moment things
+# turn bad is the opposite of safer.
+#
+# 15% is calibrated against a real measurement, not a guess: the worst
+# actual 1-hour realized-P&L drop found in 24h of paperbot-100's live
+# logs (at full, unscaled size) was 7.3% of bankroll -- this gives
+# genuine headroom above ordinary variance (so it won't fire on a normal
+# bad stretch) while still catching a real abnormal event.
+#
+# None (default) is a full no-op; only meaningful when BANKROLL_USD is
+# also set.
+MAX_HOURLY_DRAWDOWN_PCT = os.environ.get("MAX_HOURLY_DRAWDOWN_PCT")
+if MAX_HOURLY_DRAWDOWN_PCT is not None:
+    MAX_HOURLY_DRAWDOWN_PCT = float(MAX_HOURLY_DRAWDOWN_PCT)
+
+DRAWDOWN_LOOKBACK_MINUTES = float(os.environ.get("DRAWDOWN_LOOKBACK_MINUTES", "60"))
+DRAWDOWN_PAUSE_MINUTES = float(os.environ.get("DRAWDOWN_PAUSE_MINUTES", "30"))
+
+# ---------------------------------------------------------------------------
 # Maker rebates. Added 2026-09-09: every order this bot places is postOnly
 # (see bot.py's "postOnly order would cross spread" skip path -- it never
 # crosses as a taker, only ever rests as a maker), but nothing in the

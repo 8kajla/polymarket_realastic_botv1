@@ -1536,3 +1536,99 @@ class TestBuildOrderIntentScout:
     def test_scout_probability_and_ratio_default_to_no_op_for_uncalibrated_assets(self):
         assert bc.scout_probability("XRP") == 0.0
         assert bc.scout_size_ratio("XRP") == bc._DEFAULT_SCOUT_SIZE_RATIO
+
+
+class TestBuildOrderIntentMaxNotionalCap:
+    """Hard per-order cap, added 2026-09-11 for the $100-bankroll safety
+    work. Clamp-DOWN only, applied strictly before the exchange-minimum
+    bump-up check -- confirmed (before shipping) this can never itself
+    cause a trade to be skipped that would otherwise have happened,
+    unlike a rigid dollar cap which could collide with the exchange's
+    own per-share minimum once equity drops."""
+
+    def test_defaults_to_a_noop_when_not_passed(self):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity_a = MarketActivityState()
+        activity_b = MarketActivityState()
+
+        intent_no_arg = build_order_intent(market, up_book, down_book, activity_a,
+                                            random.Random(0), now=0.0)
+        intent_explicit_none = build_order_intent(market, up_book, down_book, activity_b,
+                                                   random.Random(0), now=0.0, max_notional_usd=None)
+        assert intent_no_arg.notional_usd == intent_explicit_none.notional_usd
+
+    def test_clamps_an_oversized_ordinary_entry_down_to_the_cap(self):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")  # CORE
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+
+        uncapped = build_order_intent(market, up_book, down_book, activity,
+                                       random.Random(0), now=0.0)
+        assert uncapped is not None
+        tiny_cap = uncapped.notional_usd / 10.0
+
+        capped_activity = MarketActivityState()
+        capped = build_order_intent(market, up_book, down_book, capped_activity,
+                                     random.Random(0), now=0.0, max_notional_usd=tiny_cap)
+        assert capped is not None
+        assert capped.notional_usd <= tiny_cap + 1e-9
+
+    def test_never_leaves_the_order_below_the_exchange_minimum(self):
+        """The whole point of applying this BEFORE the exchange-minimum
+        bump-up check: a cap tight enough to bind must still produce a
+        legally placeable order, not a skip."""
+        market = make_market(end_time=1000.0, asset="Bitcoin", order_min_size=5.0)
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+
+        # A cap far below the exchange minimum on either side (5 shares *
+        # whichever price decide_side lands on).
+        intent = build_order_intent(market, up_book, down_book, activity,
+                                     random.Random(0), now=0.0, max_notional_usd=0.01)
+        assert intent is not None
+        assert intent.notional_usd >= 5.0 * intent.price - 1e-9
+
+    def test_does_not_affect_the_floor_lot_tier(self):
+        market = make_market(end_time=1000.0, asset="BNB")  # BNB/CHEAP/first has a real floor-lot rate
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.79, token_id="down")
+        rng_a = random.Random(0)
+        rng_a.random = lambda: 0.0  # forces the floor-lot roll
+        rng_b = random.Random(0)
+        rng_b.random = lambda: 0.0
+
+        uncapped = build_order_intent(make_market(end_time=1000.0, asset="BNB"), up_book, down_book,
+                                       MarketActivityState(), rng_a, now=0.0)
+        capped = build_order_intent(make_market(end_time=1000.0, asset="BNB"), up_book, down_book,
+                                     MarketActivityState(), rng_b, now=0.0, max_notional_usd=0.0001)
+        assert uncapped is not None and capped is not None
+        assert uncapped.is_floor_lot is True
+        assert capped.is_floor_lot is True
+        assert capped.notional_usd == uncapped.notional_usd
+
+    def test_also_clamps_hedge_sizing(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="BNB")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=100.0, regime="CORE")
+
+        monkeypatch.setattr(
+            stratmod, "decide_hedge",
+            lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None,
+            prev_hedge_rate=None: "Down")
+
+        uncapped = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+        assert uncapped is not None
+        assert uncapped.is_hedge is True
+
+        capped_activity = MarketActivityState()
+        capped_activity.record_entry("Up", notional_usd=100.0, regime="CORE")
+        capped = build_order_intent(market, up_book, down_book, capped_activity, random.Random(0),
+                                     now=0.0, max_notional_usd=uncapped.notional_usd / 10.0)
+        assert capped is not None
+        assert capped.notional_usd < uncapped.notional_usd

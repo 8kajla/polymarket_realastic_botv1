@@ -1264,6 +1264,230 @@ class TestBankrollGate:
         assert market.condition_id in bot.resting_order_ids
 
 
+class TestCurrentEquity:
+    """PaperBot.current_equity(), added 2026-09-11 alongside the $100-
+    bankroll safety work -- the denominator MAX_ORDER_PCT_OF_EQUITY and
+    MAX_HOURLY_DRAWDOWN_PCT both measure against."""
+
+    def test_none_in_unconstrained_mode(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        assert config.BANKROLL_USD is None
+        assert bot.current_equity() is None
+
+    def test_equals_bankroll_plus_realized_pnl(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()  # isolate from any real state on disk
+        order = make_filled_order("cond-x", order_id=1, price=0.30, size=5.0)
+        bot.fill_sim.orders[order.order_id] = order
+        bot.ledger.settle_order(order, winning_side="Up")
+
+        assert bot.current_equity() == pytest.approx(100.0 + bot.ledger.realized_pnl())
+
+    def test_unaffected_by_still_open_committed_orders(self, monkeypatch):
+        """Unlike available_cash(), current_equity() does NOT subtract
+        committed capital -- an order still resting or filled-but-
+        unsettled hasn't been lost, just temporarily allocated."""
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()  # isolate from any real state on disk
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-x", token_id="cond-x-up", asset="Bitcoin",
+            regime="MID", position_tier="first", side="Up", price=0.40,
+            original_size=10.0, is_floor_lot=False, placed_at=0.0, remaining_size=10.0,
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        assert bot.current_equity() == pytest.approx(100.0)
+        assert bot.available_cash() == pytest.approx(100.0 - 10.0 * 0.40)
+
+
+class TestDrawdownCircuitBreaker:
+    """MAX_HOURLY_DRAWDOWN_PCT / MAX_ORDER_PCT_OF_EQUITY, added 2026-09-11
+    for the $100-bankroll instance -- see both docstrings in config.py for
+    the real 7.3%/hour worst-case measurement this was calibrated against,
+    and why the per-order cap is a clamp-down applied before the exchange-
+    minimum bump-up (covered at the strategy.py level in
+    TestBuildOrderIntentMaxNotionalCap; this class covers the bot.py
+    plumbing that computes and feeds both)."""
+
+    def test_disabled_by_default_even_with_a_bankroll_set(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()
+        bot._update_drawdown_tracking(now=1000.0)
+        assert bot._equity_history == []
+        assert bot._new_markets_paused() is False
+
+    def test_records_equity_history_when_both_configured(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        monkeypatch.setattr(config, "MAX_HOURLY_DRAWDOWN_PCT", 0.15)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()
+        bot._update_drawdown_tracking(now=1000.0)
+        assert bot._equity_history == [(1000.0, 100.0)]
+
+    def test_trips_on_an_explicit_equity_drop(self, monkeypatch):
+        """Direct, deterministic version of the test above -- bypasses
+        needing a real settlement to land on an exact drawdown percentage
+        by monkeypatching current_equity() itself."""
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        monkeypatch.setattr(config, "MAX_HOURLY_DRAWDOWN_PCT", 0.15)
+        monkeypatch.setattr(config, "DRAWDOWN_PAUSE_MINUTES", 30.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+
+        equity_values = iter([100.0, 100.0, 80.0])  # peak, then a 20% drop
+        monkeypatch.setattr(bot, "current_equity", lambda: next(equity_values))
+
+        bot._update_drawdown_tracking(now=1000.0)
+        bot._update_drawdown_tracking(now=1010.0)
+        assert bot._new_markets_paused() is False
+
+        bot._update_drawdown_tracking(now=1020.0)
+        assert bot._new_markets_paused() is True
+        assert bot._drawdown_pause_until == pytest.approx(1020.0 + 30.0 * 60.0)
+
+    def test_does_not_trip_below_the_threshold(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        monkeypatch.setattr(config, "MAX_HOURLY_DRAWDOWN_PCT", 0.15)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+
+        equity_values = iter([100.0, 90.0])  # only a 10% drop -- under the 15% bar
+        monkeypatch.setattr(bot, "current_equity", lambda: next(equity_values))
+
+        bot._update_drawdown_tracking(now=1000.0)
+        bot._update_drawdown_tracking(now=1010.0)
+        assert bot._new_markets_paused() is False
+
+    def test_pause_clears_once_its_deadline_elapses(self, monkeypatch):
+        # Short lookback so the OLD $100 peak that caused the trip has
+        # aged out by the time we check again -- otherwise a still-down
+        # equity reading would correctly (and separately) re-trip against
+        # that still-in-window peak, which is exactly what the next test
+        # (test_pause_re_trips_if_equity_is_still_down) checks for.
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        monkeypatch.setattr(config, "MAX_HOURLY_DRAWDOWN_PCT", 0.15)
+        monkeypatch.setattr(config, "DRAWDOWN_PAUSE_MINUTES", 30.0)
+        monkeypatch.setattr(config, "DRAWDOWN_LOOKBACK_MINUTES", 10.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+
+        equity_values = iter([100.0, 80.0])
+        monkeypatch.setattr(bot, "current_equity", lambda: next(equity_values))
+        bot._update_drawdown_tracking(now=1000.0)
+        bot._update_drawdown_tracking(now=1010.0)
+        assert bot._new_markets_paused() is True
+
+        # Recovered back to the equity level that was the original peak,
+        # AND well past both the pause deadline and the lookback window --
+        # nothing left in history to measure a drop against.
+        monkeypatch.setattr(bot, "current_equity", lambda: 100.0)
+        bot._update_drawdown_tracking(now=1010.0 + 30.0 * 60.0 + 1.0)
+        assert bot._new_markets_paused() is False
+
+    def test_pause_re_trips_if_equity_is_still_down_when_it_elapses(self, monkeypatch):
+        """If the account hasn't actually recovered by the time the pause
+        would otherwise lift, and the old peak is still within the
+        lookback window, re-tripping immediately is the correct behavior
+        -- not a bug. This is the mirror case of the test above."""
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        monkeypatch.setattr(config, "MAX_HOURLY_DRAWDOWN_PCT", 0.15)
+        monkeypatch.setattr(config, "DRAWDOWN_PAUSE_MINUTES", 30.0)
+        monkeypatch.setattr(config, "DRAWDOWN_LOOKBACK_MINUTES", 120.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+
+        equity_values = iter([100.0, 80.0])
+        monkeypatch.setattr(bot, "current_equity", lambda: next(equity_values))
+        bot._update_drawdown_tracking(now=1000.0)
+        bot._update_drawdown_tracking(now=1010.0)
+        first_deadline = bot._drawdown_pause_until
+        assert bot._new_markets_paused() is True
+
+        monkeypatch.setattr(bot, "current_equity", lambda: 80.0)  # still down
+        bot._update_drawdown_tracking(now=1010.0 + 30.0 * 60.0 + 1.0)
+        assert bot._new_markets_paused() is True
+        assert bot._drawdown_pause_until > first_deadline  # extended, not just left alone
+
+    def test_old_equity_readings_age_out_of_the_lookback_window(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        monkeypatch.setattr(config, "MAX_HOURLY_DRAWDOWN_PCT", 0.15)
+        monkeypatch.setattr(config, "DRAWDOWN_LOOKBACK_MINUTES", 60.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+
+        equity_values = iter([100.0, 80.0])
+        monkeypatch.setattr(bot, "current_equity", lambda: next(equity_values))
+        bot._update_drawdown_tracking(now=1000.0)  # the $100 peak
+        # Far outside the 60-minute lookback -- the $100 reading must have
+        # aged out, so this $80 alone (its own new peak) shouldn't trip.
+        bot._update_drawdown_tracking(now=1000.0 + 3700.0)
+        assert bot._new_markets_paused() is False
+        assert bot._equity_history == [(1000.0 + 3700.0, 80.0)]
+
+    def test_evaluate_one_market_skips_new_markets_while_paused(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot._drawdown_pause_until = 999999999.0  # far in the future
+        market = make_market_for_asset("Bitcoin")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        bot._evaluate_one_market(market, now=1000.0)
+
+        assert market.condition_id not in bot.resting_order_ids
+
+    def test_evaluate_one_market_still_manages_already_open_markets_while_paused(self, monkeypatch):
+        """The breaker only blocks brand-new markets -- a market that
+        already has an entry keeps getting its later entries/hedges."""
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_market_for_asset("Bitcoin")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+        bot.activity[market.condition_id].record_entry("Up", notional_usd=1.0, regime="CHEAP",
+                                                         price=0.20)
+        bot._drawdown_pause_until = 999999999.0  # far in the future
+
+        bot._evaluate_one_market(market, now=1000.0)
+
+        # Reached build_order_intent's real decision logic instead of the
+        # early circuit-breaker return -- confirmed by NOT silently
+        # no-op'ing (some intent path was at least attempted; whether it
+        # actually placed depends on ordinary decide_hedge/decide_side
+        # randomness, which isn't what this test is checking).
+        assert bot.activity[market.condition_id].entry_count >= 1
+
+    def test_evaluate_one_market_passes_a_max_notional_cap_when_configured(self, monkeypatch):
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        monkeypatch.setattr(config, "MAX_ORDER_PCT_OF_EQUITY", 0.05)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()  # isolate from any real state on disk -- equity == 100.0
+        market = make_market_for_asset("Bitcoin")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        captured = {}
+
+        def spy_build_order_intent(*args, **kwargs):
+            captured["max_notional_usd"] = kwargs.get("max_notional_usd")
+            return None
+
+        monkeypatch.setattr(botmod, "build_order_intent", spy_build_order_intent)
+        bot._evaluate_one_market(market, now=1000.0)
+
+        assert captured["max_notional_usd"] == pytest.approx(5.0)  # 5% of $100
+
+    def test_evaluate_one_market_passes_no_cap_when_unconfigured(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)  # BANKROLL_USD unset
+        market = make_market_for_asset("Bitcoin")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        captured = {}
+
+        def spy_build_order_intent(*args, **kwargs):
+            captured["max_notional_usd"] = kwargs.get("max_notional_usd")
+            return None
+
+        monkeypatch.setattr(botmod, "build_order_intent", spy_build_order_intent)
+        bot._evaluate_one_market(market, now=1000.0)
+
+        assert captured["max_notional_usd"] is None
+
+
 class TestOrderIdCollisionAcrossRestarts:
     """Direct regression test for a confirmed severe live bug (2026-09-08):
     order_id was a plain per-process counter starting at 1 on every

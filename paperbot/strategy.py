@@ -477,7 +477,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                         previous_market_won: Optional[bool] = None,
                         prev_hedge_rate: Optional[float] = None,
                         size_momentum_residual: Optional[float] = None,
-                        rolling_accuracy: Optional[float] = None) -> Optional[OrderIntent]:
+                        rolling_accuracy: Optional[float] = None,
+                        max_notional_usd: Optional[float] = None) -> Optional[OrderIntent]:
     """
     Runs the full per-market pipeline (steps 1-6 of Part 5) and returns an
     OrderIntent, or None if this market isn't tradeable right now. Does NOT
@@ -507,6 +508,23 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     no-op for every one of them) so every existing call site/test keeps
     working unchanged. See decide_side/decide_hedge/decide_size's own
     docstrings for what each one feeds.
+
+    `max_notional_usd` (added 2026-09-11, $100-bankroll safety work): a
+    hard per-order cap in dollars, computed by bot.py as a fraction of
+    CURRENT equity (config.MAX_ORDER_PCT_OF_EQUITY) -- not a fixed
+    amount, so it shrinks automatically if losses accumulate. Applied as
+    a CLAMP-DOWN ONLY, below, strictly BEFORE the exchange-minimum
+    bump-up check that already exists -- confirmed this can't collide
+    with that check the way a rigid dollar cap could (the exchange's own
+    per-share minimum doesn't shrink with SIZE_SCALE_FACTOR, so a tight
+    enough fixed cap could in principle sit below it once equity drops).
+    Because the clamp runs before the bump-up, a capped-then-bumped
+    order still clears the exchange's real minimum exactly as it would
+    without this parameter -- this can never, by itself, cause a trade
+    to be skipped that would otherwise have happened. Optional (default
+    None -> no-op) for the same reason as every other parameter here;
+    not applied to the floor-lot tier (checked below), same scoping
+    precedent as config.SIZE_SCALE_FACTOR.
     """
     if not timing_ok(market, now):
         return None
@@ -687,6 +705,16 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         if rng.random() < scout_p:
             is_scout = True
             notional = notional * bc.scout_size_ratio(market.asset)
+
+    # HARD PER-ORDER CAP (2026-09-11, $100-bankroll safety work): clamp
+    # DOWN only, and strictly BEFORE the exchange-minimum bump-up check
+    # right below -- see max_notional_usd's docstring above for why this
+    # ordering is what makes the cap unable to ever cause a skip that
+    # wouldn't otherwise have happened. Never applied to the floor-lot
+    # tier (already tiny and separately calibrated -- same precedent as
+    # config.SIZE_SCALE_FACTOR).
+    if max_notional_usd is not None and not is_floor_lot:
+        notional = min(notional, max_notional_usd)
 
     if min_size is not None and notional < min_size * price:
         # This simulated order would be rejected by the exchange's own
