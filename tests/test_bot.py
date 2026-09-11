@@ -79,6 +79,25 @@ class TestSessionConnectionPoolSizing:
         assert adapter.poolmanager.connection_pool_kw.get("maxsize", 0) >= 12
 
 
+class TestRegimeQueueSafetyFactorWiring:
+    """PaperBot's wiring of QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME into
+    FillSimulator, added 2026-09-11 -- see that config's docstring. Confirms
+    the feature flag actually gates it (paperbot-mini's opt-out mechanism),
+    not just that FillSimulator itself supports the override in isolation."""
+
+    def test_override_is_wired_through_when_flag_is_on(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE", True)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        assert bot.fill_sim.queue_safety_factor_by_regime == config.QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME
+
+    def test_override_is_a_noop_when_flag_is_off(self, monkeypatch):
+        # Explicit instruction: paperbot-mini stays on the OLD (flat)
+        # behavior via ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE=false.
+        monkeypatch.setattr(config, "ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE", False)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        assert bot.fill_sim.queue_safety_factor_by_regime == {}
+
+
 class TestHedgeLegEndToEnd:
     """Full-pipeline test: a market's second entry becomes a deliberately-
     sized hedge leg on the opposite side, wired through decide_hedge ->

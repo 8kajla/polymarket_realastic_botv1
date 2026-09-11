@@ -149,6 +149,75 @@ MIN_BOOK_DEPTH_USD = 5.0   # total resting USD notional at-or-better on both sid
 # visible book and produces near-zero fill rates.
 QUEUE_SAFETY_FACTOR = float(os.environ.get("QUEUE_SAFETY_FACTOR", "0.25"))
 
+# ---------------------------------------------------------------------------
+# Per-regime override for QUEUE_SAFETY_FACTOR. Added 2026-09-11, following a
+# deep-dive into why the bot under-represents HIGH regime in its own
+# SETTLED trade counts relative to the real trader, even though it DOES
+# place orders there promptly (confirmed live: fresh HIGH-regime orders
+# follow a regime-boundary cancellation within seconds, same tick cadence
+# as every other regime).
+#
+# Measured directly from 3h of live paperbot logs (every placed order
+# reached a terminal state -- a clean, complete breakdown, not a sample):
+#   CHEAP: 462 placed, 24.2% filled, 42.9% expired-unfilled, 32.9% cancelled
+#   MID:   762 placed, 13.0% filled,  3.9% expired-unfilled, 82.7% cancelled
+#   CORE:  347 placed, 18.4% filled,  5.5% expired-unfilled, 76.1% cancelled
+#   HIGH:   89 placed, 16.9% filled, 49.4% expired-unfilled, 33.7% cancelled
+# MID/CORE mostly die by CANCELLATION (price keeps moving through those
+# wide, still-undecided bands -- expected). CHEAP/HIGH -- the two DECIDED,
+# near-terminal bands -- rarely get cancelled (price has stopped moving)
+# but expire unfilled at ~9-12x CORE's rate: once price is stable near an
+# extreme, there's less real book movement to work a resting order through
+# the queue before MIN_SECONDS_BEFORE_CLOSE kills it. HIGH is the worst.
+#
+# Two alternative fixes were ruled out before landing here:
+#   - Entering earlier: checked the real trader's own HIGH-regime trade
+#     timing (n=20,459) -- 48.47% of his HIGH trades happen within the
+#     final 90s (our own decision window), 6.58% within the final 30s. He
+#     trades heavily THROUGH the same late crunch our bot fails in, not
+#     around it -- "enter earlier" wouldn't replicate his real behavior.
+#   - Price improvement (quote closer to best_ask): checked real spread
+#     data at HIGH-regime trade moments specifically -- spread sits at the
+#     1-tick minimum 95.0% of the time (vs 88.6% CHEAP/86.1% MID/93.5%
+#     CORE). There is essentially never room to post a better maker price
+#     in HIGH; this lever doesn't exist in practice.
+#
+# That leaves QUEUE_SAFETY_FACTOR -- how much of the visible resting queue
+# our own fill-simulator assumes must be worked through before a fill
+# credits -- as the only remaining lever inside this architecture.
+# fill_simulation.FillSimulator.stats_by_asset_regime()'s own docstring
+# already names this exact diagnostic use case ("the real signal for
+# whether QUEUE_SAFETY_FACTOR is calibrated reasonably"), but the value
+# has only ever been a single flat global constant, never actually
+# recalibrated per regime until now.
+#
+# HONEST CAVEAT, unlike every other calibration in this file: there is no
+# directly-measurable target here. HEDGE_SIZE_RATIO/ADVERSE_MOVE_*
+# multipliers etc. were all calibrated against his own real, observed
+# trade outcomes -- but his trade LOG only contains fills (survivorship by
+# construction), so his own real expiry/queue-position behavior can't be
+# backed out the way a size or trigger ratio can. The values below are a
+# reasoned engineering estimate (a meaningful but not extreme reduction
+# from the 0.25 baseline, informed by the ~9-12x expiry-rate gap and the
+# two ruled-out alternatives above), not a value fit to his data --
+# treat as a monitored change: re-run the same fill/expiry-rate breakdown
+# after this has been live a while and adjust if HIGH's expiry rate hasn't
+# moved meaningfully closer to CORE's.
+#
+# NOTE: this is a different mechanism, in the opposite direction, from the
+# "don't scale MAX_SPREAD/MIN_BOOK_DEPTH_USD by regime" warning right
+# above -- that one warned against TIGHTENING thresholds that REJECT
+# trades in CORE/HIGH (which starved them). This LOOSENS a fill-probability
+# assumption specifically to help the regime that's currently starved, not
+# add a new way to reject it.
+QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME = {
+    "CHEAP": 0.10,
+    "HIGH": 0.10,
+}
+ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE = os.environ.get(
+    "ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE", "true"
+).strip().lower() not in ("false", "0", "no")
+
 # If the best bid drifts more than this many ticks away from our resting
 # order's price (while remaining in the same regime band), cancel and
 # re-place at the new price rather than leaving a stale order unmanaged.

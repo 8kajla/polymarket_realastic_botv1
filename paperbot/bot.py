@@ -76,7 +76,14 @@ class PaperBot:
         self.assets = assets or config.ALL_ASSETS
         self.session = _make_session()
         self.discovery = MarketDiscovery(session=self.session, assets=self.assets)
-        self.fill_sim = FillSimulator(queue_safety_factor=queue_safety_factor)
+        # ADDED 2026-09-11: per-regime QUEUE_SAFETY_FACTOR override -- see
+        # its docstring in config.py. Only passed when the feature flag is
+        # on; paperbot-mini opts out via ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE=false,
+        # same pattern as every other multiplier shipped tonight.
+        regime_override = (config.QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME
+                            if config.ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE else None)
+        self.fill_sim = FillSimulator(queue_safety_factor=queue_safety_factor,
+                                       queue_safety_factor_by_regime=regime_override)
         self.ledger = Ledger.load()
         # Seed order_id past every id this ledger has ever settled --
         # otherwise a fresh restart's own order_id range (which always

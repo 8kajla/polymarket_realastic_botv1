@@ -141,17 +141,28 @@ class FillSimulator:
       - manage_open_orders() every tick to handle drift-reprice and expiry
     """
 
-    def __init__(self, queue_safety_factor: float = config.QUEUE_SAFETY_FACTOR):
+    def __init__(self, queue_safety_factor: float = config.QUEUE_SAFETY_FACTOR,
+                 queue_safety_factor_by_regime: Optional[dict] = None):
         self.queue_safety_factor = queue_safety_factor
+        # ADDED 2026-09-11: optional per-regime override -- see
+        # config.QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME's docstring.
+        # Defaults to None (every existing call site -- CLI, tests, every
+        # PaperBot() construction before tonight -- keeps behaving exactly
+        # as before: one flat factor for every regime).
+        self.queue_safety_factor_by_regime = queue_safety_factor_by_regime or {}
         self.orders: dict[int, SimulatedOrder] = {}
+
+    def _queue_safety_factor_for(self, regime: str) -> float:
+        return self.queue_safety_factor_by_regime.get(regime, self.queue_safety_factor)
 
     # -- placement -------------------------------------------------------
 
     def place_order(self, intent: OrderIntent, book: BookState,
                      now: Optional[float] = None) -> SimulatedOrder:
         now = now if now is not None else time.time()
+        factor = self._queue_safety_factor_for(intent.regime)
         raw_queue = book.depth_shares_at_or_better("bid", intent.price)
-        discounted_queue = raw_queue * self.queue_safety_factor
+        discounted_queue = raw_queue * factor
 
         order = SimulatedOrder(
             order_id=next(_order_id_counter),
@@ -177,7 +188,7 @@ class FillSimulator:
             "floor_lot=%s hedge=%s scout=%s queue_ahead_raw=%.4f queue_ahead_discounted=%.4f (factor=%.3f)",
             order.order_id, order.asset, order.regime, order.position_tier, order.side,
             order.price, order.original_size, order.is_floor_lot, order.is_hedge, order.is_scout,
-            raw_queue, discounted_queue, self.queue_safety_factor,
+            raw_queue, discounted_queue, factor,
         )
         return order
 
@@ -358,7 +369,7 @@ class FillSimulator:
         new_raw_queue = book.depth_shares_at_or_better("bid", book.best_bid)
         order.price = book.best_bid
         order.queue_ahead_raw = new_raw_queue
-        order.queue_ahead_discounted = new_raw_queue * self.queue_safety_factor
+        order.queue_ahead_discounted = new_raw_queue * self._queue_safety_factor_for(order.regime)
         order.reprice_count += 1
         order.placed_at = now  # time-to-fill measured from the latest resting price
         order.first_fill_at = None

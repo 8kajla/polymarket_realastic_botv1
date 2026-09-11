@@ -82,6 +82,74 @@ class TestQueueSafetyFactorDiscount:
         assert order.status == OrderStatus.PENDING
 
 
+class TestPerRegimeQueueSafetyFactorOverride:
+    """queue_safety_factor_by_regime, added 2026-09-11 -- see
+    config.QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME's docstring for why:
+    HIGH regime expires unfilled at ~9x CORE's rate (49.4% vs 5.5%,
+    measured live), with the two alternative fixes (enter earlier, quote
+    more aggressively) both ruled out by real data. Backward compatibility
+    (no override passed -- every pre-existing call site) is the most
+    important property here: it must reproduce the flat-factor behavior
+    exactly."""
+
+    def test_no_override_behaves_identically_to_the_flat_factor(self):
+        # The default (queue_safety_factor_by_regime=None) must be a
+        # complete no-op -- every regime uses the single base factor,
+        # exactly like before this feature existed.
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        for regime in ("CHEAP", "MID", "CORE", "HIGH"):
+            order = sim.place_order(make_intent(price=0.20, regime=regime), book, now=0.0)
+            assert order.queue_ahead_discounted == pytest.approx(25.0)
+
+    def test_override_applies_only_to_the_specified_regimes(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
+        sim = FillSimulator(queue_safety_factor=0.25,
+                             queue_safety_factor_by_regime={"CHEAP": 0.10, "HIGH": 0.10})
+        cheap_order = sim.place_order(make_intent(price=0.20, regime="CHEAP"), book, now=0.0)
+        high_order = sim.place_order(make_intent(price=0.20, regime="HIGH"), book, now=0.0)
+        mid_order = sim.place_order(make_intent(price=0.20, regime="MID"), book, now=0.0)
+        core_order = sim.place_order(make_intent(price=0.20, regime="CORE"), book, now=0.0)
+
+        assert cheap_order.queue_ahead_discounted == pytest.approx(10.0)  # 100 * 0.10
+        assert high_order.queue_ahead_discounted == pytest.approx(10.0)
+        assert mid_order.queue_ahead_discounted == pytest.approx(25.0)   # unaffected, base factor
+        assert core_order.queue_ahead_discounted == pytest.approx(25.0)  # unaffected, base factor
+
+    def test_override_lowers_effective_queue_ahead_raising_fill_likelihood(self):
+        # The whole point: a smaller discounted queue means less trade
+        # volume is needed before the order starts filling.
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
+        sim_flat = FillSimulator(queue_safety_factor=0.25)
+        sim_override = FillSimulator(queue_safety_factor=0.25,
+                                      queue_safety_factor_by_regime={"HIGH": 0.10})
+        order_flat = sim_flat.place_order(make_intent(price=0.20, regime="HIGH"), book, now=0.0)
+        order_override = sim_override.place_order(make_intent(price=0.20, regime="HIGH"), book, now=0.0)
+        assert order_override.queue_ahead_discounted < order_flat.queue_ahead_discounted
+
+    def test_reprice_uses_the_same_per_regime_factor(self):
+        book = make_book(best_bid=0.90, bid_depth_at_best=100.0, best_ask=0.92, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=0.25,
+                             queue_safety_factor_by_regime={"HIGH": 0.10})
+        order = sim.place_order(make_intent(price=0.90, regime="HIGH"), book, now=0.0)
+        assert order.queue_ahead_discounted == pytest.approx(10.0)
+
+        # drift the book (still within HIGH, beyond DRIFT_REPRICE_TICKS*tick_size=0.03)
+        # and force a reprice
+        book.apply_snapshot(bids=[(0.95, 200.0)], asks=[(0.97, 100.0)])
+        seconds_remaining = {"cond-1": 1000}
+        sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=1.0)
+
+        assert order.price == pytest.approx(0.95)
+        assert order.queue_ahead_discounted == pytest.approx(20.0)  # 200 * 0.10, not 200 * 0.25
+
+    def test_empty_override_dict_is_also_a_full_noop(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
+        sim = FillSimulator(queue_safety_factor=0.25, queue_safety_factor_by_regime={})
+        order = sim.place_order(make_intent(price=0.20, regime="HIGH"), book, now=0.0)
+        assert order.queue_ahead_discounted == pytest.approx(25.0)
+
+
 class TestTradePrintSideFiltering:
     """Code-review fix (2026-09-10): on_trade_print used to have no
     trade.side check at all -- only trade.price <= o.price. This bot only
