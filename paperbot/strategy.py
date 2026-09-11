@@ -122,13 +122,25 @@ class OrderIntent:
 
 
 def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
-                 held_side_price: Optional[float] = None) -> str:
+                 held_side_price: Optional[float] = None,
+                 previous_market_first_side: Optional[str] = None) -> str:
     """If the market already has an established side, keep it with
     probability side_persistence_for(asset, regime of the currently-held
-    side); otherwise flip. If this is the first entry in the market,
-    there's no historical parameter for the *initial* side (only
-    persistence of subsequent entries was measured), so we pick uniformly
-    at random -- a documented simplification.
+    side); otherwise flip.
+
+    If this is the first entry in the market: CHANGED 2026-09-11 (was:
+    uniform random, a documented simplification -- "there's no historical
+    parameter for the *initial* side"). Real, cross-asset-generalizing,
+    confound-checked finding that a market's first entry isn't actually
+    independent of the PREVIOUS market's first entry -- see
+    bc.cross_market_side_persistence's docstring for the full derivation
+    (Wald-Wolfowitz runs test, z=-12.75 pooled; per-asset conditional
+    probabilities 52.65%-55.38%; confirmed NOT explained by real spot
+    momentum, which runs the opposite direction). `previous_market_first_side`
+    is Optional (default None -> falls back to the old uniform-random
+    behavior exactly) so every existing call site keeps working unchanged;
+    the caller (build_order_intent) is responsible for tracking and
+    passing in the prior market's first side per asset.
 
     Regime-dependent since 2026-09-08 (see behavior_config.SIDE_PERSISTENCE's
     docstring): keyed by the CURRENTLY-HELD side's regime specifically,
@@ -143,6 +155,11 @@ def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
     that would understate the trader's strong observed persistence in
     every regime."""
     if activity.last_side is None:
+        if previous_market_first_side is not None:
+            persistence = bc.cross_market_side_persistence(asset)
+            if rng.random() < persistence:
+                return previous_market_first_side
+            return "Down" if previous_market_first_side == "Up" else "Up"
         return rng.choice(["Up", "Down"])
     held_regime = bc.classify_regime(held_side_price) if held_side_price is not None else "CHEAP"
     persistence = bc.side_persistence_for(asset, held_regime)
@@ -357,7 +374,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                         activity: MarketActivityState, rng: random.Random,
                         recent_price_delta: Optional[float] = None,
                         now: Optional[float] = None,
-                        hours_since_resumption: Optional[float] = None) -> Optional[OrderIntent]:
+                        hours_since_resumption: Optional[float] = None,
+                        previous_market_first_side: Optional[str] = None) -> Optional[OrderIntent]:
     """
     Runs the full per-market pipeline (steps 1-6 of Part 5) and returns an
     OrderIntent, or None if this market isn't tradeable right now. Does NOT
@@ -422,7 +440,10 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         elif activity.last_side == "Down":
             held_book = down_book
         held_side_price = held_book.best_bid if held_book is not None else None
-        side = decide_side(market.asset, activity, rng, held_side_price=held_side_price)
+        side = decide_side(
+            market.asset, activity, rng, held_side_price=held_side_price,
+            previous_market_first_side=(previous_market_first_side
+                                         if config.ENABLE_CROSS_MARKET_SIDE_PERSISTENCE else None))
     side_book = up_book if side == "Up" else down_book
 
     price = side_book.best_bid

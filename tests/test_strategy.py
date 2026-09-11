@@ -134,6 +134,73 @@ class TestSidePersistence:
         assert side in ("Up", "Down")
 
 
+class TestCrossMarketFirstEntrySidePersistence:
+    """decide_side's cross-market wiring, added 2026-09-11 -- see
+    TestCrossMarketSidePersistence for the multiplier function itself in
+    isolation; these confirm decide_side actually applies it, ONLY at the
+    market's first entry (activity.last_side is None), and defaults to the
+    old uniform-random behavior when no previous side is known."""
+
+    def test_no_previous_side_falls_back_to_uniform_random(self):
+        rng = random.Random(0)
+        activity = MarketActivityState()
+        side = decide_side("Bitcoin", activity, rng, previous_market_first_side=None)
+        assert side in ("Up", "Down")
+
+    def test_biases_toward_the_previous_markets_first_side(self):
+        rng = random.Random(3)
+        activity = MarketActivityState()  # no last_side -- this IS the first entry
+        same_count = sum(
+            1 for _ in range(3000)
+            if decide_side("Bitcoin", activity, rng, previous_market_first_side="Up") == "Up"
+        )
+        observed = same_count / 3000
+        expected = bc.cross_market_side_persistence("Bitcoin")
+        assert abs(observed - expected) < 0.03
+
+    def test_symmetric_for_the_opposite_previous_side(self):
+        rng = random.Random(4)
+        activity = MarketActivityState()
+        same_count = sum(
+            1 for _ in range(3000)
+            if decide_side("Bitcoin", activity, rng, previous_market_first_side="Down") == "Down"
+        )
+        observed = same_count / 3000
+        expected = bc.cross_market_side_persistence("Bitcoin")
+        assert abs(observed - expected) < 0.03
+
+    def test_does_not_apply_once_the_market_already_has_an_established_side(self):
+        # Scoping check: previous_market_first_side must only affect the
+        # FIRST entry -- once activity.last_side is set, ordinary
+        # SIDE_PERSISTENCE governs, unaffected by this parameter.
+        activity = MarketActivityState(last_side="Up")
+        rng_with = random.Random(5)
+        rng_without = random.Random(5)
+        n = 500
+        with_prev = sum(
+            1 for _ in range(n)
+            if decide_side("Bitcoin", activity, rng_with, held_side_price=0.10,
+                            previous_market_first_side="Down") == "Up"
+        )
+        without_prev = sum(
+            1 for _ in range(n)
+            if decide_side("Bitcoin", activity, rng_without, held_side_price=0.10,
+                            previous_market_first_side=None) == "Up"
+        )
+        assert with_prev == without_prev
+
+    def test_unlisted_asset_is_still_a_fifty_fifty_split_not_a_crash(self):
+        # BNB isn't in CROSS_MARKET_SIDE_PERSISTENCE -> 0.5, a no-op.
+        rng = random.Random(6)
+        activity = MarketActivityState()
+        same_count = sum(
+            1 for _ in range(2000)
+            if decide_side("BNB", activity, rng, previous_market_first_side="Up") == "Up"
+        )
+        observed = same_count / 2000
+        assert abs(observed - 0.5) < 0.03
+
+
 class TestSizingDecision:
     def test_bitcoin_never_rolls_floor_lot(self):
         rng = random.Random(1)
@@ -345,7 +412,8 @@ class TestBuildOrderIntent:
         activity = MarketActivityState()
 
         monkeypatch.setattr(stratmod, "decide_side",
-                             lambda asset, activity, rng, held_side_price=None: "Down")
+                             lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None: "Down")
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
@@ -1273,6 +1341,54 @@ class TestBuildOrderIntentHedge:
         build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
         assert captured["dominant_current_price"] is None
+
+    def test_passes_previous_market_first_side_through_to_decide_side(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.72, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()  # no entries yet -- this is the first entry
+        monkeypatch.setattr(stratmod, "decide_hedge",
+                             lambda asset, activity, rng, liquidity=None, is_weekend=None,
+                             dominant_current_price=None: None)
+
+        captured = {}
+
+        def spy_decide_side(asset, activity, rng, held_side_price=None, previous_market_first_side=None):
+            captured["previous_market_first_side"] = previous_market_first_side
+            return "Up"
+
+        monkeypatch.setattr(stratmod, "decide_side", spy_decide_side)
+
+        build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0,
+                            previous_market_first_side="Down")
+
+        assert captured["previous_market_first_side"] == "Down"
+
+    def test_respects_the_per_instance_feature_flag(self, monkeypatch):
+        # Explicit instruction: paperbot-mini stays on the OLD (uniform
+        # random) behavior via ENABLE_CROSS_MARKET_SIDE_PERSISTENCE=false.
+        monkeypatch.setattr(config, "ENABLE_CROSS_MARKET_SIDE_PERSISTENCE", False)
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.72, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+        monkeypatch.setattr(stratmod, "decide_hedge",
+                             lambda asset, activity, rng, liquidity=None, is_weekend=None,
+                             dominant_current_price=None: None)
+
+        captured = {}
+
+        def spy_decide_side(asset, activity, rng, held_side_price=None, previous_market_first_side=None):
+            captured["previous_market_first_side"] = previous_market_first_side
+            return "Up"
+
+        monkeypatch.setattr(stratmod, "decide_side", spy_decide_side)
+
+        build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0,
+                            previous_market_first_side="Down")
+
+        assert captured["previous_market_first_side"] is None, \
+            "with the flag off, previous_market_first_side must never reach decide_side"
 
 
 class TestBuildOrderIntentScout:

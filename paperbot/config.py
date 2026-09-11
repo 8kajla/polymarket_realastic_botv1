@@ -130,6 +130,27 @@ PNL_SUMMARY_INTERVAL_SECONDS = 300
 MIN_SECONDS_BEFORE_CLOSE = 75
 
 # ---------------------------------------------------------------------------
+# Main loop tick interval. Added as a real config knob 2026-09-11 --
+# previously a hardcoded default (2.0) buried in run_forever()'s own
+# signature, never actually verified against his real execution cadence.
+#
+# Reverse-engineered from his real trade inter-arrival gaps (n=479,411
+# gaps, BTC+ETH+SOL pooled): every single multiple of 3 seconds from 6s
+# to 57s shows a massive, consistent excess over its local neighbors
+# (+85% to +129%, mean +104.2%), while every non-multiple shows a
+# consistent deficit (mean -34.3%) -- a clean, decisive periodicity
+# signature, not noise. Confirmed independently per-asset (BTC +94.6%,
+# ETH +92.8%, SOL +96.6% mean excess at multiples of 3 -- near-identical
+# magnitude across all three, consistent with ONE shared execution loop
+# evaluating all three assets together each cycle, not three
+# coincidentally-matching independent loops -- the same architecture this
+# bot's own run_forever already uses, just at the wrong period).
+#
+# His real cadence is 3 seconds. This bot's default was 2 seconds --
+# a real, structural mismatch in decision timing, not a calibration gap.
+TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "3.0"))
+
+# ---------------------------------------------------------------------------
 # Availability / liquidity sanity check -- deliberately SIMPLE and UNIFORM
 # across all regime bands. An earlier version of a similar bot scaled these
 # thresholds up with price band and it starved CORE/HIGH almost entirely;
@@ -451,6 +472,14 @@ ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER = os.environ.get(
 # (the $100 control instance).
 ENABLE_ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER = os.environ.get(
     "ENABLE_ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for CROSS_MARKET_SIDE_PERSISTENCE (see its docstring in
+# behavior_config.py). Added 2026-09-11 -- default TRUE everywhere,
+# explicit FALSE for paperbot-mini (the $100 control instance).
+ENABLE_CROSS_MARKET_SIDE_PERSISTENCE = os.environ.get(
+    "ENABLE_CROSS_MARKET_SIDE_PERSISTENCE", "true"
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------

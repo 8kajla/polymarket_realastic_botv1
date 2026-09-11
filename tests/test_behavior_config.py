@@ -144,6 +144,29 @@ class TestSidePersistence:
             bc.side_persistence_for("Bitcoin", "NOT_A_REGIME")
 
 
+class TestCrossMarketSidePersistence:
+    """Cross-market first-entry side persistence, added 2026-09-11 -- real,
+    cross-asset-generalizing (BTC 55.38%/z=12.88, ETH 52.65%/z=6.13, SOL
+    54.29%/z=9.87), confound-checked (real BTC spot momentum runs the
+    OPPOSITE direction, z=+3.01, ruling out 'just tracking a real trend'
+    as the mechanism). Closes decide_side's own documented gap for a
+    market's first entry (previously uniform random)."""
+
+    def test_neutral_for_assets_not_in_the_table(self):
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            assert bc.cross_market_side_persistence(asset) == 0.5
+
+    def test_exact_values_for_the_three_calibrated_assets(self):
+        assert bc.cross_market_side_persistence("Bitcoin") == 0.5538
+        assert bc.cross_market_side_persistence("Ethereum") == 0.5265
+        assert bc.cross_market_side_persistence("Solana") == 0.5429
+
+    def test_all_calibrated_values_are_above_fifty_fifty(self):
+        # The whole finding: persistence, not indifference.
+        for asset, p in bc.CROSS_MARKET_SIDE_PERSISTENCE.items():
+            assert 0.5 < p < 1.0, f"{asset} value {p} should be a real persistence above 50%"
+
+
 class TestFloorLotProbability:
     def test_bitcoin_is_negligible_everywhere(self):
         for regime in bc.REGIME_NAMES:

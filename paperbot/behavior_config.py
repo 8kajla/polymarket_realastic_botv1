@@ -646,6 +646,49 @@ def side_persistence_for(asset: str, held_side_regime: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# CROSS-MARKET first-entry side persistence. Added 2026-09-11: real,
+# cross-asset-generalizing finding that a market's FIRST entry side isn't
+# actually independent of the PREVIOUS market's first entry side, closing
+# a documented gap in strategy.decide_side (previously: "there's no
+# historical parameter for the *initial* side... so we pick uniformly at
+# random -- a documented simplification").
+#
+# Found via a Wald-Wolfowitz runs test on the real chronological sequence
+# of first-entry sides (one per market): observed far FEWER runs
+# (alternations) than random chance predicts -- z=-12.75 (BTC, n=14,349
+# markets) on the pooled sequence. Confirmed per-asset and per-asset
+# CAUSALLY CLEAN: measured directly as P(this market's first side ==
+# previous market's first side), restricted to genuinely-consecutive
+# market pairs (gap <=1h, so a long silence never bridges two unrelated
+# eras):
+#   Bitcoin:  55.38% (n=14,300 consecutive pairs, z=12.88 vs 50%)
+#   Ethereum: 52.65% (n=13,383, z=6.13)
+#   Solana:   54.29% (n=13,212, z=9.87)
+# All three comfortably clear this file's own |z|>=2.58 bar.
+#
+# CONFOUND CHECKED, not assumed: real BTC spot price direction across the
+# same consecutive 5-min windows shows the OPPOSITE pattern (z=+3.01,
+# MORE runs than random -- i.e. real spot is mildly anti-persistent/
+# mean-reverting across windows, not trending). His side-choice
+# persistence is NOT explained by, and actually runs against, what real
+# market momentum would predict -- ruling out "he's just correctly
+# tracking a real trend" as the mechanism. This is a genuine behavioral
+# signature of the decision process itself.
+CROSS_MARKET_SIDE_PERSISTENCE = {
+    "Bitcoin": 0.5538,
+    "Ethereum": 0.5265,
+    "Solana": 0.5429,
+}
+
+
+def cross_market_side_persistence(asset: str) -> float:
+    """P(this market's first entry matches the previous market's first
+    entry side). 0.5 (no-op, matches the old uniform-random behavior) for
+    any asset not in CROSS_MARKET_SIDE_PERSISTENCE."""
+    return CROSS_MARKET_SIDE_PERSISTENCE.get(asset, 0.5)
+
+
+# ---------------------------------------------------------------------------
 # Dual-sided "hedge" behavior. Confirmed from the full historical dataset
 # (see deep_analysis.py / deep_analysis_output.json and hedge_calibration.py
 # in the repo): when the trader's early second entry into a market lands on

@@ -103,6 +103,16 @@ class PaperBot:
         self.halted_conditions: set[str] = set()
         self.pending_resolution: dict[str, Market] = {}
         self.last_price_by_token: dict[str, float] = {}
+        # ADDED 2026-09-11: per-asset tracker for CROSS_MARKET_SIDE_PERSISTENCE
+        # (see its docstring in behavior_config.py) -- the side chosen on
+        # the MOST RECENT market's first entry, per asset, so the NEXT
+        # market's first entry can be biased toward it instead of picking
+        # uniformly at random. In-memory only (like every other per-run
+        # tracker here) -- resets on restart, matching the "consecutive
+        # market pairs" scope the real finding was measured on (a restart
+        # is exactly the kind of discontinuity that finding excluded via
+        # its own gap<=1h filter).
+        self.last_first_entry_side_by_asset: dict[str, str] = {}
         self._resolution_last_attempt: dict[str, float] = {}
         self._resolution_failure_count: dict[str, int] = {}
         self._resolution_first_seen: dict[str, float] = {}
@@ -291,10 +301,13 @@ class PaperBot:
         activity = self.activity[market.condition_id]
         delta = self._recent_price_delta(market.token_id_up, up_book.best_bid)
         hours_since_resumption = self._hours_since_resumption(now)
+        is_first_entry = activity.entry_count == 0  # captured BEFORE record_entry increments it
 
-        intent = build_order_intent(market, up_book, down_book, activity, self.rng,
-                                     recent_price_delta=delta, now=now,
-                                     hours_since_resumption=hours_since_resumption)
+        intent = build_order_intent(
+            market, up_book, down_book, activity, self.rng,
+            recent_price_delta=delta, now=now,
+            hours_since_resumption=hours_since_resumption,
+            previous_market_first_side=self.last_first_entry_side_by_asset.get(market.asset))
         if intent is None:
             return
 
@@ -329,6 +342,10 @@ class PaperBot:
         self.resting_order_ids.setdefault(market.condition_id, set()).add(order.order_id)
         activity.record_entry(intent.side, intent.notional_usd, intent.regime, is_hedge=intent.is_hedge,
                                price=intent.price)
+        if is_first_entry:
+            # Feeds the NEXT market's first-entry decision -- see
+            # CROSS_MARKET_SIDE_PERSISTENCE's docstring in behavior_config.py.
+            self.last_first_entry_side_by_asset[market.asset] = intent.side
         self._record_global_trade(now)
 
     def available_cash(self) -> float | None:
@@ -704,7 +721,7 @@ class PaperBot:
 
     # -- main loop -----------------------------------------------------
 
-    async def run_forever(self, tick_seconds: float = 2.0) -> None:
+    async def run_forever(self, tick_seconds: float = config.TICK_SECONDS) -> None:
         """
         Runs until asked to stop via SIGTERM/SIGINT (both handled the same
         way here, since Railway -- and most container platforms -- send

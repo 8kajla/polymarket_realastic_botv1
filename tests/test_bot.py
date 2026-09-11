@@ -98,6 +98,54 @@ class TestRegimeQueueSafetyFactorWiring:
         assert bot.fill_sim.queue_safety_factor_by_regime == {}
 
 
+class TestCrossMarketSideTracking:
+    """PaperBot.last_first_entry_side_by_asset, added 2026-09-11 -- see
+    CROSS_MARKET_SIDE_PERSISTENCE's docstring in behavior_config.py. The
+    STATISTICAL bias itself is covered at the strategy.py/decide_side
+    level; this confirms the bot-level state tracking that feeds it: the
+    tracker updates on a market's first entry, and a SECOND, later
+    market's evaluation actually receives it."""
+
+    def test_tracker_is_empty_before_any_entry(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        assert bot.last_first_entry_side_by_asset == {}
+
+    def test_tracker_records_the_first_entrys_side(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_market_for_asset("Bitcoin", condition_id="cond-1")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        assert bot.activity[market.condition_id].entry_count == 1
+        assert "Bitcoin" in bot.last_first_entry_side_by_asset
+        assert bot.last_first_entry_side_by_asset["Bitcoin"] == bot.activity[market.condition_id].last_side
+
+    def test_a_second_markets_first_entry_receives_the_tracked_side(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market1 = make_market_for_asset("Bitcoin", condition_id="cond-1")
+        wire_market(bot, market1, bid=0.20, ask=0.21, depth=200.0)
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        tracked_side = bot.last_first_entry_side_by_asset["Bitcoin"]
+
+        captured = {}
+
+        def spy_decide_side(asset, activity, rng, held_side_price=None, previous_market_first_side=None):
+            captured["previous_market_first_side"] = previous_market_first_side
+            return "Up"
+
+        monkeypatch.setattr(stratmod, "decide_side", spy_decide_side)
+        monkeypatch.setattr(stratmod, "decide_hedge",
+                             lambda asset, activity, rng, liquidity=None, is_weekend=None,
+                             dominant_current_price=None: None)
+
+        market2 = make_market_for_asset("Bitcoin", condition_id="cond-2", end_time=3000.0)
+        wire_market(bot, market2, bid=0.30, ask=0.31, depth=200.0)
+        asyncio.run(bot.strategy_tick(now=2000.0))
+
+        assert captured["previous_market_first_side"] == tracked_side
+
+
 class TestHedgeLegEndToEnd:
     """Full-pipeline test: a market's second entry becomes a deliberately-
     sized hedge leg on the opposite side, wired through decide_hedge ->
@@ -1205,3 +1253,21 @@ class TestSizeScaleFactor:
         notional, is_floor_lot = stratmod.decide_size("BNB", "CHEAP", "first", 0.10, rng)
         assert is_floor_lot is True
         assert notional == pytest.approx(config.FLOOR_LOT_SIZE_SHARES * 0.10)
+
+
+class TestTickSeconds:
+    """config.TICK_SECONDS (2026-09-11): reverse-engineered from real
+    trade inter-arrival gaps -- his execution cadence is a confirmed 3s
+    loop (every multiple of 3s from 6-57s shows a consistent +104.2% mean
+    excess over local neighbors, vs -34.3% for non-multiples; confirmed
+    independently per-asset, near-identical magnitude across BTC/ETH/SOL,
+    consistent with one shared loop). run_forever's old hardcoded default
+    was 2.0 -- a real cadence mismatch, not a calibration gap."""
+
+    def test_default_is_three_seconds_not_the_old_two(self):
+        assert config.TICK_SECONDS == 3.0
+
+    def test_run_forever_picks_up_the_config_default(self):
+        import inspect
+        sig = inspect.signature(PaperBot.run_forever)
+        assert sig.parameters["tick_seconds"].default == config.TICK_SECONDS
