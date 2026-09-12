@@ -60,6 +60,15 @@ class BookState:
     last_update_ts: float = 0.0
     # Trades not yet drained by the fill simulator.
     pending_trades: list = field(default_factory=list)
+    # ADDED 2026-09-12 (bug audit #6): set by _reconcile_best when a
+    # price_change message asserts a best_bid/best_ask we have no matching
+    # level for (a missed earlier update) -- see _reconcile_best's own
+    # docstring. bot.py polls this flag and triggers an on-demand REST
+    # /book re-fetch (apply_snapshot) to self-heal within one tick instead
+    # of leaving best_bid/best_ask silently stale until the exchange
+    # happens to push its own fresh snapshot. Cleared by apply_snapshot
+    # itself, since a fresh full snapshot always resolves any staleness.
+    needs_resync: bool = False
 
     @property
     def best_bid(self) -> Optional[float]:
@@ -132,6 +141,9 @@ class BookState:
         self.asks = sorted((lvl for lvl in (_extract_level(l) for l in asks) if lvl[1] > 0),
                             key=lambda x: x[0])
         self.last_update_ts = ts if ts is not None else time.time()
+        # A full snapshot always resolves any staleness _reconcile_best
+        # flagged -- see needs_resync's docstring.
+        self.needs_resync = False
 
     def apply_price_change(self, price: float, size: float, side: str,
                             best_bid: Optional[float] = None,
@@ -157,12 +169,21 @@ class BookState:
 
     def _reconcile_best(self, best_bid, best_ask) -> None:
         # If the message asserts a best price we don't have a matching
-        # level for (e.g. we missed an earlier update), insert a synthetic
-        # level so best_bid/best_ask stay correct until the next snapshot.
-        if best_bid is not None and (not self.bids or self.bids[0][0] != float(best_bid)):
-            pass  # don't fabricate size; rely on next full snapshot to correct depth
-        if best_ask is not None and (not self.asks or self.asks[0][0] != float(best_ask)):
-            pass
+        # level for (e.g. we missed an earlier update), don't fabricate a
+        # sizeless level to paper over it -- that would corrupt queue-
+        # position/fill simulation with a fictitious depth number. Instead
+        # (FIXED 2026-09-12, bug audit #6): flag needs_resync so bot.py can
+        # trigger a real REST /book re-fetch and self-heal within one tick.
+        # Previously this branch was a bare `pass` -- a real mismatch had
+        # no bounded correction path at all until the exchange happened to
+        # push its own fresh "book" snapshot, which is neither guaranteed
+        # nor frequent by anything documented in this codebase.
+        mismatch = (
+            (best_bid is not None and (not self.bids or self.bids[0][0] != float(best_bid)))
+            or (best_ask is not None and (not self.asks or self.asks[0][0] != float(best_ask)))
+        )
+        if mismatch:
+            self.needs_resync = True
 
     def apply_last_trade_price(self, price: float, size: float, side: str,
                                 ts: Optional[float] = None) -> None:

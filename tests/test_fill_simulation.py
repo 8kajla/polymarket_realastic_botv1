@@ -18,12 +18,12 @@ def make_book(best_bid=0.20, bid_depth_at_best=100.0, extra_bid_levels=None,
 
 def make_intent(price=0.20, size_shares=10.0, regime="CHEAP", position_tier="first",
                  asset="Bitcoin", is_floor_lot=False, condition_id="cond-1",
-                 token_id="tok-up", side="Up"):
+                 token_id="tok-up", side="Up", is_hedge=False, is_scout=False):
     return OrderIntent(
         condition_id=condition_id, token_id=token_id, asset=asset, side=side,
         regime=regime, position_tier=position_tier, price=price,
         size_shares=size_shares, notional_usd=price * size_shares,
-        is_floor_lot=is_floor_lot,
+        is_floor_lot=is_floor_lot, is_hedge=is_hedge, is_scout=is_scout,
     )
 
 
@@ -491,6 +491,48 @@ class TestCheapRepriceCap:
         )
         assert order.filled_size == pytest.approx(2.0)
         assert order.cancelled_remainder is True
+
+    def test_hedge_is_never_cancelled_by_the_cheap_reprice_cap(self):
+        """FIXED 2026-09-12 (bug audit #3): the real-data finding behind
+        this cap was measured explicitly excluding hedges and scouts (not
+        directional edge bets) -- a CHEAP-band hedge must keep chasing
+        indefinitely, same as a non-CHEAP order, never cancel for this
+        reason. Exactly the scenario ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER
+        deliberately sizes UP (near the CHEAP extreme)."""
+        book = make_book(best_bid=0.20, bid_depth_at_best=50.0, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(
+            make_intent(price=0.20, size_shares=5.0, regime="CHEAP", is_hedge=True),
+            book, now=0.0,
+        )
+        seconds_remaining = {"cond-1": 1000}
+
+        prices = [0.24, 0.20, 0.24, 0.20]
+        for i, p in enumerate(prices):
+            book.apply_snapshot(bids=[(p, 20.0)], asks=[(p + 0.02, 20.0)])
+            sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=float(10 * (i + 1)))
+
+        assert order.reprice_count == 4, "a CHEAP hedge must keep chasing past the cap, never cancel for this reason"
+        assert order.status == OrderStatus.PENDING
+
+    def test_scout_is_never_cancelled_by_the_cheap_reprice_cap(self):
+        """Same fix as the hedge case above -- scouts were also explicitly
+        excluded from the real-data finding this cap was calibrated on."""
+        book = make_book(best_bid=0.20, bid_depth_at_best=50.0, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(
+            make_intent(price=0.20, size_shares=5.0, regime="CHEAP", is_scout=True),
+            book, now=0.0,
+        )
+        seconds_remaining = {"cond-1": 1000}
+
+        prices = [0.24, 0.20, 0.24, 0.20]
+        for i, p in enumerate(prices):
+            book.apply_snapshot(bids=[(p, 20.0)], asks=[(p + 0.02, 20.0)])
+            sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=float(10 * (i + 1)))
+
+        assert order.reprice_count == 4, "a CHEAP scout must keep chasing past the cap, never cancel for this reason"
+        assert order.status == OrderStatus.PENDING
 
 
 class TestPostOnlyNeverCrossesSpread:

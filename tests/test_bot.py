@@ -161,11 +161,13 @@ class TestCrossMarketFeedbackTracking:
         wire_market(bot, market)
         activity = bot.activity[market.condition_id]
         activity.record_entry("Up", notional_usd=10.0, regime="MID", price=0.5)
+        activity.record_real_fill(is_hedge=False)
         activity.record_entry("Down", notional_usd=2.0, regime="MID", is_hedge=True, price=0.5)
+        activity.record_real_fill(is_hedge=True)
 
         asyncio.run(bot._retire_market(market))
 
-        assert bot.last_hedge_rate_by_asset["Bitcoin"] == pytest.approx(0.5)  # 1 hedge / 2 entries
+        assert bot.last_hedge_rate_by_asset["Bitcoin"] == pytest.approx(0.5)  # 1 hedge / 2 real fills
         snap = bot._retired_activity_snapshot[market.condition_id]
         assert snap == {"asset": "Bitcoin", "first_entry_side": "Up", "dominant_side": "Up"}
         assert market.condition_id not in bot.activity
@@ -436,6 +438,98 @@ class TestOpenOrderCapPerMarketPolicy:
         asyncio.run(bot.strategy_tick(now=1001.0))
         assert bot.resting_order_ids[market.condition_id] == {first_order_id}
 
+    def test_a_hedge_places_even_at_the_cap_ordinary_entries_do_not(self, monkeypatch):
+        """FIXED 2026-09-12 (bug audit #2): the cap used to be checked
+        BEFORE decide_hedge ever ran, so a market already at capacity --
+        exactly when a hedge is most likely needed -- silently blocked the
+        entire hedge subsystem with no reserved capacity. Now the cap only
+        ever blocks non-hedge placements; a hedge decide_hedge actually
+        decided to fire must still place regardless of how many ordinary
+        orders are already resting."""
+        monkeypatch.setattr(config, "MAX_OPEN_ORDERS_PER_MARKET", 1)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market)
+
+        # First tick: ordinary first entry, fills the cap (1/1).
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        assert len(bot.resting_order_ids[market.condition_id]) == 1
+
+        # Force every subsequent decision to be a hedge.
+        monkeypatch.setattr(stratmod, "decide_hedge",
+                             lambda asset, activity, rng, **kw: "Down")
+
+        # At the cap already -- an ordinary entry would be blocked, but a
+        # hedge decide_hedge decided on must still place.
+        asyncio.run(bot.strategy_tick(now=1001.0))
+        assert len(bot.resting_order_ids[market.condition_id]) == 2
+
+        # Confirm it's the cap, not the hedge override, doing the blocking
+        # for non-hedge intents: turn the override off again and re-verify
+        # a THIRD (now ordinary-eligible) entry is blocked as before.
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, **kw: None)
+        asyncio.run(bot.strategy_tick(now=1002.0))
+        assert len(bot.resting_order_ids[market.condition_id]) == 2, (
+            "with the hedge override removed, the cap must still block ordinary entries"
+        )
+
+
+class TestBookResyncOnMismatch:
+    """FIXED 2026-09-12 (bug audit #6): BookState._reconcile_best used to
+    be a silent no-op when a price_change message asserted a best_bid/
+    best_ask we had no matching level for -- best_bid/best_ask would stay
+    stale with no bounded correction path. _resync_stale_books polls for
+    the needs_resync flag every tick and triggers an on-demand REST
+    /book re-fetch to self-heal."""
+
+    def test_flagged_book_gets_resynced_and_flag_clears(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        up_book = wire_market(bot, market, bid=0.20, ask=0.21, depth=50.0)
+
+        # Simulate a missed update: assert a best_bid we have no level for.
+        up_book.apply_price_change(price=0.19, size=5, side="BUY", best_bid=0.23, best_ask=0.21)
+        assert up_book.needs_resync is True
+
+        fetch_calls = []
+
+        def fake_fetch(token_id, session=None):
+            fetch_calls.append(token_id)
+            return {"bids": [{"price": "0.23", "size": "12"}],
+                    "asks": [{"price": "0.24", "size": "8"}]}
+
+        monkeypatch.setattr(botmod, "fetch_book_snapshot", fake_fetch)
+        asyncio.run(bot._resync_stale_books())
+
+        assert fetch_calls == [market.token_id_up]
+        assert up_book.needs_resync is False
+        assert up_book.best_bid == 0.23, "the re-fetched snapshot must actually replace the stale book"
+
+    def test_no_flagged_books_makes_no_network_call(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=50.0)
+
+        called = []
+        monkeypatch.setattr(botmod, "fetch_book_snapshot", lambda token_id, session=None: called.append(token_id))
+        asyncio.run(bot._resync_stale_books())
+        assert called == [], "an ordinary tick with nothing flagged must not touch the network at all"
+
+    def test_fetch_failure_leaves_the_flag_set_for_a_retry_next_tick(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        up_book = wire_market(bot, market, bid=0.20, ask=0.21, depth=50.0)
+        up_book.apply_price_change(price=0.19, size=5, side="BUY", best_bid=0.23, best_ask=0.21)
+        assert up_book.needs_resync is True
+
+        def failing_fetch(token_id, session=None):
+            raise requests.exceptions.RequestException("boom")
+
+        monkeypatch.setattr(botmod, "fetch_book_snapshot", failing_fetch)
+        asyncio.run(bot._resync_stale_books())  # must not raise
+
+        assert up_book.needs_resync is True, "a transient failure must not silently drop the retry"
+
 
 class TestRestingOrderIdsClearsOnFillViaTradePrint:
     """Regression test: resting_order_ids must clear when an order fills via
@@ -466,6 +560,100 @@ class TestRestingOrderIdsClearsOnFillViaTradePrint:
         asyncio.run(bot.strategy_tick(now=1002.0))
         assert market.condition_id in bot.resting_order_ids
         assert order_id not in bot.resting_order_ids[market.condition_id]
+
+
+class TestRealFillCountWiring:
+    """FIXED 2026-09-12 (bug audit #5): entry_count/hedge_count increment
+    at PLACEMENT time (identical contamination the 2026-09-09 cost_by_side
+    fix already found and corrected -- see release_unfilled's docstring),
+    but the calibration tables they used to index into (position_tier,
+    hedge_attempt_hazard, HEDGE_CONTINUATION_*) were all built from the
+    trader's real trade log, which only contains FILLS. real_fill_count/
+    real_hedge_fill_count -- only incremented via manage_orders_tick
+    forwarding each order's first real fill to
+    MarketActivityState.record_real_fill -- are what those lookups read
+    now. These confirm the bot-level wiring that keeps them in sync."""
+
+    def test_manage_orders_tick_increments_real_fill_count_once_per_order(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=2)
+        market = make_bitcoin_market()
+        book = wire_market(bot, market, bid=0.20, ask=0.21, depth=50.0)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        order_id = next(iter(bot.resting_order_ids[market.condition_id]))
+        order = bot.fill_sim.orders[order_id]
+        activity = bot.activity[market.condition_id]
+        assert activity.real_fill_count == 0, "no real fill has happened yet"
+
+        needed = order.queue_ahead_discounted + order.original_size
+        book.apply_last_trade_price(price=order.price, size=needed, side="SELL", ts=1001.0)
+        bot.manage_orders_tick(now=1001.0)
+
+        assert order.status.value == "FILLED"
+        assert activity.real_fill_count == 1
+        assert order.real_fill_notified is True
+
+        # A second manage_orders_tick over the same already-filled order
+        # must NOT double-count it.
+        bot.manage_orders_tick(now=1002.0)
+        assert activity.real_fill_count == 1
+
+    def test_partial_fill_only_counts_once_not_per_partial(self):
+        """A single order accumulating MULTIPLE separate partial fills
+        across ticks must still only increment real_fill_count once (the
+        first time it gets ANY fill), not once per partial -- the counter
+        tracks how many DISTINCT entries have filled, not how many fill
+        events occurred."""
+        bot = PaperBot(assets=["Bitcoin"], seed=2)
+        market = make_bitcoin_market()
+        book = wire_market(bot, market, bid=0.20, ask=0.21, depth=50.0)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        order_id = next(iter(bot.resting_order_ids[market.condition_id]))
+        order = bot.fill_sim.orders[order_id]
+        activity = bot.activity[market.condition_id]
+
+        half = order.queue_ahead_discounted + order.original_size / 2
+        book.apply_last_trade_price(price=order.price, size=half, side="SELL", ts=1001.0)
+        bot.manage_orders_tick(now=1001.0)
+        assert order.status.value == "PARTIALLY_FILLED"
+        assert activity.real_fill_count == 1
+
+        # A second partial fill on the SAME order must not increment again.
+        book.apply_last_trade_price(price=order.price, size=order.original_size, side="SELL", ts=1002.0)
+        bot.manage_orders_tick(now=1002.0)
+        assert activity.real_fill_count == 1
+
+    def test_hedge_fill_increments_the_hedge_specific_counter(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=2)
+        market = make_bitcoin_market()
+        book = wire_market(bot, market, bid=0.20, ask=0.21, depth=50.0)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        first_id = next(iter(bot.resting_order_ids[market.condition_id]))
+        first_order = bot.fill_sim.orders[first_id]
+        needed = first_order.queue_ahead_discounted + first_order.original_size
+        book.apply_last_trade_price(price=first_order.price, size=needed, side="SELL", ts=1001.0)
+        bot.manage_orders_tick(now=1001.0)
+        activity = bot.activity[market.condition_id]
+        assert activity.real_fill_count == 1
+        assert activity.real_hedge_fill_count == 0
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, **kw: "Down")
+        asyncio.run(bot.strategy_tick(now=1002.0))
+        hedge_ids = bot.resting_order_ids[market.condition_id] - {first_id}
+        assert hedge_ids, "the forced hedge decision must have placed a second order"
+        hedge_order = bot.fill_sim.orders[next(iter(hedge_ids))]
+        assert hedge_order.is_hedge is True
+
+        down_book = bot.book_states[market.token_id_down]
+        needed_hedge = hedge_order.queue_ahead_discounted + hedge_order.original_size
+        down_book.apply_last_trade_price(price=hedge_order.price, size=needed_hedge, side="SELL", ts=1003.0)
+        bot.manage_orders_tick(now=1003.0)
+
+        assert hedge_order.status.value == "FILLED"
+        assert activity.real_fill_count == 2
+        assert activity.real_hedge_fill_count == 1
 
 
 class TestTimingGateBlocksLateMarkets:

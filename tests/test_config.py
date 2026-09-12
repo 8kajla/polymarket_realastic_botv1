@@ -50,3 +50,29 @@ class TestMakerRebateUsd:
         value regardless of input."""
         for price in (0.01, 0.25, 0.5, 0.75, 0.99):
             assert config.maker_rebate_usd(50.0, price) >= 0.0
+
+
+class TestBugAuditDefaults:
+    """Direct assertions on the specific default-value changes from the
+    2026-09-12 bug audit (BUGS_TO_FIX.md #1, #7) -- catches a future
+    accidental revert of either default separately from the behavioral
+    tests elsewhere that exercise what these values actually DO."""
+
+    def test_max_open_orders_per_market_raised_to_eight(self):
+        """Bug #1: raised from 3 (matched only his real MEDIAN burst
+        size) to 8 (covers his real p90-p95 concurrent-fill intensity)."""
+        assert config.MAX_OPEN_ORDERS_PER_MARKET == 8
+
+    def test_resumption_multiplier_disabled_by_default(self):
+        """Bug #7: the trigger for WHEN to apply this multiplier measured
+        our own bot's incidental trading gaps, not the trader's real
+        activity -- disabled by default until a genuine live feed of his
+        activity could drive it correctly."""
+        assert config.ENABLE_RESUMPTION_SIZE_MULTIPLIER is False
+
+    def test_combined_size_multiplier_cap_exists_and_is_wider_than_individual_caps(self):
+        """Bug #4: a new safety bound on the COMBINED product of decide_
+        size's cross-market/time multipliers, deliberately wider than any
+        single multiplier's own individual cap (~3.0x)."""
+        assert config.COMBINED_SIZE_MULTIPLIER_CAP == pytest.approx(4.0)
+        assert config.COMBINED_SIZE_MULTIPLIER_CAP > 3.0

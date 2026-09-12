@@ -291,7 +291,22 @@ ENABLE_CHEAP_REPRICE_CAP = os.environ.get(
 # measurable from the data this project has. Start small, watch the live
 # entries/market number after deploying, raise later with real evidence
 # rather than guessing straight to the trader's own ceiling.
-MAX_OPEN_ORDERS_PER_MARKET = int(os.environ.get("MAX_OPEN_ORDERS_PER_MARKET", "3"))
+#
+# RAISED 3 -> 8 (2026-09-12, bug audit #1), following that exact
+# instruction with real evidence gathered since: live diagnostic logging
+# (SKIP_OPEN_ORDER_CAP, added the same day) measured 273 skips from
+# hitting this cap vs. only 9 actual trades placed in a ~2.5min sample --
+# a 30:1 ratio, the dominant reason the bot traded far fewer times per
+# market (3.9) than the trader (14.2) in a matched window. A real-data
+# calibration check (max trades landing in any rolling 5-second window,
+# across 74,665 of his real markets) found our old cap of 3 matched only
+# his MEDIAN burst size -- p75=5, p90=7, p95=9, p99=16. 8 sits at the
+# p90-p95 range: covers the large majority of his real concurrent-fill
+# intensity without jumping to the rare extreme tail (16-95, outlier
+# bursts). Same "raise with evidence, don't guess" discipline this
+# constant's own history already established -- re-measure entries/market
+# after this has been live a while and adjust again if still binding hard.
+MAX_OPEN_ORDERS_PER_MARKET = int(os.environ.get("MAX_OPEN_ORDERS_PER_MARKET", "8"))
 
 # ---------------------------------------------------------------------------
 # Floor-lot "probe" tier (see behavior_config.py)
@@ -364,6 +379,26 @@ if BANKROLL_USD is not None:
 # ceiling needs this factor AND a tighter MAX_HEDGE_COUNT_PER_MARKET
 # together, not either alone.
 SIZE_SCALE_FACTOR = float(os.environ.get("SIZE_SCALE_FACTOR", "1.0"))
+
+# ---------------------------------------------------------------------------
+# ADDED 2026-09-12 (bug audit #4): a bound on the COMBINED product of
+# decide_size's cross-market/time multipliers (within_band, momentum,
+# bankroll, ttc, resumption -- everything except jitter/SIZE_SCALE_FACTOR),
+# clamped symmetrically around 1.0 (a combined_signal of X is treated the
+# same as 1/X). Each of those multipliers was fit MARGINALLY, and this
+# same file already flagged (see MAX_ORDER_PCT_OF_EQUITY's own comment
+# just below) that they "can theoretically compound to ~50x in a rare
+# joint-tail case" -- this is the direct fix for that already-acknowledged
+# risk, not a new concern. Deliberately wider than any single multiplier's
+# own individual cap (each ~3.0x): real, uncorrelated effects compounding
+# somewhat is expected and legitimate, this only bounds the worst case of
+# every factor aligning in the same direction simultaneously. A REASONED
+# safety bound, not a data-derived precise answer -- the full joint-
+# distribution validation this deserves (checking his real observed size
+# in cells where multiple conditions fire at once against what the raw
+# product predicts) is a separate, larger analysis not yet done; revisit
+# this value once that's completed.
+COMBINED_SIZE_MULTIPLIER_CAP = float(os.environ.get("COMBINED_SIZE_MULTIPLIER_CAP", "4.0"))
 
 # ---------------------------------------------------------------------------
 # Hard per-order cap, as a fraction of CURRENT EQUITY -- not a fixed dollar
@@ -503,12 +538,31 @@ ENABLE_HEDGE_LIQUIDITY_MULTIPLIER = os.environ.get(
 
 # ---------------------------------------------------------------------------
 # Feature flag for RESUMPTION_SIZE_MULTIPLIER (see its docstring in
-# behavior_config.py). Added 2026-09-10, same night, same pattern and
-# reasoning as ENABLE_TTC_SIZE_MULTIPLIER/ENABLE_HEDGE_LIQUIDITY_MULTIPLIER
-# above -- default TRUE everywhere, explicit FALSE for paperbot-mini (the
-# $100 control instance).
+# behavior_config.py).
+#
+# DISABLED BY DEFAULT (2026-09-12, bug audit #7): RESUMPTION_SIZE_MULTIPLIER's
+# curve was calibrated on the real trader's ONE known genuine long silence
+# (the 327.46h/13.6-day gap, Aug 23 -> Sep 6), but bot.py's trigger for when
+# to APPLY it (_record_global_trade/_hours_since_resumption) fires on OUR
+# OWN BOT's incidental trading gaps, not the trader's real activity -- an
+# unrelated event that happens to share a shape by coincidence of
+# measurement, not by any causal link. Every OTHER cross-market/global
+# signal in this codebase (last_first_entry_won_by_asset,
+# rolling_accuracy_by_asset, last_hedge_rate_by_asset) is fed from the
+# TRADER's real observed outcomes; this was the one exception fed from the
+# bot's own behavior instead. Combined with the calibration's own honest
+# n=1 caveat (behavior_config.py's own docstring: "necessarily built from
+# ONE large real gap event... no basis to split this by asset"), this
+# mechanism was fragile even before the trigger mismatch was found, and
+# more likely to hurt replication than help it (per this project's own
+# "does this help replicate the trader better" filter) -- our bot could
+# apply the trader's-real-silence-shaped caution to itself for reasons
+# (a quiet market, being starved by an unrelated bug, an outage) that have
+# nothing to do with him. The function/plumbing is left in place, not
+# deleted, in case a genuine live feed of the trader's own activity ever
+# becomes available to drive it correctly -- only the default is flipped.
 ENABLE_RESUMPTION_SIZE_MULTIPLIER = os.environ.get(
-    "ENABLE_RESUMPTION_SIZE_MULTIPLIER", "true"
+    "ENABLE_RESUMPTION_SIZE_MULTIPLIER", "false"
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------

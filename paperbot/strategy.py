@@ -69,9 +69,31 @@ class MarketActivityState:
     # to decide whether a 2nd/3rd/4th+ hedge should follow. See
     # HEDGE_CONTINUATION_PROBABILITY's docstring in behavior_config.py.
     hedge_count: int = 0
+    # ADDED 2026-09-12 (bug audit #5): entry_count/hedge_count above both
+    # increment at PLACEMENT time, for every order placed regardless of
+    # whether it ever fills -- but the calibration tables they index into
+    # (ENTRY_SIZING_USD via position_tier_for_index, hedge_attempt_hazard,
+    # HEDGE_CONTINUATION_PROBABILITY/SIZE_RATIO) were all built from the
+    # trader's real trade log, which only contains FILLS (confirmed
+    # elsewhere in this project -- his trade log has no record of an order
+    # that never filled). ~36% of our own placed orders never fill at all
+    # (see release_unfilled's docstring, which already fixed the identical
+    # contamination for cost_by_side but never touched these two counters).
+    # real_fill_count/real_hedge_fill_count track ONLY confirmed fills,
+    # incremented via record_real_fill (called from bot.py's
+    # manage_orders_tick the first time an order gets any fill) -- these,
+    # not entry_count/hedge_count, are what every calibration-table lookup
+    # keyed by "which numbered entry/hedge" should read. entry_count/
+    # hedge_count themselves are left unchanged and still used for the
+    # placement-time gates that are genuinely about placement, not fill
+    # history (the scout eligibility check, and decide_hedge's initial
+    # "has anything ever been placed" gate) -- see this project's
+    # BUGS_TO_FIX.md #5 for the full reasoning.
+    real_fill_count: int = 0
+    real_hedge_fill_count: int = 0
 
     def position_tier(self) -> str:
-        return bc.position_tier_for_index(self.entry_count)
+        return bc.position_tier_for_index(self.real_fill_count)
 
     def dominant_side(self) -> Optional[str]:
         """The side with more cumulative $ committed so far, or None if
@@ -95,6 +117,16 @@ class MarketActivityState:
         self.last_side = side
         if is_hedge:
             self.hedge_count += 1
+
+    def record_real_fill(self, is_hedge: bool) -> None:
+        """Called from bot.py's manage_orders_tick the FIRST time a placed
+        order receives any fill (full or partial) -- exactly once per
+        order, regardless of how many separate partial fills it eventually
+        gets. See real_fill_count/real_hedge_fill_count's docstring above
+        for why this exists and what reads it."""
+        self.real_fill_count += 1
+        if is_hedge:
+            self.real_hedge_fill_count += 1
 
     def release_unfilled(self, side: str, notional_usd: float) -> None:
         """
@@ -301,13 +333,23 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
     """
     if activity.entry_count < 1 or activity.first_entry_regime is None:
         return None
-    if activity.hedge_count >= config.MAX_HEDGE_COUNT_PER_MARKET:
+    # CHANGED 2026-09-12 (bug audit #5, extended scope): hedge_count ->
+    # real_hedge_fill_count for every calibration-index/gate use below --
+    # hedge_count increments at PLACEMENT time (identical contamination to
+    # entry_count, see MarketActivityState's docstring), so a hedge that
+    # gets placed and then cancelled/expires unfilled would otherwise still
+    # trip MAX_HEDGE_COUNT_PER_MARKET early and shift every later
+    # continuation lookup to the wrong index. real_hedge_fill_count only
+    # counts confirmed fills, matching what HEDGE_CONTINUATION_PROBABILITY/
+    # HEDGE_CONTINUATION_SIZE_RATIO/hedge_attempt_hazard were actually
+    # calibrated against.
+    if activity.real_hedge_fill_count >= config.MAX_HEDGE_COUNT_PER_MARKET:
         return None
     dominant = activity.dominant_side()
     if dominant is None:
         return None
-    if activity.hedge_count == 0:
-        p = bc.hedge_attempt_hazard(asset, activity.first_entry_regime, activity.entry_count)
+    if activity.real_hedge_fill_count == 0:
+        p = bc.hedge_attempt_hazard(asset, activity.first_entry_regime, activity.real_fill_count)
         if config.ENABLE_HEDGE_LIQUIDITY_MULTIPLIER:
             liq_mult = bc.hedge_liquidity_multiplier(asset, liquidity)
             p = max(0.0, min(1.0, p * liq_mult))
@@ -334,7 +376,7 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
                     asset, activity.first_entry_regime, conviction_log_ratio)
                 p = max(0.0, min(1.0, p * conviction_mult))
     else:
-        p = bc.hedge_continuation_probability(activity.hedge_count)
+        p = bc.hedge_continuation_probability(activity.real_hedge_fill_count)
     if p > 0 and rng.random() < p:
         return "Down" if dominant == "Up" else "Up"
     return None
@@ -476,13 +518,38 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # bot-wide, not per-market -- see bot.py's _hours_since_resumption.
     resumption_mult = bc.resumption_size_multiplier(hours_since_resumption) \
         if config.ENABLE_RESUMPTION_SIZE_MULTIPLIER else 1.0
+    # COMBINED-MULTIPLIER SAFETY BOUND (2026-09-12, bug audit #4): each of
+    # within_band/momentum_mult/bankroll_mult/ttc_mult/resumption_mult was
+    # fit MARGINALLY -- controlling for other already-known variables
+    # individually at build time -- but their PRODUCT has never been
+    # validated against his real observed size distribution as a joint
+    # quantity. Specific risk flagged in BUGS_TO_FIX.md #4: momentum_mult
+    # (EWMA of size residual) and bankroll_mult (realized-P&L-conditioned)
+    # plausibly both pick up overlapping "recent performance" signal, and
+    # multiplying them risks double-counting the same real effect into a
+    # swing more extreme than anything actually observed.
+    #
+    # This clamps the COMBINED cross-market/time signal (everything except
+    # jitter and SIZE_SCALE_FACTOR, which aren't calibrated-signal
+    # multipliers) to config.COMBINED_SIZE_MULTIPLIER_CAP -- a REASONED
+    # safety bound, not a data-derived precise answer: the full joint-
+    # distribution validation (pull real sizing data for markets where
+    # multiple conditions fire simultaneously and check whether the actual
+    # combined multiplier matches or overshoots the raw product) is a
+    # separate, larger data effort that hasn't been done yet. This bound
+    # is deliberately wider than any single multiplier's own individual
+    # cap (each ~3.0x) -- real, uncorrelated effects compounding somewhat
+    # is expected and legitimate; this only stops the worst-case scenario
+    # of every factor aligning in the same direction at once.
+    combined_signal = within_band * momentum_mult * bankroll_mult * ttc_mult * resumption_mult
+    cap = config.COMBINED_SIZE_MULTIPLIER_CAP
+    combined_signal = max(1.0 / cap, min(cap, combined_signal))
     # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a
     # deliberately small-bankroll instance -- see its docstring in
     # config.py. Applied here (not to the floor-lot branch above) so the
     # tiny, independently-calibrated probe tier is never pushed below a
     # real exchange minimum by a scale-down meant for the ordinary curve.
-    return max(median * jitter * within_band * momentum_mult * bankroll_mult * ttc_mult
-               * resumption_mult * config.SIZE_SCALE_FACTOR, 0.0), False
+    return max(median * jitter * combined_signal * config.SIZE_SCALE_FACTOR, 0.0), False
 
 
 def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
@@ -635,7 +702,13 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # ~13%, 4th+ at ~11% -- much flatter than the drop from 1st to
         # 2nd), not the same ratio repeated. See its docstring.
         dominant_cost = activity.cost_by_side.get(activity.dominant_side(), 0.0)
-        if activity.hedge_count == 0:
+        # CHANGED 2026-09-12 (bug audit #5): hedge_count -> real_hedge_fill_count,
+        # must mirror decide_hedge's own real_hedge_fill_count==0 branch
+        # exactly (that's what decided is_hedge/hedge_side in the first
+        # place) -- using placement-based hedge_count here instead could
+        # size a hedge decide_hedge classified as "first" using the
+        # continuation ratio, or vice versa.
+        if activity.real_hedge_fill_count == 0:
             ratio = bc.hedge_size_ratio(market.asset, activity.first_entry_regime)
             # ADDED 2026-09-10: real, cross-asset-confirmed finding that
             # first-hedge SIZE scales with how far price has moved against
@@ -661,7 +734,7 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             if config.ENABLE_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER:
                 ratio *= bc.absolute_price_hedge_size_multiplier(market.asset, price)
         else:
-            ratio = bc.hedge_continuation_size_ratio(activity.hedge_count + 1)
+            ratio = bc.hedge_continuation_size_ratio(activity.real_hedge_fill_count + 1)
             # ADDED 2026-09-10: direct extension of the hedge_count==0 case
             # above to continuation hedges -- same since-ORIGIN adverse_move
             # definition (deep-research-confirmed to beat a since-last-hedge

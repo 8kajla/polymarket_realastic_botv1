@@ -30,7 +30,7 @@ import requests
 
 from . import behavior_config as bc
 from . import config
-from .book import BookState, MarketWebSocketClient, bootstrap_book_state
+from .book import BookState, MarketWebSocketClient, bootstrap_book_state, fetch_book_snapshot
 from .fill_simulation import FillSimulator, seed_order_id_counter
 from .ledger import Ledger
 from .market_discovery import (
@@ -314,6 +314,38 @@ class PaperBot:
         if subscribed_ids:
             await self.ws_client.subscribe(subscribed_ids)
 
+    async def _resync_stale_books(self) -> None:
+        """ADDED 2026-09-12 (bug audit #6): re-fetch any BookState that
+        _reconcile_best flagged needs_resync=True (a price_change message
+        asserted a best_bid/best_ask we had no matching level for -- a
+        missed earlier update). Runs every tick, but only does real work
+        (a REST call) for tokens actually flagged -- ordinarily an empty
+        list, so this is a cheap no-op the overwhelming majority of ticks.
+        Batches concurrent fetches the same way _onboard_markets does (one
+        asyncio.gather over asyncio.to_thread, not sequential awaits) for
+        the same WS-slow-consumer reason documented on that method."""
+        stale = [(token_id, state) for token_id, state in self.book_states.items()
+                 if state.needs_resync]
+        if not stale:
+            return
+
+        async def _resync_one(token_id: str, state: BookState) -> None:
+            try:
+                raw = await asyncio.to_thread(fetch_book_snapshot, token_id, self.session)
+                state.apply_snapshot(raw.get("bids", []), raw.get("asks", []))
+                logger.info("BOOK_RESYNC token=%s: re-fetched after a detected best-price mismatch",
+                            token_id)
+            except Exception:
+                # Leave needs_resync=True -- next tick will retry. Not
+                # halting the market over a transient REST failure; the
+                # existing availability_check (spread/depth) already
+                # naturally guards against trading on a book that's gone
+                # stale for other reasons.
+                logger.warning("book resync failed for token %s; will retry next tick",
+                                token_id, exc_info=True)
+
+        await asyncio.gather(*(_resync_one(t, s) for t, s in stale))
+
     async def _retire_market(self, market: Market) -> None:
         logger.info("RETIRE market=%s asset=%s condition=%s", market.slug, market.asset,
                     market.condition_id)
@@ -337,7 +369,21 @@ class PaperBot:
             # real entry -- an untraded market has nothing worth carrying
             # forward, same gating last_first_entry_side_by_asset already
             # uses (is_first_entry in _evaluate_one_market).
-            self.last_hedge_rate_by_asset[market.asset] = activity.hedge_count / activity.entry_count
+            #
+            # CHANGED 2026-09-12 (bug audit #5): hedge_count/entry_count ->
+            # real_hedge_fill_count/real_fill_count. The original ratio used
+            # both PLACEMENT-based counters (each independently contaminated
+            # by unfilled orders), so it systematically understated the true
+            # hedge rate CROSS_MARKET_HEDGE_RATE_MULTIPLIER was calibrated
+            # against on the trader's real, fill-only data. Guarded against
+            # real_fill_count==0 (a market with placements but zero real
+            # fills yet at retire time -- rare but possible) to avoid a
+            # ZeroDivisionError; falls back to skipping the update that
+            # market, same as if it had never been snapshotted.
+            if activity.real_fill_count > 0:
+                self.last_hedge_rate_by_asset[market.asset] = (
+                    activity.real_hedge_fill_count / activity.real_fill_count
+                )
             self._retired_activity_snapshot[market.condition_id] = {
                 "asset": market.asset,
                 "first_entry_side": activity.first_entry_side,
@@ -449,24 +495,22 @@ class PaperBot:
             if cid in self.halted_conditions:
                 continue
             open_here = self.resting_order_ids.get(cid)
-            if open_here and len(open_here) >= config.MAX_OPEN_ORDERS_PER_MARKET:
-                # DIAGNOSTIC (2026-09-12): previously silent -- added while
-                # investigating why our trade count per market runs far
-                # below the real trader's. This gate can starve an entire
-                # market of new entries for the rest of its life if resting
-                # orders sit unfilled/unrepriced long enough to keep all
-                # MAX_OPEN_ORDERS_PER_MARKET slots occupied.
-                logger.info("SKIP_OPEN_ORDER_CAP asset=%s open=%d cap=%d",
-                            market.asset, len(open_here), config.MAX_OPEN_ORDERS_PER_MARKET)
-                continue
+            at_open_order_cap = bool(
+                open_here and len(open_here) >= config.MAX_OPEN_ORDERS_PER_MARKET
+            )
+            # CHANGED 2026-09-12 (bug audit #2): no longer a hard `continue`
+            # here -- see _evaluate_one_market's docstring for why. The cap
+            # is now enforced AFTER build_order_intent decides hedge vs.
+            # ordinary, not before evaluation even starts.
             try:
-                self._evaluate_one_market(market, now)
+                self._evaluate_one_market(market, now, at_open_order_cap=at_open_order_cap)
             except Exception:
                 logger.exception("unexpected error evaluating market %s; halting its activity",
                                   market.slug)
                 self.halted_conditions.add(cid)
 
-    def _evaluate_one_market(self, market: Market, now: float) -> None:
+    def _evaluate_one_market(self, market: Market, now: float,
+                              at_open_order_cap: bool = False) -> None:
         # Both books are required: Down's price is (roughly) 1 - Up's
         # price, not the same value, so build_order_intent needs whichever
         # one actually corresponds to the side it decides to trade. See
@@ -519,6 +563,23 @@ class PaperBot:
             max_notional_usd=max_notional_usd,
             bankroll_pnl_residual=self.ledger.realized_pnl_by_asset().get(market.asset))
         if intent is None:
+            return
+
+        # FIXED 2026-09-12 (bug audit #2): the open-order cap used to be
+        # checked BEFORE build_order_intent/decide_hedge ever ran (in
+        # strategy_tick), which meant a market already at
+        # MAX_OPEN_ORDERS_PER_MARKET resting orders -- exactly when price
+        # is active and a hedge is most likely needed -- had decide_hedge
+        # skipped entirely, every tick, with no reserved capacity or
+        # priority for hedges over ordinary/scout entries. Checking here
+        # instead, AFTER the intent (and therefore intent.is_hedge) is
+        # known, means the cap only ever blocks ORDINARY/SCOUT placements;
+        # a hedge decide_hedge actually decided to fire always gets
+        # evaluated and placed regardless of how many ordinary orders are
+        # already resting. See BUGS_TO_FIX.md #2 for the full reasoning.
+        if at_open_order_cap and not intent.is_hedge:
+            logger.info("SKIP_OPEN_ORDER_CAP asset=%s is_hedge=%s cap=%d",
+                        market.asset, intent.is_hedge, config.MAX_OPEN_ORDERS_PER_MARKET)
             return
 
         order_book = self.book_states.get(intent.token_id)
@@ -752,6 +813,21 @@ class PaperBot:
                     self.fill_sim.on_trade_print(token_id, trade)
                 except Exception:
                     logger.exception("error consuming trade print for token %s", token_id)
+
+        # ADDED 2026-09-12 (bug audit #5): forward each order's first-ever
+        # fill to its market's MarketActivityState, exactly once per order
+        # (real_fill_notified is the one-shot latch -- see its docstring in
+        # fill_simulation.py). This is the only place fill events surface
+        # outside fill_sim.orders itself (on_trade_print/_consume_one above
+        # is the only path filled_size ever increases), so this loop is
+        # what keeps real_fill_count/real_hedge_fill_count -- the
+        # calibration-index counters -- in sync with reality every tick.
+        for order in self.fill_sim.orders.values():
+            if order.filled_size > 0 and not order.real_fill_notified:
+                activity = self.activity.get(order.condition_id)
+                if activity is not None:
+                    activity.record_real_fill(order.is_hedge)
+                order.real_fill_notified = True
 
         # Unconditional sweep rather than only reacting to manage_open_orders'
         # `changed` list: an order can also stop being open because a trade
@@ -1047,6 +1123,7 @@ class PaperBot:
             while not stop_event.is_set():
                 now = time.time()
                 await self.discovery_tick(now)
+                await self._resync_stale_books()
                 await self.strategy_tick(now)
                 self.manage_orders_tick(now)
                 await self.resolution_tick(now)

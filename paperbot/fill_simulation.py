@@ -97,6 +97,14 @@ class SimulatedOrder:
     first_fill_at: Optional[float] = None
     final_at: Optional[float] = None
     reprice_count: int = 0
+    # ADDED 2026-09-12 (bug audit #5): one-shot flag so bot.py's
+    # manage_orders_tick can detect "this order just received its first-
+    # ever fill" exactly once per order (regardless of how many separate
+    # partial fills it eventually accumulates) and forward that single
+    # event to MarketActivityState.record_real_fill(). Distinct from
+    # first_fill_at (a timestamp used for time-to-fill reporting) --
+    # this is purely a notification latch.
+    real_fill_notified: bool = False
     expired_remainder: bool = False  # cutoff hit after a partial fill; the
                                       # unfilled remainder was cancelled but
                                       # the filled portion still settles.
@@ -340,7 +348,20 @@ class FillSimulator:
                     # book that keeps moving away. Cancel instead of
                     # repricing again once an order has already used up its
                     # cap, rather than let it walk further into that bucket.
+                    #
+                    # FIXED (2026-09-12, bug audit #3): the real-data finding
+                    # behind this cap was measured "excluding hedges and
+                    # scouts (not directional edge bets)" (see
+                    # cheap-fill-calibration-gap's Method section) -- but this
+                    # condition originally applied to every order regardless,
+                    # so a CHEAP-band hedge (exactly the case
+                    # ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER deliberately sizes
+                    # UP) or scout could get cancelled here on the strength of
+                    # a finding that never actually measured hedge/scout
+                    # behavior. Excluding both now matches the original
+                    # validation's scope exactly.
                     if (config.ENABLE_CHEAP_REPRICE_CAP and order.regime == "CHEAP"
+                            and not order.is_hedge and not order.is_scout
                             and order.reprice_count >= config.MAX_CHEAP_REPRICES):
                         if order.filled_size > 0:
                             order.cancelled_remainder = True

@@ -71,6 +71,51 @@ class TestPriceChange:
         book.apply_price_change(price=0.21, size=3, side="SELL")
         assert book.best_ask == 0.21
 
+    def test_matching_best_price_does_not_flag_a_resync(self):
+        book = BookState(token_id="t")
+        book.apply_snapshot(bids=[(0.20, 10)], asks=[(0.22, 10)])
+        # The message's own asserted best matches our own top-of-book level
+        # exactly -- no missed update, no resync needed.
+        book.apply_price_change(price=0.20, size=15, side="BUY", best_bid=0.20, best_ask=0.22)
+        assert book.needs_resync is False
+
+    def test_mismatched_best_bid_flags_a_resync(self):
+        """FIXED 2026-09-12 (bug audit #6): a price_change message
+        asserting a best_bid we have no matching level for (a missed
+        earlier update) used to be a silent no-op -- best_bid/best_ask
+        would keep reading the stale value with no bounded correction
+        path. Must now flag needs_resync so bot.py can self-heal via a
+        REST re-fetch."""
+        book = BookState(token_id="t")
+        book.apply_snapshot(bids=[(0.20, 10)], asks=[(0.22, 10)])
+        # Asserts a best_bid (0.23) we have no matching level for at all.
+        book.apply_price_change(price=0.21, size=5, side="BUY", best_bid=0.23, best_ask=0.22)
+        assert book.needs_resync is True
+        # And, just as importantly, best_bid/best_ask themselves are NOT
+        # fabricated -- no sizeless synthetic level gets inserted.
+        assert book.best_bid == 0.21
+
+    def test_mismatched_best_ask_flags_a_resync(self):
+        book = BookState(token_id="t")
+        book.apply_snapshot(bids=[(0.20, 10)], asks=[(0.22, 10)])
+        book.apply_price_change(price=0.21, size=5, side="SELL", best_bid=0.20, best_ask=0.19)
+        assert book.needs_resync is True
+
+    def test_no_best_bid_ask_in_message_never_flags_a_resync(self):
+        book = BookState(token_id="t")
+        book.apply_snapshot(bids=[(0.20, 10)], asks=[(0.22, 10)])
+        book.apply_price_change(price=0.21, size=5, side="BUY")  # no best_bid/best_ask kwargs
+        assert book.needs_resync is False
+
+    def test_apply_snapshot_clears_a_pending_resync_flag(self):
+        book = BookState(token_id="t")
+        book.apply_snapshot(bids=[(0.20, 10)], asks=[(0.22, 10)])
+        book.apply_price_change(price=0.21, size=5, side="BUY", best_bid=0.23, best_ask=0.22)
+        assert book.needs_resync is True
+
+        book.apply_snapshot(bids=[(0.23, 8)], asks=[(0.24, 8)])
+        assert book.needs_resync is False
+
 
 class TestLastTradePriceAndTickSize:
     def test_last_trade_price_queues_a_trade_print(self):
