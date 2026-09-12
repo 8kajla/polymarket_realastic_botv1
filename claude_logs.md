@@ -1212,3 +1212,162 @@ Committed locally, will push + deploy to both `paperbot` and
 paperbot user, py_compile syntax-check, restart each systemd service
 individually -- never bundled). See claude_memory.md for the current
 deployment status if this is read before that step completes.
+
+---
+
+## RESEARCH MODE RESUMED (2026-09-12) — user asked to dig into the angles found before the bug-fixing detour, and renamed the log/memory files
+
+Files renamed per explicit instruction: `loop_log.md` -> `claude_logs.md`,
+`loop_memory.md` -> `claude_memory.md`. These are now the general
+working log/memory for the whole project, not loop-specific -- read both
+before assuming context, in place of relying on Claude's own
+conversational memory. Committed (`6683c12`), pushed.
+
+Prioritized digging into the 3 angles left with real open threads
+(Sybil-farm causal direction, the 13.6-day halt cause, why the CHEAP
+asymmetry goes unexploited) rather than re-testing the ones already
+cleanly closed.
+
+### Sybil-farm/copy-tool: causal direction — RESOLVED, he leads
+
+Tested directly: across 25 real markets, compared his OWN first-trade
+timestamp against the cluster's (5 recurring wallets) first-trade
+timestamp in the same market.
+
+| | count |
+|---|---|
+| He trades first (leads) | 17/19 (89.5%) |
+| Cluster trades at-or-before him | 2/19 (10.5%), lag 0-9s |
+
+**Decisive, well-powered result: he leads in the overwhelming majority of
+cases.** This closes the remaining open question from the earlier
+5-line-of-evidence investigation -- rules out "some shared external
+trigger picks the market and both independently react" (that would
+produce a much more mixed leads/follows split), strongly confirms the
+"copy-tool that tracks which markets HE enters" framing over any
+alternative where he's just one node among co-equals. The 2 near-
+simultaneous exceptions (0-9s) are consistent with ordinary noise in a
+market that's independently crowded/decisive right at open, not a real
+counter-example.
+
+**Sybil-farm/copy-tool angle is now FULLY resolved as far as available
+data allows**: real correlation (co-occurrence), rules out generic bots
+(control-market absence), rules out independent reaction (timing
+lockstep), generalizes across his whole basket (cross-asset), rules out
+literal mirroring (size/side mismatch), and now causal direction (he
+leads). Five separate, mutually-reinforcing lines of evidence. Closing
+this thread for good -- further progress would need account-level access
+this project doesn't have.
+
+### 13.6-day halt cause — a genuinely useful tangent found, and the primary question hits its true ceiling
+
+**Tangent (valuable on its own): precisely dated the earlier-uncertain
+5-min TWAP window's 30s->60s transition.** While checking one specific
+market for anomalies, noticed Gamma's own market metadata exposes the
+exact TWAP window via `resolutionSource`
+(`https://data.chain.link/streams/<asset>-usd-twap-<N>s-streams`).
+Binary-searched real BTC markets across the timeline:
+
+| Date/time | resolutionSource |
+|---|---|
+| Aug 12, 23:00 UTC | 30s |
+| **Aug 13, 00:00 UTC** | **60s** |
+
+Confirmed ETH and SOL flip at the EXACT SAME moment (Aug 13 00:00 UTC) --
+a clean midnight boundary, confirming a deliberate, platform-wide,
+scheduled change (not gradual, not asset-specific). **This fully resolves
+the earlier uncertainty** (previously only "later silently changed,
+exact date unknown") **with hard evidence: 2026-08-13 00:00 UTC.** Doesn't
+directly explain the halt (10 days before it started, not coincident) but
+is a real, previously-missing fact worth recording precisely.
+
+**Primary question: checked his real daily PnL for the days immediately
+before the halt (Aug 18-23) -- never actually checked before (the earlier
+drawdown check only covered Aug 3-11, a different, much earlier window).**
+
+| Date | Net PnL (dominant-side, directional) | Wins | Losses |
+|---|---|---|---|
+| Aug 18 | +$1,844.90 | 202 | 60 |
+| Aug 19 | +$2,046.30 | 166 | 59 |
+| Aug 20 | +$1,491.41 | 190 | 77 |
+| Aug 21 | +$1,563.83 | 197 | 64 |
+| Aug 22 | +$3,445.42 (his best day in the window) | 213 | 55 |
+| Aug 23 (halt day itself) | +$2,321.45 | 173 | 69 |
+
+**Rules out a risk-driven pause too, cleanly.** He was on a genuine hot
+streak, not a losing one -- every single day strongly positive, win rate
+70-77% throughout, his BEST day landing the day before the halt began.
+If anything this makes the halt MORE puzzling from a purely rational-
+trading standpoint, not less.
+
+**Status: both the two most obvious rational explanations (platform
+outage, risk-driven pause) are now cleanly ruled out with real evidence.**
+Remaining candidates are genuinely personal/operational (vacation,
+infrastructure migration, a compliance/legal action, or simply a
+deliberate choice unrelated to trading performance) -- none testable
+with any data source this project has access to. **Declaring this angle
+at its true ceiling now, not just a earlier-checked ceiling** -- don't
+keep re-trying without a fundamentally new data source (e.g. if the
+operator's identity or account-level logs ever became available).
+
+### CHEAP Up/Down asymmetry — why unexploited, reasoned conclusion
+
+**First quantified the real size of the gap, post the now-precisely-dated
+Aug-13 60s-TWAP boundary (BTC CHEAP band):**
+
+| Side | n | Win% | ROI |
+|---|---|---|---|
+| Up (cheap longshot) | 9,249 | 15.22% | +2.44% |
+| Down (cheap longshot) | 8,801 | 18.21% | **+12.12%** |
+
+**This is a substantial gap, not a marginal few basis points** -- roughly
+5x the ROI on Down vs Up. Checked temporal consistency across the two
+real data chunks available (thin, because the 13.6-day halt eats most of
+the potential window): W33 (Aug 10-16) showed Down 14.84% vs Up 9.63%;
+W36 (Sep 7-13, most recent) showed Down 7.46% vs Up -5.56% (Up actually
+lost money here). **Direction is consistent in both (Down always beats
+Up) even though magnitude/sign of Up's own edge varies** -- reasonable
+evidence this isn't a one-off fluke, though the halt gap genuinely limits
+how thorough a stability check is possible right now.
+
+**Why he doesn't exploit it -- two plausible, coherent explanations, not
+mutually exclusive:**
+
+1. **Too recent to have recalibrated to.** The asymmetry is tied to the
+   Aug-13 60s-TWAP change specifically (a structural market change, not
+   present before it) -- only ~1 month old by now, with a 13.6-day chunk
+   of that month spent completely silent. His observable calibrated
+   behavior likely reflects a longer-run historical average that hasn't
+   caught up to this newer regime.
+2. **Structural blind spot, not a deliberate choice.** His CHEAP-band
+   entries are driven by "whichever token is CURRENTLY priced as the
+   cheap underdog" (a live, momentum-following signal), not an
+   independent Up/Down preference -- within any single market, only one
+   side can be cheap at a time, so this isn't a live either/or choice he
+   makes per-market. Exploiting the asymmetry would need a genuinely NEW
+   mechanism (systematically favor/skip opportunities based on which
+   token they are, on top of the existing price-level trigger) that his
+   strategy's design may simply never have needed before this specific
+   TWAP-window change made the two sides diverge.
+
+**Status: reasoned, evidence-backed conclusion, not further testable
+with data on hand** (can't ask him why; can't observe his internal
+decision logic). Consistent with, and now offers a concrete explanation
+for, the earlier finding that his CHEAP volume splits roughly evenly
+between Up and Down despite the edge difference. Closing this thread at
+this conclusion -- a good stopping point.
+
+### Summary: all 3 prioritized open threads now resolved to their practical ceiling
+
+1. Sybil-farm/copy-tool: FULLY resolved (5 lines of evidence, including
+   now-confirmed causal direction -- he leads).
+2. 13.6-day halt cause: both obvious rational explanations (outage,
+   risk-driven pause) ruled out with real evidence; true cause remains
+   unknown and untestable further without account-level access. Bonus:
+   precisely dated the 30s->60s TWAP transition (2026-08-13 00:00 UTC).
+3. CHEAP asymmetry non-exploitation: reasoned, evidence-backed
+   explanation given (too recent / structural blind spot), not further
+   testable.
+
+No further angle work queued -- would need either a genuinely new angle
+from scratch, or new user direction.

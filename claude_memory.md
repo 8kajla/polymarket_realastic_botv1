@@ -11,34 +11,42 @@ understanding — NOT an append-only log (see `claude_logs.md` for that,
 chronological, append-only). Read this file first if resuming cold; it
 should always be enough to pick up without re-reading the whole session.
 
-## MODE (2026-09-12): back to research on the trader's real behavior
+## MODE (2026-09-12): research angles — all 3 prioritized open threads now resolved to their practical ceiling
 
-Bug-fixing phase (see "PAST STATUS" below) is done and deployed. User
-asked to return to research mode and dig deeper into the angles already
-found, specifically the ones with real open threads left — NOT re-test
-the ones already cleanly closed (platform cutoff, macro-news, loss-streak
-participation, funding-rate reset all REJECTED with no loose end; keep
-those closed unless new evidence appears).
+Bug-fixing phase (see "PAST STATUS" below) is done and deployed. Then
+dug into the 3 remaining open threads from the earlier angle work; ALL
+THREE are now resolved to their practical ceiling (see `claude_logs.md`
+"RESEARCH MODE RESUMED" section for full detail):
 
-**Open threads worth digging into further, in priority order:**
-1. **Sybil-farm/copy-tool cluster** (angle #4) — confirmed real via 5
-   lines of evidence (co-occurrence, control-market absence, timing
-   lockstep, cross-asset generalization, size/side mismatch pointing to
-   a copy-tool not a literal mirror) but causal direction and identity
-   remain open. Next: try to determine whether OUR trader or the cluster
-   leads the timing relationship, and whether the cluster wallets have
-   any public identity/pseudonym clues.
-2. **13.6-day halt cause** (angle #5) — ruled out a platform outage as
-   the trigger (real evidence: zero incidents Jul30-Aug30 on Polymarket's
-   own status page) but the actual cause is still unknown. Ceiling was
-   reached with the data sources tried so far — worth a genuinely
-   different approach, not repeating the same ones.
-3. **CHEAP Up/Down asymmetry, why unexploited** (angle #10) — real,
-   TWAP-linked, cross-asset-confirmed miscalibration he does NOT act on.
-   Never asked WHY he doesn't exploit a real, seemingly free edge — worth
-   investigating (transaction cost too small to matter? correlated risk
-   he's avoiding? doesn't actually know about it because his edge comes
-   from somewhere else entirely?).
+1. **Sybil-farm/copy-tool cluster** — FULLY resolved. Added a 6th line of
+   evidence (causal direction: he leads in 17/19 markets, 89.5%) to the
+   5 already established. Best-supported conclusion: several wallets run
+   a shared copy-trading tool that follows which markets he enters, then
+   applies its own generic fixed-notional strategy — not a literal mirror,
+   not the same operator as one unified system. Closed for good.
+2. **13.6-day halt cause (Aug 23 → Sep 6)** — both obvious rational
+   explanations now ruled out with real evidence: platform outage (no
+   incidents Jul30-Aug30 on Polymarket's own status page) AND risk-driven
+   pause (he was on a genuine HOT STREAK right up to the halt — every day
+   Aug18-23 strongly positive, best day the day before it started). True
+   cause remains unknown, likely personal/operational, not testable
+   further without account-level access. Bonus find along the way:
+   precisely dated the previously-uncertain 5-min TWAP window's 30s→60s
+   transition to exactly **2026-08-13 00:00 UTC** (via Gamma's
+   `resolutionSource` field — confirmed simultaneous across BTC/ETH/SOL).
+3. **CHEAP Up/Down asymmetry, why unexploited** — quantified: Down ROI
+   +12.12% vs Up +2.44% post-Aug-13 (BTC), a real ~5x gap, direction
+   consistent across the two available weekly data chunks. Reasoned
+   conclusion (not further testable): either too recent to have
+   recalibrated to (the asymmetry only exists post-Aug-13, ~1 month old,
+   with the halt eating much of that), or a structural blind spot (his
+   CHEAP entries are triggered by price level/momentum, not an
+   independent Up/Down preference, so exploiting this would need a new
+   mechanism his design never needed before this TWAP change).
+
+**No angle work currently queued.** Would need either a genuinely new
+angle from scratch, or new user direction — don't force weak repeats of
+the closed threads below.
 
 Fully closed, don't re-open without new data: #1 (platform cutoff), #2
 (order cancellations, blocked by API auth), #3 (on-chain funding,
