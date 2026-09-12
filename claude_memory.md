@@ -1,13 +1,52 @@
-# Project memory (condensed, current state)
+# Claude memory (condensed, current state)
+
+Renamed from `loop_memory.md` (2026-09-12), per explicit user instruction:
+this and `claude_logs.md` are now the general working memory/log for this
+whole project, not loop-specific — read BOTH before assuming anything
+about context, since the point of these files is to let work continue
+correctly without relying on Claude's own conversational memory.
 
 This file is OVERWRITTEN/updated in place to reflect current
-understanding — NOT an append-only log (see `loop_log.md` for that). Read
-this first if resuming cold; it should always be enough to pick up without
-re-reading the whole session. Originally started as loop-iteration
-memory, now also used as general project memory per explicit user
-instruction ("use your memory file in the same way" for the fix session).
+understanding — NOT an append-only log (see `claude_logs.md` for that,
+chronological, append-only). Read this file first if resuming cold; it
+should always be enough to pick up without re-reading the whole session.
 
-## CURRENT STATUS (2026-09-12): all 8 BUGS_TO_FIX.md entries FIXED, tested, being deployed
+## MODE (2026-09-12): back to research on the trader's real behavior
+
+Bug-fixing phase (see "PAST STATUS" below) is done and deployed. User
+asked to return to research mode and dig deeper into the angles already
+found, specifically the ones with real open threads left — NOT re-test
+the ones already cleanly closed (platform cutoff, macro-news, loss-streak
+participation, funding-rate reset all REJECTED with no loose end; keep
+those closed unless new evidence appears).
+
+**Open threads worth digging into further, in priority order:**
+1. **Sybil-farm/copy-tool cluster** (angle #4) — confirmed real via 5
+   lines of evidence (co-occurrence, control-market absence, timing
+   lockstep, cross-asset generalization, size/side mismatch pointing to
+   a copy-tool not a literal mirror) but causal direction and identity
+   remain open. Next: try to determine whether OUR trader or the cluster
+   leads the timing relationship, and whether the cluster wallets have
+   any public identity/pseudonym clues.
+2. **13.6-day halt cause** (angle #5) — ruled out a platform outage as
+   the trigger (real evidence: zero incidents Jul30-Aug30 on Polymarket's
+   own status page) but the actual cause is still unknown. Ceiling was
+   reached with the data sources tried so far — worth a genuinely
+   different approach, not repeating the same ones.
+3. **CHEAP Up/Down asymmetry, why unexploited** (angle #10) — real,
+   TWAP-linked, cross-asset-confirmed miscalibration he does NOT act on.
+   Never asked WHY he doesn't exploit a real, seemingly free edge — worth
+   investigating (transaction cost too small to matter? correlated risk
+   he's avoiding? doesn't actually know about it because his edge comes
+   from somewhere else entirely?).
+
+Fully closed, don't re-open without new data: #1 (platform cutoff), #2
+(order cancellations, blocked by API auth), #3 (on-chain funding,
+infeasible at current pagination cost), #6 (PCA/multivariate, confirmed
+existing rejection), #7 (macro-news), #8 (cross-asset tilt, retracted
+confound), #9 (loss-streak participation), #11 (funding-rate reset).
+
+## PAST STATUS (2026-09-12): all 8 BUGS_TO_FIX.md entries FIXED, tested, deployed — reference only, not active
 
 The research-angle loop (cron `a31ef787`) was stopped by me after 3
 consecutive honestly-flagged diminishing-returns iterations (see loop_log
@@ -19,16 +58,19 @@ real value is months of calibration work a rewrite would throw away.
 **All 7 discrete bugs + 1 systemic note from BUGS_TO_FIX.md are now
 fixed in code, covered by tests (435/435 passing, 19 net new tests), and
 committed locally.** See `BUGS_TO_FIX.md` itself for the exact fix
-applied to each entry (its Status line), and `loop_log.md`'s "FIX
+applied to each entry (its Status line), and `claude_logs.md`'s "FIX
 SESSION" heading for the full narrative (including one real editing
 mistake made and caught by the test suite -- two orphaned assertion
 lines, fixed).
 
-**Deployment status: check `loop_log.md`'s tail / re-verify directly**
-(SSH to the server, `sudo -u paperbot git -C /opt/paperbot/app log -1`,
-`systemctl status paperbot paperbot-100`) rather than trusting this line
-if reading this file after a gap -- deployment was in progress as of this
-write.
+**DEPLOYMENT CONFIRMED COMPLETE (2026-09-12).** Committed (`0000793`),
+pushed, pulled on the server as the paperbot user, py_compile-checked
+clean, both `paperbot` and `paperbot-100` restarted individually and
+verified live: both show `cap=8` in `SKIP_OPEN_ORDER_CAP` log lines
+(bug #1), a CHEAP-band hedge placed and surviving normally (bug #3), and
+`is_hedge=False` specifically on skip lines (bug #2's non-hedge-only
+enforcement). Zero errors/tracebacks in either service's log in the
+minute-plus after restart. All 8 BUGS_TO_FIX.md entries are done.
 
 ## Research-angle loop history (reference only, loop is stopped)
 

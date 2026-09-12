@@ -1,13 +1,13 @@
 # Loop log (append-only, chronological)
 
-One entry per iteration. Read `loop_memory.md` first for current state —
+One entry per iteration. Read `claude_memory.md` first for current state —
 this file is the detailed history behind it, not the resumption point.
 
 ---
 
 ## Iteration 1 (2026-09-12, loop start)
 
-Cron `a31ef787` scheduled, every 3 minutes. Set up this log + `loop_memory.md`
+Cron `a31ef787` scheduled, every 3 minutes. Set up this log + `claude_memory.md`
 per user instruction. Picking up the code bug audit from before the loop
 started (5 bugs already in `BUGS_TO_FIX.md`, none applied yet).
 
@@ -232,7 +232,7 @@ completion before moving on.
 
 **Per explicit user instruction, next iteration switches to RESEARCH
 ANGLES** (external trader-behavior investigation), NOT further bug
-hunting. See `loop_memory.md`'s angle list to resume.
+hunting. See `claude_memory.md`'s angle list to resume.
 
 ---
 
@@ -1089,7 +1089,7 @@ this honestly rather than inflate confirmatory checks into "new findings."
 User decided: fix beats rewrite (bugs are narrow/well-understood, not
 architectural; the real value is months of calibration work, not the
 plumbing). Asked to fix all 8 entries in BUGS_TO_FIX.md and log the work
-in this file (and loop_memory.md), same discipline as the research loop.
+in this file (and claude_memory.md), same discipline as the research loop.
 
 **Order tackled:** #3, #7 (quick/contained) -> #5 (moderate refactor,
 new fill-based counters) -> #2 (cap restructure, depends on #5's
@@ -1210,5 +1210,5 @@ overall since none were removed).
 Committed locally, will push + deploy to both `paperbot` and
 `paperbot-100` via the established discipline (SSH, git pull as the
 paperbot user, py_compile syntax-check, restart each systemd service
-individually -- never bundled). See loop_memory.md for the current
+individually -- never bundled). See claude_memory.md for the current
 deployment status if this is read before that step completes.
