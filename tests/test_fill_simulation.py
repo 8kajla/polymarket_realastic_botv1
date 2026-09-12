@@ -395,6 +395,104 @@ class TestReprice:
         assert order.filled_size == pytest.approx(2.0), "the real fill must survive intact"
 
 
+class TestCheapRepriceCap:
+    """Confirmed live (2026-09-12, cheap-fill-calibration-gap): CHEAP
+    orders that chase the book 3+ times land in a confirmed, badly-
+    negative-edge bucket (z=-4.64) -- orders that fill on the first quote
+    are perfectly fair. MAX_CHEAP_REPRICES (default 2) cancels a CHEAP
+    order instead of repricing it again once it's already used up its
+    cap, rather than let it walk further into that bucket."""
+
+    def test_cheap_order_cancels_once_reprice_cap_is_reached(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=50.0, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0, regime="CHEAP"), book, now=0.0)
+        seconds_remaining = {"cond-1": 1000}
+
+        # First two drifts: still within the cap (default MAX_CHEAP_REPRICES=2),
+        # reprice normally.
+        book.apply_snapshot(bids=[(0.24, 20.0)], asks=[(0.26, 20.0)])
+        sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=10.0)
+        assert order.reprice_count == 1
+        assert order.status == OrderStatus.PENDING
+
+        book.apply_snapshot(bids=[(0.20, 20.0)], asks=[(0.22, 20.0)])
+        sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=20.0)
+        assert order.reprice_count == 2
+        assert order.status == OrderStatus.PENDING
+
+        # Third drift: cap reached -- cancel instead of repricing again.
+        book.apply_snapshot(bids=[(0.24, 20.0)], asks=[(0.26, 20.0)])
+        sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=30.0)
+        assert order.status == OrderStatus.CANCELLED
+        assert not order.is_open()
+        assert order.reprice_count == 2, "cap-cancel must not itself count as another reprice"
+
+    def test_non_cheap_regime_is_never_capped(self):
+        book = make_book(best_bid=0.60, bid_depth_at_best=50.0, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.60, size_shares=5.0, regime="MID"), book, now=0.0)
+        seconds_remaining = {"cond-1": 1000}
+
+        # Drift three times, well past the CHEAP cap -- MID must keep
+        # repricing indefinitely, never cancel for this reason.
+        prices = [0.64, 0.60, 0.64, 0.60]
+        for i, p in enumerate(prices):
+            book.apply_snapshot(bids=[(p, 20.0)], asks=[(p + 0.02, 20.0)])
+            sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=float(10 * (i + 1)))
+
+        assert order.reprice_count == 4
+        assert order.status == OrderStatus.PENDING
+
+    def test_flag_disabled_reverts_to_uncapped_chasing(self, monkeypatch):
+        from paperbot import config
+        monkeypatch.setattr(config, "ENABLE_CHEAP_REPRICE_CAP", False)
+
+        book = make_book(best_bid=0.20, bid_depth_at_best=50.0, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0, regime="CHEAP"), book, now=0.0)
+        seconds_remaining = {"cond-1": 1000}
+
+        prices = [0.24, 0.20, 0.24, 0.20]
+        for i, p in enumerate(prices):
+            book.apply_snapshot(bids=[(p, 20.0)], asks=[(p + 0.02, 20.0)])
+            sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=float(10 * (i + 1)))
+
+        assert order.reprice_count == 4, "with the flag off, CHEAP must keep chasing past the default cap"
+        assert order.status == OrderStatus.PENDING
+
+    def test_cap_cancel_preserves_an_existing_partial_fill(self):
+        """Same discipline as the drift-out-of-band cancel path: a real
+        partial fill must survive as PARTIALLY_FILLED (settle-eligible),
+        never silently overwritten to CANCELLED."""
+        book = make_book(best_bid=0.20, bid_depth_at_best=4.0, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=0.25)  # queue_ahead_discounted = 1.0
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0, regime="CHEAP"), book, now=0.0)
+        seconds_remaining = {"cond-1": 1000}
+
+        sim.on_trade_print("tok-up", TradePrint(price=0.20, size=3.0, side="SELL", ts=1.0))
+        assert order.status == OrderStatus.PARTIALLY_FILLED
+        assert order.filled_size == pytest.approx(2.0)
+
+        # Reach the reprice cap.
+        book.apply_snapshot(bids=[(0.24, 20.0)], asks=[(0.26, 20.0)])
+        sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=10.0)
+        book.apply_snapshot(bids=[(0.20, 20.0)], asks=[(0.22, 20.0)])
+        sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=20.0)
+        assert order.reprice_count == 2
+
+        # Third drift triggers the cap-cancel.
+        book.apply_snapshot(bids=[(0.24, 20.0)], asks=[(0.26, 20.0)])
+        sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=30.0)
+
+        assert not order.is_open()
+        assert order.status == OrderStatus.PARTIALLY_FILLED, (
+            "the real 2.0-share fill must remain settle-eligible, not overwritten to CANCELLED"
+        )
+        assert order.filled_size == pytest.approx(2.0)
+        assert order.cancelled_remainder is True
+
+
 class TestPostOnlyNeverCrossesSpread:
     def test_would_cross_spread_detects_marketable_price(self):
         from paperbot.strategy import would_cross_spread

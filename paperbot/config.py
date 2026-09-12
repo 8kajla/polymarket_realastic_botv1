@@ -244,6 +244,29 @@ ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE = os.environ.get(
 # re-place at the new price rather than leaving a stale order unmanaged.
 DRIFT_REPRICE_TICKS = 3
 
+# CONFIRMED LIVE (2026-09-12, cheap-fill-calibration-gap investigation):
+# CHEAP-band orders that fill on the FIRST quote are perfectly fairly
+# priced (edge~=0 vs real resolutions, matching the real trader's own
+# CHEAP calibration exactly) -- but orders that have to reprice/chase the
+# book before filling carry a real, confirmed negative edge, with a clean
+# dose-response by reprice count: 0 reprices fair (+0.18pp, z=+0.28), 3+
+# reprices badly negative (-3.20pp, z=-4.64, the single largest bucket,
+# n=2310, pooled across both bots). This is adverse selection: a resting
+# order only needs to chase because the book keeps moving away from it,
+# and by the time it repeatedly catches up, the true probability has
+# usually kept moving the same direction. MID/CORE/HIGH show no such
+# reprice-count effect -- this is specific to CHEAP's thin, momentum-
+# driven books. Fix: once a CHEAP order has already been repriced this
+# many times, CANCEL it instead of chasing again, rather than let it walk
+# into the worst-performing bucket. Set conservatively at the dose-
+# response's clear inflection point (reprice #3 is where the edge turns
+# sharply negative), not at the first sign of any reprice at all, so this
+# only removes the confirmed-bad tail, not ordinary in-band drift.
+MAX_CHEAP_REPRICES = int(os.environ.get("MAX_CHEAP_REPRICES", "2"))
+ENABLE_CHEAP_REPRICE_CAP = os.environ.get(
+    "ENABLE_CHEAP_REPRICE_CAP", "true"
+).strip().lower() not in ("false", "0", "no")
+
 # How many resting orders this bot will hold OPEN SIMULTANEOUSLY in the same
 # market. CONFIRMED LIVE (2026-09-08): with this at its old implicit value of
 # 1 (a market was skipped entirely in strategy_tick once it had any resting

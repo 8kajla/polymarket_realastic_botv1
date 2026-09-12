@@ -333,6 +333,29 @@ class FillSimulator:
                 from . import behavior_config as bc
                 same_band = bc.classify_regime(book.best_bid) == order.regime
                 if same_band:
+                    # CONFIRMED LIVE (2026-09-12, cheap-fill-calibration-gap):
+                    # CHEAP orders that chase the book 3+ times land in a
+                    # confirmed, badly-negative-edge bucket (z=-4.64) --
+                    # adverse selection from repeatedly re-quoting into a
+                    # book that keeps moving away. Cancel instead of
+                    # repricing again once an order has already used up its
+                    # cap, rather than let it walk further into that bucket.
+                    if (config.ENABLE_CHEAP_REPRICE_CAP and order.regime == "CHEAP"
+                            and order.reprice_count >= config.MAX_CHEAP_REPRICES):
+                        if order.filled_size > 0:
+                            order.cancelled_remainder = True
+                        else:
+                            order.status = OrderStatus.CANCELLED
+                        order.final_at = now
+                        logger.info(
+                            "CANCELLED order=%d asset=%s regime=%s filled=%.6f/%.6f: "
+                            "reprice cap reached (%d >= %d), stopped chasing",
+                            order.order_id, order.asset, order.regime,
+                            order.filled_size, order.original_size,
+                            order.reprice_count, config.MAX_CHEAP_REPRICES,
+                        )
+                        changed.append(order)
+                        continue
                     self._reprice(order, book, now)
                     changed.append(order)
                 else:
