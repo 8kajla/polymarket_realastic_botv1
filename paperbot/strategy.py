@@ -650,6 +650,16 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             if config.ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER and activity.first_entry_price is not None:
                 adverse_move = activity.first_entry_price - (1.0 - price)
                 ratio *= bc.adverse_move_size_multiplier(market.asset, adverse_move)
+            # ADDED 2026-09-12: real, confirmed-independent (via partial
+            # correlation controlling for adverse_move) finding that the
+            # hedge side's own ABSOLUTE price also predicts size, on top of
+            # (not instead of) the delta-from-entry effect just above -- see
+            # ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER's docstring in
+            # behavior_config.py. Uses the same `price` (the hedge side's
+            # own book price) the adverse_move calculation above already
+            # reads, no new state needed.
+            if config.ENABLE_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER:
+                ratio *= bc.absolute_price_hedge_size_multiplier(market.asset, price)
         else:
             ratio = bc.hedge_continuation_size_ratio(activity.hedge_count + 1)
             # ADDED 2026-09-10: direct extension of the hedge_count==0 case

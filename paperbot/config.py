@@ -543,6 +543,18 @@ ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER (see its docstring
+# in behavior_config.py). Added 2026-09-12 -- confirmed via partial
+# correlation (controlling for adverse_move) that the hedge side's own
+# absolute price predicts hedge size independently of how far price has
+# moved since entry. Same pattern as ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER
+# above -- default TRUE everywhere, explicit FALSE for paperbot-mini (the
+# $100 control instance).
+ENABLE_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER = os.environ.get(
+    "ENABLE_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Feature flag for ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER (see its
 # docstring in behavior_config.py). Added 2026-09-10, same night --
 # distinct from the two SIZE flags above, this one scales WHETHER a hedge

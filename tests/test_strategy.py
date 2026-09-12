@@ -1263,7 +1263,9 @@ class TestBuildOrderIntentHedge:
         assert intent is not None
         assert intent.is_hedge is True
         adverse_move = 0.80 - (1.0 - 0.30)  # == 0.10
-        expected_ratio = bc.hedge_size_ratio("Bitcoin", "CORE") * bc.adverse_move_size_multiplier("Bitcoin", adverse_move)
+        expected_ratio = (bc.hedge_size_ratio("Bitcoin", "CORE")
+                           * bc.adverse_move_size_multiplier("Bitcoin", adverse_move)
+                           * bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.30))
         expected_notional = 10.0 * expected_ratio
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
             <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
@@ -1284,7 +1286,9 @@ class TestBuildOrderIntentHedge:
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
-        expected_ratio = bc.hedge_size_ratio("Bitcoin", "CORE")  # no multiplier applied
+        # ADVERSE_MOVE_SIZE_MULTIPLIER is skipped (no first_entry_price), but
+        # ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER doesn't depend on it and still applies.
+        expected_ratio = bc.hedge_size_ratio("Bitcoin", "CORE") * bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.30)
         expected_notional = 10.0 * expected_ratio
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
             <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
@@ -1303,7 +1307,9 @@ class TestBuildOrderIntentHedge:
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
-        expected_ratio = bc.hedge_size_ratio("Bitcoin", "CORE")  # multiplier must be a strict no-op
+        # This flag alone doesn't disable ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER,
+        # a separate, independently-flagged multiplier -- it still applies.
+        expected_ratio = bc.hedge_size_ratio("Bitcoin", "CORE") * bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.30)
         expected_notional = 10.0 * expected_ratio
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
             <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
@@ -1329,6 +1335,78 @@ class TestBuildOrderIntentHedge:
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
         expected_ratio = bc.hedge_continuation_size_ratio(2)  # neither multiplier applied
+        dominant_cost = 10.0
+        expected_notional = dominant_cost * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_hedge_size_also_scales_with_absolute_hedge_price(self, monkeypatch):
+        """build_order_intent's hedge-sizing block, added 2026-09-12:
+        the first hedge's notional must also include
+        ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER, on top of (not instead of)
+        ADVERSE_MOVE_SIZE_MULTIPLIER -- a confirmed-independent effect
+        of the hedge side's own current price."""
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.11, token_id="down")  # a calibrated point (Bitcoin CHEAP extreme)
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE", price=0.80)
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        adverse_move = 0.80 - (1.0 - 0.11)
+        expected_ratio = (bc.hedge_size_ratio("Bitcoin", "CORE")
+                           * bc.adverse_move_size_multiplier("Bitcoin", adverse_move)
+                           * bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.11))
+        expected_notional = 10.0 * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+        # sanity: the multiplier isn't a silent no-op in this scenario
+        assert bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.11) != 1.0
+
+    def test_absolute_price_hedge_multiplier_respects_the_per_instance_feature_flag(self, monkeypatch):
+        # Explicit instruction: paperbot-mini stays on the OLD behavior
+        # (as a control) via ENABLE_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER=false.
+        monkeypatch.setattr(config, "ENABLE_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER", False)
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.11, token_id="down")
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE", price=0.80)
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        adverse_move = 0.80 - (1.0 - 0.11)
+        expected_ratio = bc.hedge_size_ratio("Bitcoin", "CORE") * bc.adverse_move_size_multiplier("Bitcoin", adverse_move)
+        expected_notional = 10.0 * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_absolute_price_hedge_size_multiplier_itself_does_not_leak_into_continuation_hedges(self, monkeypatch):
+        # Scoped to hedge_count==0 only, same rule as ADVERSE_MOVE_SIZE_MULTIPLIER.
+        # Uses the same price (0.30, MID) as the sibling adverse-move test --
+        # CHEAP has its own separate size-scaling that would otherwise
+        # confound this test, which isn't about regime-specific sizing at all.
+        # Also disables ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER, same as
+        # that sibling test, to isolate just this multiplier's scoping.
+        monkeypatch.setattr(config, "ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER", False)
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.30, token_id="down")
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="CORE", price=0.80)
+        activity.record_entry("Down", notional_usd=1.0, regime="CORE", is_hedge=True)
+        assert activity.hedge_count == 1
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        expected_ratio = bc.hedge_continuation_size_ratio(2)  # not touched by this multiplier
         dominant_cost = 10.0
         expected_notional = dominant_cost * expected_ratio
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \

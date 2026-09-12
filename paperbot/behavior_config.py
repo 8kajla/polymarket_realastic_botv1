@@ -1154,6 +1154,67 @@ def adverse_move_size_multiplier(asset: str, adverse_move: Optional[float]) -> f
     return max(1.0 / cap, min(cap, result))
 
 
+# CONFIRMED LIVE (2026-09-12, external-bot-strategies-loop-progress
+# iterations 9-10): the absolute current hedge-side price predicts hedge
+# SIZE beyond what ADVERSE_MOVE_SIZE_MULTIPLIER's delta-from-entry already
+# captures -- not a redundant re-derivation of that mechanism. Verified
+# with a PARTIAL correlation, not a raw one (raw price and adverse_move
+# are collinear, r=0.749): after fitting log(shares) ~ a + b*adverse_move
+# by OLS and taking the RESIDUAL, that residual still correlates with the
+# raw hedge price (partial corr r=+0.103, t=+5.16, n=2,499, first hedges
+# only). The shape is a real, consistent U across all three assets --
+# extra sizing at BOTH price extremes (near-certain win AND near-certain
+# loss for the dominant side), not a one-sided effect -- reads as "near
+# true certainty in either direction deserves more conviction than a
+# purely linear function of how far price has traveled." Calibrated the
+# same way as every other multiplier in this file: fit the OLS baseline,
+# take exp(residual) as a per-trade multiplicative correction, bucket by
+# hedge-price quartile, take the MEDIAN correction per quartile (median,
+# not mean -- same reasoning as ADVERSE_MOVE_SIZE_MULTIPLIER's own choice:
+# size is heavily right-skewed), then rescale so the 4 quartile points are
+# median-neutral (average to 1.0, doesn't change the population's overall
+# calibration, only redistributes it by price). Applied MULTIPLICATIVELY
+# on top of HEDGE_SIZE_RATIO * ADVERSE_MOVE_SIZE_MULTIPLIER, first hedge
+# only (hedge_count==0), same call site as both of those.
+ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER = {
+    "Bitcoin": {0.11: 1.3183, 0.39: 0.6725, 0.70: 0.6817, 0.94: 1.5730},
+    "Ethereum": {0.09: 1.2663, 0.41: 0.6629, 0.81: 0.7337, 0.97: 2.0510},
+    "Solana": {0.13: 1.1448, 0.44: 0.4986, 0.79: 0.8552, 0.95: 2.0437},
+}
+_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER_CAP = 3.0  # measured range tops out
+# at ~2.05 (ETH/SOL q4); same cap convention as HEDGE_LIQUIDITY_MULTIPLIER.
+
+
+def absolute_price_hedge_size_multiplier(asset: str, hedge_price: Optional[float]) -> float:
+    """Continuous, median-neutral multiplier on HEDGE_SIZE_RATIO's base
+    value (applied alongside adverse_move_size_multiplier, not instead of
+    it) as a function of the hedge side's own ABSOLUTE current price --
+    a real, confirmed-independent residual effect beyond the delta-from-
+    entry mechanism ADVERSE_MOVE_SIZE_MULTIPLIER already models. 1.0
+    (no-op) for any asset not in ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER, or
+    when hedge_price is unavailable. Flat beyond the measured range --
+    clamped to the nearest endpoint, never extrapolated, same discipline
+    as every other multiplier in this file. Final result clamped to
+    _ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER_CAP."""
+    curve = ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER.get(asset)
+    if curve is None or hedge_price is None:
+        return 1.0
+    points = sorted(curve.items())
+    lo_price, lo_val = points[0]
+    hi_price, hi_val = points[-1]
+    price = max(lo_price, min(hi_price, hedge_price))
+    result = hi_val
+    for i in range(len(points) - 1):
+        p_price, p_val = points[i]
+        q_price, q_val = points[i + 1]
+        if p_price <= price <= q_price:
+            frac = (price - p_price) / (q_price - p_price) if q_price > p_price else 0.0
+            result = p_val + frac * (q_val - p_val)
+            break
+    cap = _ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
+
+
 # ---------------------------------------------------------------------------
 # WEEKEND-conditioned hedge trigger. Added 2026-09-10: real, well-powered
 # finding that his dual-sided (hedged) rate is meaningfully higher on

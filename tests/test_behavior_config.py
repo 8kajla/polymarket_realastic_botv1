@@ -430,6 +430,61 @@ class TestAdverseMoveSizeMultiplier:
             assert max(curve.values()) < bc._ADVERSE_MOVE_SIZE_MULTIPLIER_CAP
 
 
+class TestAbsolutePriceHedgeSizeMultiplier:
+    """First-hedge-size-vs-absolute-hedge-price multiplier, added
+    2026-09-12 -- real, confirmed-INDEPENDENT (via partial correlation
+    controlling for adverse_move_size_multiplier's own driving variable,
+    r_raw=0.749 collinearity between the two) finding: the hedge side's
+    own absolute current price predicts size beyond the delta-from-entry
+    effect. Partial corr r=+0.103, t=+5.16, n=2,499 (first hedges only).
+    U-shaped across all three assets -- extra sizing at BOTH price
+    extremes, not just one -- median-neutral quartile-point calibration,
+    same discipline as ADVERSE_MOVE_SIZE_MULTIPLIER."""
+
+    def test_neutral_for_assets_not_in_the_table(self):
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            assert bc.absolute_price_hedge_size_multiplier(asset, 0.5) == 1.0
+
+    def test_neutral_when_hedge_price_is_unavailable(self):
+        assert bc.absolute_price_hedge_size_multiplier("Bitcoin", None) == 1.0
+
+    def test_exact_at_each_calibrated_point(self):
+        for asset, curve in bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER.items():
+            for price, expected in curve.items():
+                got = bc.absolute_price_hedge_size_multiplier(asset, float(price))
+                assert abs(got - expected) < 1e-9, f"{asset}@{price}: {got} != {expected}"
+
+    def test_interpolates_between_points(self):
+        # Bitcoin: 0.39->0.6725, 0.70->0.6817 -- the midpoint price must
+        # interpolate to (roughly) the midpoint multiplier.
+        mid_price = (0.39 + 0.70) / 2
+        mid_val = bc.absolute_price_hedge_size_multiplier("Bitcoin", mid_price)
+        assert 0.6725 < mid_val < 0.6817
+
+    def test_flat_beyond_the_measured_range_no_extrapolation(self):
+        at_min = bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.11)
+        below_min = bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.01)
+        assert at_min == below_min
+
+        at_max = bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.94)
+        above_max = bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.99)
+        assert at_max == above_max
+
+    def test_both_extremes_score_above_the_middle_of_the_range(self):
+        # U-shaped, not monotonic: the two extreme quartile points must
+        # both score above the two middle ones, for every live asset.
+        for asset, curve in bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER.items():
+            points = sorted(curve.items())
+            lo_extreme, hi_extreme = points[0][1], points[-1][1]
+            middle_vals = [v for _, v in points[1:-1]]
+            assert lo_extreme > max(middle_vals), f"{asset}: low extreme not above the middle"
+            assert hi_extreme > max(middle_vals), f"{asset}: high extreme not above the middle"
+
+    def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
+        for asset, curve in bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER.items():
+            assert max(curve.values()) < bc._ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER_CAP
+
+
 class TestAdverseMoveContinuationSizeMultiplier:
     """Continuation-hedge (hedge_count>=1) extension of
     TestAdverseMoveSizeMultiplier, added 2026-09-10 same night. Deep-
