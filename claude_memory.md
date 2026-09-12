@@ -44,6 +44,14 @@ THREE are now resolved to their practical ceiling (see `claude_logs.md`
    independent Up/Down preference, so exploiting this would need a new
    mechanism his design never needed before this TWAP change).
 
+**Hypothesis miner re-run (fresh 842k-trade data):** 68 candidates, ~46
+already-known confounds. One genuinely new, partially-surviving lead:
+CHEAP-band immediate-next-market win-rate persistence (after_win 57.35%
+vs after_loss 50.29%, z=3.325, survives regime control) — but temporal
+split shows both halves individually below the significance bar (z=2.447,
+z=1.601, same direction though) — NOT YET CONFIRMED, needs more data.
+Not a build candidate yet.
+
 **No angle work currently queued.** Would need either a genuinely new
 angle from scratch, or new user direction — don't force weak repeats of
 the closed threads below.

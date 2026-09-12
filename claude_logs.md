@@ -1371,3 +1371,65 @@ this conclusion -- a good stopping point.
 
 No further angle work queued -- would need either a genuinely new angle
 from scratch, or new user direction.
+
+---
+
+## Hypothesis miner re-run (2026-09-12), fresh data (842,762 trades, 80,780 markets)
+
+Re-ran `hypothesis_miner.py` at the user's request ("we have a hypothesis
+miner if i know correct check it"). 68 candidates, same count as the
+earlier run this session -- reviewed all 68, not just the top few.
+
+**Top ~46 of 68 are already-known regime/size/price confounds** (regime
+predicts win rate and size; asset differences trace to the already-mapped
+rotation eras; market_slot_in_hour already tested and rejected as a pure
+confound in an earlier iteration; persistence_state already covered by
+the shipped SIDE_PERSISTENCE tables; hour-of-day/weekday already rejected
+for sign-flipping across time clusters). Nothing new there.
+
+**One genuinely fresh, partially-surviving candidate: does the
+IMMEDIATELY PRECEDING market's win/loss predict the CURRENT market's win
+RATE** (distinct from the already-rejected streak-affects-SIZE and
+streak-affects-PARTICIPATION findings, and finer-grained than the
+already-null 300-trade SESSION-level autocorrelation check).
+
+**Regime-controlled result:**
+
+| Regime | after_win winrate | after_loss winrate | z |
+|---|---|---|---|
+| CHEAP | 57.35% (n=1,496) | 50.29% (n=867) | **3.325** |
+| MID | 68.17% (n=2,328) | 64.08% (n=1,030) | 2.324 (just under bar) |
+| CORE | 86.10% (n=806) | 84.35% (n=313) | 0.753 (null) |
+| HIGH | 93.88% (n=245) | 95.39% (n=152) | -0.642 (null) |
+
+CHEAP clears the significance bar even with regime held fixed; the
+composition check shows only a modest regime-mix difference between
+groups (CHEAP share 30.7% vs 36.7%), not enough to fully explain a 7pp
+win-rate gap on its own.
+
+**Temporal-stability check weakens confidence, though doesn't reverse
+it:** split CHEAP-only pairs chronologically -- FIRST HALF z=2.447,
+SECOND HALF z=1.601, both individually BELOW the |z|>=2.58 bar even
+though the pooled result clears it, and both show the SAME direction
+(after-win > after-loss). This is the "real small effect needs the full
+sample" pattern, not the sign-flip pattern that killed the weekend
+effect and cross-asset-tilt findings -- more promising than those, but
+not yet fully robust either.
+
+**Status: a real, promising, NOT YET CONFIRMED lead** -- a possible
+genuine accuracy-persistence effect specific to CHEAP-band decisions
+(win begets win at the immediate next-decision level), distinct from
+everything already shipped. Plausible mechanism (not yet tested): some
+days/stretches his read on decisive-signal timing is genuinely more "in
+sync" with real market conditions than others, and that sync persists
+across a few consecutive CHEAP opportunities -- closer to environmental
+persistence than psychological momentum. NOT a build candidate yet --
+needs more accumulated data (the temporal split is already thin) before
+trusting further, same discipline as every other near-bar candidate this
+project has learned to treat carefully.
+
+**Rest of the 68**: nothing else new. #66 (raw pooled Up/Down win-rate
+asymmetry, 31.46% vs 30.56%) is real but tiny in magnitude (well below 1pp)
+and likely composition-driven given how small it is relative to the much
+larger, already-confirmed CHEAP-band-specific Up/Down asymmetry found
+earlier -- not pursued further given the effect size.
