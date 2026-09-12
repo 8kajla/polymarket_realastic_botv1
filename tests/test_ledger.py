@@ -191,6 +191,62 @@ class TestMakerRebate:
         assert reloaded.records[0].rebate_usd == pytest.approx(config.maker_rebate_usd(10.0, 0.20))
 
 
+class TestFillsBreakdownPersisted:
+    """ADDED 2026-09-13: per-fill (size, price, ts) breakdown, needed to
+    ever compare this bot's own order-laddering behavior against the real
+    trader's (research thread found 56% of his multi-fill markets show a
+    ladder signature -- multiple distinct prices within a couple seconds
+    -- but the ledger only ever kept a weighted-average entry_price,
+    which can't answer that question for the bot's own history)."""
+
+    def test_single_fill_order_records_its_one_fill(self):
+        ledger = Ledger()
+        order = make_filled_order(price=0.20, size=10.0, side="Down")
+        record = ledger.settle_order(order, winning_side="Down")
+        assert record.fills == [{"size": 10.0, "price": 0.20, "ts": 1.0}]
+
+    def test_multi_fill_order_records_every_fill_with_its_own_price_and_ts(self):
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-1", token_id="tok-up",
+            asset="Bitcoin", regime="MID", position_tier="first", side="Up",
+            price=0.55, original_size=10.0, is_floor_lot=False,
+            placed_at=0.0, remaining_size=0.0,
+        )
+        order.fills.append(Fill(size=4.0, price=0.40, ts=100.0))
+        order.fills.append(Fill(size=6.0, price=0.55, ts=103.5))
+        order.status = OrderStatus.FILLED
+        ledger = Ledger()
+        record = ledger.settle_order(order, winning_side="Up")
+        assert record.fills == [
+            {"size": 4.0, "price": 0.40, "ts": 100.0},
+            {"size": 6.0, "price": 0.55, "ts": 103.5},
+        ]
+
+    def test_old_records_without_fills_field_default_to_empty_list_not_a_crash(self):
+        """Same backward-compatibility discipline as rebate_usd above: a
+        ledger.json saved before this field existed has no "fills" key at
+        all -- must load cleanly with fills=[], not KeyError, and never
+        fabricate per-fill history we don't have."""
+        raw = {
+            "order_id": 1, "condition_id": "c1", "asset": "Bitcoin", "regime": "CHEAP",
+            "side": "Up", "entry_price": 0.2, "filled_size": 10.0, "entry_cost": 2.0,
+            "winning_side": "Up", "won": True, "payout": 10.0, "pnl": 8.0,
+            "settled_at": 1.0, "is_floor_lot": False,
+        }
+        record = SettlementRecord(**raw)
+        assert record.fills == []
+
+    def test_persists_and_reloads_fills_correctly(self, tmp_path):
+        path = tmp_path / "ledger.json"
+        ledger = Ledger()
+        order = make_filled_order(price=0.20, size=10.0, side="Down")
+        ledger.settle_order(order, winning_side="Down")
+        ledger.save(path)
+
+        reloaded = Ledger.load(path)
+        assert reloaded.records[0].fills == [{"size": 10.0, "price": 0.20, "ts": 1.0}]
+
+
 class TestRealizedPnlRecompute:
     def test_pnl_recomputes_from_records_not_a_running_counter(self):
         ledger = Ledger()

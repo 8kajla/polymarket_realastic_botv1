@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -53,6 +53,19 @@ class SettlementRecord:
     # would make every one of those comparisons wrong retroactively. Use
     # pnl_with_rebate() for the real, total economic result.
     rebate_usd: float = 0.0
+    # ADDED 2026-09-13 (real-trader "order laddering" research thread):
+    # per-fill (size, price, ts) breakdown, straight from order.fills --
+    # SimulatedOrder already tracks this in memory (each Fill has its own
+    # ts), it was just never persisted past settlement. Existing fields
+    # only ever kept the WEIGHTED-AVERAGE entry_price/filled_size, which
+    # cannot answer "did this bot place multiple resting orders at
+    # different price levels within a couple seconds of each other" --
+    # exactly the question the real trader's trades.jsonl already answered
+    # (56% of his multi-fill markets show a ladder signature) but this
+    # bot's own ledger couldn't, for lack of per-fill timing. Purely
+    # additive: defaults to [] so every existing ledger.json (saved before
+    # this field existed) still loads cleanly via SettlementRecord(**raw).
+    fills: list = field(default_factory=list)
 
     def pnl_with_rebate(self) -> float:
         return self.pnl + self.rebate_usd
@@ -134,6 +147,7 @@ class Ledger:
             is_hedge=order.is_hedge,
             is_scout=order.is_scout,
             rebate_usd=rebate_usd,
+            fills=[{"size": f.size, "price": f.price, "ts": f.ts} for f in order.fills],
         )
         self.records.append(record)
         self._settled_order_ids.add(order.order_id)
