@@ -450,6 +450,14 @@ class PaperBot:
                 continue
             open_here = self.resting_order_ids.get(cid)
             if open_here and len(open_here) >= config.MAX_OPEN_ORDERS_PER_MARKET:
+                # DIAGNOSTIC (2026-09-12): previously silent -- added while
+                # investigating why our trade count per market runs far
+                # below the real trader's. This gate can starve an entire
+                # market of new entries for the rest of its life if resting
+                # orders sit unfilled/unrepriced long enough to keep all
+                # MAX_OPEN_ORDERS_PER_MARKET slots occupied.
+                logger.info("SKIP_OPEN_ORDER_CAP asset=%s open=%d cap=%d",
+                            market.asset, len(open_here), config.MAX_OPEN_ORDERS_PER_MARKET)
                 continue
             try:
                 self._evaluate_one_market(market, now)
@@ -467,6 +475,14 @@ class PaperBot:
         down_book = self.book_states.get(market.token_id_down)
         if up_book is None or down_book is None or up_book.best_bid is None \
                 or down_book.best_bid is None:
+            # DIAGNOSTIC (2026-09-12): previously silent, same investigation
+            # as SKIP_OPEN_ORDER_CAP above.
+            logger.info(
+                "SKIP_NO_BOOK asset=%s up_present=%s down_present=%s up_bid=%s down_bid=%s",
+                market.asset, up_book is not None, down_book is not None,
+                up_book.best_bid if up_book else None,
+                down_book.best_bid if down_book else None,
+            )
             return
 
         activity = self.activity[market.condition_id]
