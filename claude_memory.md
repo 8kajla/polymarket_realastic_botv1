@@ -1290,3 +1290,37 @@ Still open, lower priority: ACCURACY_SCOUT_MULTIPLIER (pooled,
 needs a resolved-outcome join, more involved methodology) -- next
 candidate if the loop keeps firing and finds nothing else. See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 8): ACCURACY_SCOUT_MULTIPLIER recalibrated — sign reversed post-halt
+
+Closed the last unchecked thread from the 28-item audit. Used
+resolution_cache.json (slug->winning_side) to reconstruct the real
+rolling-accuracy state bot.py maintains live (dominant_side==
+winning_side over the last 10 resolved markets per asset), post-halt
+only, n=3770 rows.
+
+Ran the same circularity check the original 2026-09-11 build used
+(recompute accuracy from non-scout markets only) -- survives, even
+slightly strengthens. Finding: worse-accuracy-more-scouting has
+REVERSED to better-accuracy-more-scouting (0.9450->1.2676 rising, vs
+original 1.8753->0.4133 falling). Stable across a time split, same
+"Bitcoin alone marginal" pattern as the original.
+
+Why this matters: this multiplier scales SCOUT_PROBABILITY's output --
+a stale, wrong-signed table meant our bots were scouting LESS after a
+good run of calls and MORE after a bad one, the opposite of the
+trader's actual current behavior.
+
+How to apply: any multiplier with a resolution-feedback dependency
+(anything reading rolling_accuracy_by_asset, recent_losses_by_asset,
+or similar bot.py-maintained rolling state) needs resolution_cache.json
+joined on slug to recheck properly -- trades.jsonl alone isn't enough
+for these, unlike almost everything else recalibrated this session.
+
+533/533 tests passing, deployed to all 3 bots, verified healthy.
+
+**Full audit now complete: 11 distinct multipliers recalibrated or
+retired across 8 /loop cycles, one coherent root cause (13.6-day halt).
+Only 2 items remain, both confirmed genuinely infeasible with any data
+source available this session** (GRADIENT_BIAS_PCT, RESUMPTION_SIZE_
+MULTIPLIER). See [[full-behavioral-audit-tracker]].

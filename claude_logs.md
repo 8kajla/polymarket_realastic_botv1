@@ -6256,3 +6256,83 @@ cycle if it finds nothing else new.
 cause. Still only 2 confirmed-genuinely-infeasible items (GRADIENT_
 BIAS_PCT, RESUMPTION_SIZE_MULTIPLIER) plus this one lower-priority,
 not-yet-attempted item.
+
+## 2026-09-13: /loop cycle 8 — ACCURACY_SCOUT_MULTIPLIER recalibrated, sign reversed post-halt
+
+Closed the last unchecked thread from the entire 28-item audit: cycle 7
+deferred `ACCURACY_SCOUT_MULTIPLIER` because it needed a resolved-
+outcome join (more involved than a straight trade-level recalibration)
+and had a documented circularity check to preserve if re-tested.
+
+**Data source**: `resolution_cache.json` on the server (81199 slug ->
+winning_side entries) — the first time this session a recalibration
+needed resolution outcomes rather than trades.jsonl alone, since this
+multiplier's input (`rolling_accuracy`) is a resolution-feedback state
+bot.py only starts maintaining once markets actually resolve.
+
+**Methodology**: reconstructed the exact live computation from bot.py —
+per asset, walk resolved markets in time order, maintain a deque of the
+last `ACCURACY_ROLLING_WINDOW=10` markets' `dominant_side==winning_side`
+correctness, compute rolling accuracy BEFORE each market, then check if
+that market's own first entry was a scout case (first_entry_side !=
+dominant_side). Post-halt-only (ts>=HALT_END), n=3770 rows with enough
+window history (>=3 resolved markets) to bucket.
+
+**Circularity check preserved**: the original 2026-09-11 build noted
+scout bets are separately less accurate, so accuracy computed from ALL
+recent trades (including scout ones) is partly mechanically caused by
+recent scouting itself — a spurious self-referential loop. The original
+re-tested using accuracy computed from ONLY non-scout/committed markets
+and found the effect survived, strengthening from z=2.18 (BTC-only) to
+z=6.94 pooled. Ran the identical correction here: pooled r=0.0976,
+t=6.014 (non-scout-only) vs r=0.0917, t=5.655 (production's own
+all-trades definition) — survives and even slightly strengthens, same
+as the original's own validation.
+
+**The finding — sign reversal, not just staleness**: pre-halt, worse
+recent accuracy predicted MORE scouting (a "hedge my uncertainty when
+I've been wrong lately" story) — multiplier fell 1.8753 -> 0.4133 as
+accuracy rose. Post-halt, the direction has flipped: BETTER recent
+accuracy now predicts MORE scouting — multiplier rises 0.9450 -> 1.2676.
+
+Checked hard for a fluke before trusting this, given how counter-
+intuitive a full sign flip is:
+- Time-split stability: first-half r=0.0782/t=3.405, second-half
+  r=0.0599/t=2.604 — same sign, comparable magnitude, both windows well
+  inside the post-halt period (not driven by one cluster of days).
+- Per-asset breakdown reproduces the ORIGINAL build's own caveat almost
+  exactly: Bitcoin alone is only marginal (t=0.999, n.s. — original
+  reported BTC-only was "marginal, z=2.18"), Ethereum (t=2.815) and
+  Solana (t=3.553) carry the pooled signal, same as before.
+- Effect size collapsed too, consistent with every other table fixed
+  this session: post-halt range ~1.3x (0.945-1.268) vs original ~4.5x
+  (0.413-1.875) — the flattening pattern applies even where the SIGN
+  also changed.
+
+This is now an 11th distinct multiplier (counting cumulatively) touched
+by the post-halt regime shift, and the first one where the underlying
+relationship's direction itself changed, not just its magnitude — worth
+flagging distinctly since every other fix this session was a level/
+magnitude change, never a reversal.
+
+**Test fix**: `test_decreases_with_accuracy` renamed to
+`test_increases_with_accuracy` and its assertion flipped — a genuine
+data-driven shape/direction change, not a fragility patch. Class
+docstring updated to note the reversal explicitly so a future reader
+doesn't assume the old framing still holds.
+
+533/533 tests passing, deployed to all 3 bots
+(paperbot/paperbot-100/coinbase-bot), verified healthy via journalctl
+(orders placing/skipping/bumping normally on all 3, no errors).
+
+**This closes the full 28-item behavioral audit.** Final tally across 8
+/loop cycles: 11 distinct multipliers recalibrated or retired, all
+traced to one coherent root cause (the 13.6-day halt produced a
+discrete, stable post-halt behavioral regime shift touching sizing,
+hedge-trigger conditioning, floor-lot probing, scout-entry sizing, AND
+now accuracy-conditioned scout probability — including one outright
+sign reversal). Only 2 items remain from the original checklist, both
+re-confirmed multiple times as genuinely infeasible with any data
+source available this session: GRADIENT_BIAS_PCT (insufficient
+market_snapshots.jsonl density) and RESUMPTION_SIZE_MULTIPLIER (zero
+qualifying post-halt gaps exist to test against).
