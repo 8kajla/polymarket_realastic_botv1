@@ -266,14 +266,29 @@ ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE = os.environ.get(
 # contains fills, not his real queue-position experience), so these are a
 # REASONED ENGINEERING ESTIMATE derived from the observed relative
 # SELL-print volume ratios, not a value fit to his data. Bitcoin stays at
-# 1.0 (no change -- its own fill rate already looks reasonable). Ethereum
-# and Solana get a multiplier roughly proportional to their print-volume
-# shortfall vs Bitcoin. Treat as a monitored change: re-run the same
-# TRADE_PRINT_COUNTS + fill-rate-by-asset breakdown after this has been
-# live a while, and adjust (or revert) if Solana's fill rate hasn't moved
-# meaningfully off its near-zero baseline.
+# 1.0 (no change -- its own fill rate already looks reasonable).
+#
+# ADJUSTED 2026-09-13, ~40 min after first deploying this table, per its
+# own stated monitoring criterion: Solana's 0.25x moved its fill rate
+# meaningfully (0.1% -> ~0.5-1.0%, confirmed across several fill-rate-
+# by-asset checks) -- kept as-is. Ethereum's original 0.6x (chosen
+# proportional to its print-volume shortfall, ~60-67% of Bitcoin's,
+# roughly the smallest cut of the two) did NOT move its fill rate at
+# all over the same monitoring window (1.4% post-fix vs 2.4% pre-fix --
+# flat to slightly worse, not the improvement predicted). This means
+# Ethereum's fill-rate shortfall isn't explained by print-volume alone
+# to the same degree Solana's is -- something else (queue depth
+# composition, price-level placement, or just a genuinely steeper
+# relationship between queue-safety-factor and realized fill rate at
+# this volume level) is also at play, not yet root-caused. Trusting the
+# EMPIRICAL result over the original print-ratio estimate: lowered to
+# 0.3 (closer to Solana's successful magnitude) since the milder cut
+# demonstrably wasn't enough. Continue monitoring at 0.3 -- if this
+# still doesn't move Ethereum's fill rate, the mechanism needs deeper
+# investigation beyond a queue-safety-factor adjustment (this table's
+# own lever may not be the actual bottleneck for Ethereum specifically).
 QUEUE_SAFETY_FACTOR_OVERRIDE_BY_ASSET = {
-    "Ethereum": 0.6,
+    "Ethereum": 0.3,
     "Solana": 0.25,
 }
 ENABLE_ASSET_QUEUE_SAFETY_OVERRIDE = os.environ.get(
