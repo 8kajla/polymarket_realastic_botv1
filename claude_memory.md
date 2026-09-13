@@ -1609,3 +1609,33 @@ behavior.
 actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
 2 methodology bugs found-and-corrected, across 20 /loop cycles.** See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 21, same day): third refinement to ENTRY_SIZING_USD -- index semantics
+
+Verified cycle 20's fix against bot.py's ACTUAL code (not just its own
+docstring prose) and found a further mismatch: real_fill_count
+increments for EVERY fill (hedge or ordinary), confirmed directly in
+bot.py's record_real_fill. Cycle 20 used a dominant-side-ONLY sub-index
+that ignores interspersed hedge fills advancing the true shared
+counter. Also tested "first-entered side" as an alternative side filter
+(decide_side can genuinely switch mid-market) but kept dominant-by-cost
+for consistency with this whole file's established is_hedge==opposite-
+of-dominant convention.
+
+Redone with the correct combined index (walk all decisions
+chronologically, one shared counter, sample dominant-side decisions at
+their TRUE tier). Most cells shift 0-10% further; some HIGH-band cells
+fell below n>=200 under this more selective definition and were kept
+at last-known values. 537/537 tests passing, deployed, verified
+healthy.
+
+This is the THIRD distinct methodology refinement to this one table in
+a single day (boundary -> population -> index semantics) -- each
+caught by verifying the immediately preceding cycle's own fix against
+actual production code, not assuming a same-session fix was already
+correct.
+
+**Running tally: 18 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
+3 methodology bugs found-and-corrected, across 21 /loop cycles.** See
+[[full-behavioral-audit-tracker]].

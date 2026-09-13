@@ -7219,3 +7219,95 @@ checked-with-insufficient-rigor, 1 architecture gap closed, and 2
 methodology bugs found-and-corrected (the HALT_END boundary in cycle
 18, and this cycle's own population-definition fix), across 20 /loop
 cycles.**
+
+## 2026-09-13: /loop cycle 21 (same day) — third methodology refinement to ENTRY_SIZING_USD, correcting the tier-index semantics
+
+Rather than moving to a new table, spent this cycle verifying cycle
+20's own fix against the ACTUAL production code path, not just
+re-reading the docstring prose cycle 20 had relied on. That extra
+scrutiny found a further, genuine mismatch.
+
+**The mismatch**: `position_tier_for_index` receives `real_fill_count`
+live (via `MarketActivityState.position_tier()` in `strategy.py`).
+Traced `real_fill_count` back to its one write site — `bot.py`'s
+`record_real_fill(is_hedge)` — and confirmed `self.real_fill_count +=
+1` runs UNCONDITIONALLY, with `is_hedge` only gating a completely
+separate `real_hedge_fill_count`. In other words, `real_fill_count` is
+a single counter shared across BOTH hedge and ordinary fills in a
+market — it does not reset or skip when a hedge happens. Cycle 20's
+re-derivation, however, assigned each dominant-side decision's tier
+using a sub-index counted only among OTHER dominant-side decisions,
+silently ignoring any interspersed hedge (non-dominant) fills that
+would also have advanced the real, shared counter in production. That
+mismatch shifts every dominant-side decision's effective tier earlier
+than it truly is, in any market that hedges before that decision — and
+given hedge rates are non-trivial across every asset/regime this
+session has measured, this wasn't a rare edge case.
+
+**A second question also directly tested, not just assumed**: could
+"first-entered side" (the side of the market's very first fill,
+chronologically) be the more correct SIDE filter instead of "dominant
+by final cost"? This matters because `decide_side` can genuinely
+persist-or-switch the bot's own held side mid-market (confirmed
+directly in its own docstring — side persistence is a per-decision
+coin flip, not a one-time commitment). Computed both definitions side
+by side and found real, sometimes large divergence for some cells
+(Solana MID showed a spurious-looking -30% under a naive "first-side,
+dominant-only-sub-index" combination) — but on isolating exactly which
+of the two changes (side filter vs index semantics) was actually
+driving that divergence, it turned out to be almost entirely the INDEX
+bug, not the side-filter choice: once the index was corrected to the
+proper combined counter, "dominant by cost" and "first-entered side"
+converged to much closer agreement. Given this, and given the whole
+project's own established convention throughout every other table in
+this file already treats `is_hedge == opposite-of-dominant` as the
+operational definition of "ordinary" vs "hedge" trades, kept
+dominant-by-cost as the side filter — introducing a second,
+incompatible side-classification just for this one table would create
+more inconsistency across the file than it would resolve, for a
+marginal, mostly-already-captured benefit.
+
+**Fix shipped**: redone with the correct combined index — for each
+market, walk ALL decisions (both sides) in chronological order
+maintaining ONE shared counter (matching `real_fill_count` exactly),
+but continue to SAMPLE only dominant-side decisions, now at their true
+combined-index tier. Most cells shift a further 0-10% from cycle 20's
+already-corrected numbers — a modest refinement, not a dramatic
+reversal. A few HIGH-band cells shift more (12-20%), but those were
+already the thinnest, least-certain cells in every prior pass at this
+table (cycle 1's original build, cycle 20's fix, and now this one).
+Several HIGH/first and CORE/first cells fell below the n>=200 trust
+bar under this MORE selective (and more correct) definition — hedges
+are disproportionately common in HIGH band, which thins out how many
+early dominant decisions remain "still at a low combined index" once
+hedges are properly counted against the shared counter too. Those
+cells were left at their last-known value (from cycle 20 or earlier)
+rather than shipped on a newly-thin sample.
+
+No test changes needed — grepped for every one of the old and new
+literal values across both test files and found no hardcoded
+assertions referencing any of them. 537/537 tests passing, deployed to
+all 3 bots (paperbot/paperbot-100/coinbase-bot), verified healthy via
+journalctl (no errors on any service).
+
+**Why this cycle matters beyond its own numbers**: this is the THIRD
+distinct methodology refinement to this SINGLE table within one
+calendar day (cycle 18: HALT_END boundary; cycle 19: an attempted
+"first"-tier-only fix that was itself later found flawed; cycle 20:
+the population-definition fix; cycle 21: this index-semantics fix). Each
+one was caught not by finding a new external data source or running a
+bigger sample, but by verifying the IMMEDIATELY PRECEDING cycle's own
+work against the actual production code rather than assuming a fix —
+once shipped within the same session — was automatically correct. It's
+a concrete, repeated demonstration of exactly how many layers of
+subtlety a single foundational table can hide, and why the discipline
+this whole audit has tried to model (keep checking, including your own
+very recent conclusions) keeps finding real things rather than running
+dry.
+
+**Running tally: 18 tables recalibrated or retired (with
+`ENTRY_SIZING_USD` now refined three separate times in one day), plus
+2 confirmed-not-actionable, 1 checked-with-insufficient-rigor, 1
+architecture gap closed, and 3 methodology bugs found-and-corrected
+(the HALT_END boundary, cycle 19's population definition, and now
+cycle 20's index semantics), across 21 /loop cycles.**
