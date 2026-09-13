@@ -7311,3 +7311,86 @@ dry.
 architecture gap closed, and 3 methodology bugs found-and-corrected
 (the HALT_END boundary, cycle 19's population definition, and now
 cycle 20's index semantics), across 21 /loop cycles.**
+
+## 2026-09-13: /loop cycle 22 (same day) — REENTRY_FATIGUE shares ENTRY_SIZING_USD's index bug, two cells flip trust-bar status in opposite directions
+
+After fixing `ENTRY_SIZING_USD`'s tier-index semantics in cycle 21,
+asked the natural follow-up question: does any OTHER table in this
+file share the same underlying mechanism, and therefore the same
+class of bug? `REENTRY_FATIGUE` was the obvious candidate — it's also
+keyed directly on `real_fill_count` (`bc.reentry_fatigue_multiplier
+(asset, regime, real_fill_count)` in `strategy.py`, at the exact same
+call site pattern as `position_tier_for_index`).
+
+**Confirmed it had the bug too**: cycle 10's own docstring had
+explicitly claimed its position index "matches real_fill_count's own
+semantics" — but the actual cycle-10 script had counted position
+among SAME-SIDE fills only (1-indexed position within one side's own
+fill sequence), not the true combined counter that also advances on
+every hedge fill. This is precisely the mistake cycle 21 diagnosed and
+fixed for `ENTRY_SIZING_USD` just one cycle earlier — REENTRY_FATIGUE
+had simply never been re-checked against it.
+
+**Methodology**: redone with the correct combined index (same approach
+as cycle 21 — walk all decisions chronologically maintaining one
+shared counter matching `real_fill_count` exactly, evaluate the
+dominant side's win-rate-by-index), plus applying cycle 18's corrected
+`HALT_END` boundary, which had also never been re-applied to this
+table specifically.
+
+**Result — two cells hold steady, two flip status entirely**:
+- Bitcoin/CORE: 0.9179 -> 0.9339 (z=-6.185) — still clearly real,
+  barely moved.
+- Ethereum/CHEAP: 0.6480 -> 0.6493 (z=-6.632) — essentially unchanged,
+  still clearly real.
+- **Solana/CHEAP**: was KEPT in cycle 10 with a seemingly solid
+  z=-2.938 — under the corrected index, this collapses to z=-0.106,
+  completely flat (ratio 0.9906, indistinguishable from 1.0). The
+  earlier "real" verdict was itself entirely an artifact of the
+  same-side-only mis-indexing, not a genuine effect. REMOVED.
+- **Ethereum/CORE**: was REMOVED in cycle 10 as "vanished" (z=0.533,
+  post-cliff rate actually higher than pre-cliff) — under the
+  corrected index, this flips to z=-2.561 with a ratio (0.9331) that
+  matches Bitcoin/CORE's already-confirmed-real ratio (0.9339) almost
+  to the decimal, on a healthy n=948/487 split. RESTORED — though
+  honestly flagged in the docstring as borderline (0.019 short of the
+  formal |z|>=2.58 bar) rather than pretending it cleanly passed, given
+  how closely it tracks a cell that's unambiguously real at nearly the
+  identical magnitude.
+
+Cliff thresholds themselves were not re-derived (same scope limit
+disclosed back in cycle 10 — a heavier lift than this pass covers).
+
+**Test fixes**: `test_noop_for_cells_that_vanished_post_halt` had
+hardcoded Ethereum/CORE as one of the 3 no-op assertions — since it's
+no longer a no-op, swapped it for Solana/CHEAP (the cell that newly
+became one). `test_reentry_fatigue_and_hedge_count_reinforcement_
+dont_compound_pathologically`'s docstring described a 2-cell overlap
+with `HEDGE_COUNT_REINFORCEMENT` that's now down to 1 cell (only
+Ethereum/CHEAP remains in both tables) — its actual assertion logic
+already computes the overlap dynamically via set intersection, so only
+the prose needed updating, not the test itself. 537/537 tests passing,
+deployed to all 3 bots (paperbot/paperbot-100/coinbase-bot), verified
+healthy via journalctl.
+
+**Why this cycle matters as a pattern, not just a fix**: this is the
+FOURTH methodology bug found and fixed in one calendar day, and the
+first one found by deliberately asking "does a bug I just found in one
+table also affect other tables that share the same underlying
+mechanism" rather than treating each fix as a one-off, isolated
+correction. `real_fill_count` is read by more than one table in this
+file — this cycle's result confirms that's a real, productive line of
+inquiry to keep pulling on, not a coincidence specific to these two
+tables.
+
+**Running tally: 19 tables recalibrated or retired (18 plus
+REENTRY_FATIGUE's own correction), plus 2 confirmed-not-actionable, 1
+checked-with-insufficient-rigor, 1 architecture gap closed, and 4
+methodology bugs found-and-corrected (HALT_END boundary; cycle-19
+population definition; cycle-20/21 index semantics for
+ENTRY_SIZING_USD; cycle-22 index semantics for REENTRY_FATIGUE), across
+22 /loop cycles.** Next natural candidate: audit `HEDGE_COUNT_
+REINFORCEMENT` (keyed on `live_hedge_count`, a different but related
+counter) and any other real_fill_count/hedge-count-keyed table for the
+same class of mistake, rather than assuming only these two were
+affected.

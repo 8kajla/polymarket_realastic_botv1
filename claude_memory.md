@@ -1639,3 +1639,29 @@ correct.
 actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
 3 methodology bugs found-and-corrected, across 21 /loop cycles.** See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 22, same day): REENTRY_FATIGUE shares ENTRY_SIZING_USD's index bug -- 2 cells flip status
+
+Checked whether cycle 21's just-found bug (real_fill_count is a
+combined hedge+ordinary counter, not same-side-only) also affects
+REENTRY_FATIGUE, since it's keyed on the same variable. It did.
+
+Bitcoin/CORE and Ethereum/CHEAP still hold (refreshed, nearly
+identical). But Solana/CHEAP's earlier "real" verdict (cycle 10,
+z=-2.938) was itself an artifact of the mis-indexing -- now flat
+(z=-0.106), REMOVED. Ethereum/CORE's earlier "vanished" verdict was
+ALSO wrong -- now z=-2.561 with ratio matching Bitcoin/CORE's
+confirmed-real magnitude almost exactly -- RESTORED (borderline but
+consistent).
+
+537/537 tests passing, deployed to all 3 bots, verified healthy.
+
+Why this matters: found by asking "does a bug found in one table also
+affect OTHER tables sharing the same mechanism" rather than treating
+fixes as isolated. real_fill_count is used by multiple tables --
+worth checking each one systematically.
+
+**Running tally: 19 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
+4 methodology bugs found-and-corrected, across 22 /loop cycles.** See
+[[full-behavioral-audit-tracker]].
