@@ -1324,3 +1324,37 @@ retired across 8 /loop cycles, one coherent root cause (13.6-day halt).
 Only 2 items remain, both confirmed genuinely infeasible with any data
 source available this session** (GRADIENT_BIAS_PCT, RESUMPTION_SIZE_
 MULTIPLIER). See [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 9): CROSS_MARKET_SIDE_PERSISTENCE recalibrated; CHEAP-edge-gap recommendation closed
+
+With the 28-item checklist exhausted, went back to item #2 (flagged
+"under-calibrated" -- was on pooled whole-history values, never even
+post-TWAP-only). Post-halt-only recheck: unlike almost every other
+table this session, this one held up well (rates within 1-2pp of old
+values for all 3 assets). Recalibrated anyway for methodology
+consistency. Bitcoin/Solana's win-vs-loss split still clears the
+project's own z>=2.58 bar standalone; Ethereum's weakened just below it
+(z=2.191, honestly flagged, kept as measured).
+
+Also directly tested [[cheap-edge-gap-root-cause-persistence-miscalibration]]'s
+standing recommendation #1 (retarget this table toward "predicts a
+win" instead of "matches frequency" for CHEAP). Result: no significant
+win-predicting signal exists in CHEAP for persist-vs-switch (all
+|z|<0.75 across all 3 assets) -- the proposed fix isn't viable with
+current data. Frequency-matching (the current design) is confirmed
+correct, not a mistake. Updated that memory file's status.
+
+Why this matters: closes a genuinely open thread rather than leaving
+it dangling indefinitely -- "attempted and found not viable" is a real
+answer, distinct from "not yet attempted."
+
+533/533 tests passing, deployed to all 3 bots, verified healthy.
+
+**Running tally: 12 multipliers recalibrated across 9 /loop cycles.**
+The original 28-item checklist and every concrete follow-up thread it
+spawned (SCOUT_SIZE_RATIO, ACCURACY_SCOUT_MULTIPLIER, CROSS_MARKET_
+SIDE_PERSISTENCE) are now closed. Next candidates for further cycles:
+the other 2026-09-13-dated built features (REENTRY_FATIGUE,
+HEDGE_COUNT_REINFORCEMENT, HEDGE_TRIGGER_AFTER_BIG_LOSS,
+BANKROLL_PNL_SIZE_MULTIPLIER) haven't had their OWN post-halt-freshness
+checked yet. See [[full-behavioral-audit-tracker]].

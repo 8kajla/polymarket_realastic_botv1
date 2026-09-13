@@ -6336,3 +6336,87 @@ re-confirmed multiple times as genuinely infeasible with any data
 source available this session: GRADIENT_BIAS_PCT (insufficient
 market_snapshots.jsonl density) and RESUMPTION_SIZE_MULTIPLIER (zero
 qualifying post-halt gaps exist to test against).
+
+## 2026-09-13: /loop cycle 9 — CROSS_MARKET_SIDE_PERSISTENCE recalibrated; CHEAP-edge-gap recommendation closed as not viable
+
+With the full 28-item checklist exhausted after cycle 8, went back to
+item #2 (`CROSS_MARKET_SIDE_PERSISTENCE`), which the original audit
+tagged "Real signal, under-calibrated" — its own docstring admitted the
+deployed numbers were the "safer POOLED whole-history values (not
+post-TWAP-only)", meaning this one had NEVER been refreshed even to
+post-TWAP granularity, let alone post-halt, unlike almost everything
+else touched this session.
+
+**Methodology**: same causally-clean consecutive-pair test the original
+2026-09-11 build used — restrict to genuinely-consecutive market pairs
+(gap<=1h, so a long silence never bridges two unrelated eras), measure
+P(this market's first-entry side == previous market's first-entry
+side), split by whether the previous market's first-entry side actually
+won (via resolution_cache.json joined on slug). Post-halt-only
+(ts>=HALT_END).
+
+**Result — this one actually held up well**: post-halt rates are
+within 1-2 percentage points of the old pooled-whole-history values for
+all 3 assets, a first for this session (every other recalibration
+found either a dramatic level shift or an outright vanished/reversed
+effect):
+- Bitcoin: after_win 0.5148->0.5182, after_loss 0.6013->0.6128
+- Ethereum: after_win 0.4675->0.4874, after_loss 0.5736->0.5515
+- Solana: after_win 0.4812->0.4990, after_loss 0.6068->0.5853
+
+Recalibrated anyway, since post-halt-only is strictly the better
+methodology this session established, with solid n (BTC 633/687, ETH
+476/747, SOL 503/733 after_win/after_loss pairs). Checked whether the
+core finding — persistence stronger after a loss than after a win —
+still clears this file's own |z|>=2.58 bar on the post-halt sample
+alone: Bitcoin z=3.478 and Solana z=2.999 both still clear it.
+Ethereum's has weakened to z=2.191, just under the bar (was z=-3.28
+originally) — documented honestly in the table's docstring rather than
+silently kept at the old, more-significant-looking number. Direction
+and rough magnitude still match Bitcoin/Solana, so kept as measured
+rather than reverted to a flat non-split rate.
+
+**Also closed a standing recommendation from project memory**: the
+`cheap-edge-gap-root-cause-persistence-miscalibration` investigation
+(2026-09-13, earlier this session) had proposed retargeting this table
+toward "does persisting predict a WIN" instead of "matches his revealed
+frequency," specifically because Ethereum's after-win rate sits below
+50% (favors switching) in a way that looked suspicious for CHEAP. This
+was flagged "not yet implemented" in that memory file, so it was tested
+properly this cycle rather than left open: computed, on fresh post-halt
+CHEAP-only data, whether persist-vs-switch predicts winning THIS market
+— BTC edge +2.60pp (z=0.588, n=151-175/cell), ETH edge -1.84pp
+(z=-0.560, n=270-291/cell), SOL edge +2.64pp (z=0.746, n=271-295/cell).
+All three nowhere near the trust bar — pure noise at this sample size.
+**Conclusion: there is no significant win-predicting signal to retarget
+toward in CHEAP.** The proposed fix from that memory isn't viable with
+any data available; frequency-matching (the table's actual, current
+design) is confirmed as the right call, not something to correct. This
+closes that memory's recommendation #1 as "attempted, not viable"
+rather than an indefinitely-open thread.
+
+**Test fix**: `test_exact_values_for_the_three_calibrated_assets`'s
+hardcoded literals updated to the new numbers. The other two tests in
+the class (`test_win_loss_averaged_fallback_when_outcome_unknown`,
+`test_persistence_is_stronger_after_a_loss_than_after_a_win`) already
+derive from `CROSS_MARKET_SIDE_PERSISTENCE` dynamically — no changes
+needed, a good example of the "derive from the table, don't hardcode"
+pattern this session has repeatedly reinforced actually paying off.
+
+533/533 tests passing, deployed to all 3 bots
+(paperbot/paperbot-100/coinbase-bot), verified healthy via journalctl
+(orders placing/skipping/bumping normally on all 3, zero errors).
+
+**Running tally: 12 distinct multipliers recalibrated across 9 /loop
+cycles.** The original 28-item checklist AND every concrete follow-up
+thread it spawned this session (SCOUT_SIZE_RATIO,
+ACCURACY_SCOUT_MULTIPLIER, CROSS_MARKET_SIDE_PERSISTENCE, plus the
+CHEAP-edge-gap memory's own recommendation) are now genuinely closed —
+either fixed, or confirmed infeasible/not-viable with concrete evidence,
+not just deferred. The only remaining candidates for a further /loop
+cycle are entirely NEW ground: the other four features built earlier
+2026-09-13 (REENTRY_FATIGUE, HEDGE_COUNT_REINFORCEMENT,
+HEDGE_TRIGGER_AFTER_BIG_LOSS, and BANKROLL_PNL_SIZE_MULTIPLIER from
+2026-09-12) have never had their OWN post-halt freshness specifically
+checked, since they were built using data windows that may themselves
+straddle the halt.
