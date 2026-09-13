@@ -503,6 +503,29 @@ class TestSizingDecision:
             "with the flag off, hedge-count reinforcement must be a strict no-op"
         )
 
+    def test_reentry_fatigue_and_hedge_count_reinforcement_dont_compound_pathologically(self):
+        """/loop iter 139 due-diligence check: 4 (asset, regime) cells --
+        Ethereum/Solana x CHEAP/MID -- are calibrated for BOTH
+        REENTRY_FATIGUE (keyed on same-side real_fill_count) and
+        HEDGE_COUNT_REINFORCEMENT (keyed on opposite-side live_hedge_count)
+        simultaneously, since a market can plausibly have both a long
+        same-side ladder AND multiple hedges at once. Verifies the two
+        real, shipped multipliers combine to a near-neutral product in
+        every overlapping cell (a market worked hard on both sides reads
+        as genuinely uncertain, not a directional compounding signal) --
+        not just that some generic worst-case mock stays under the cap."""
+        overlap_cells = set(bc.REENTRY_FATIGUE_MULTIPLIER) & set(bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER)
+        assert overlap_cells, "expected at least one overlapping cell to actually exercise this"
+        for asset, regime in overlap_cells:
+            reentry_threshold = bc.REENTRY_FATIGUE_THRESHOLD[(asset, regime)]
+            hedge_threshold = bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD[(asset, regime)]
+            product = (bc.reentry_fatigue_multiplier(asset, regime, reentry_threshold)
+                       * bc.hedge_count_reinforcement_multiplier(asset, regime, hedge_threshold))
+            assert 0.7 <= product <= 1.2, (
+                f"{asset}/{regime}: combined product {product:.4f} outside the intended "
+                "near-neutral band -- re-examine the two multipliers' calibrated values"
+            )
+
     def test_combined_multiplier_cap_bounds_worst_case_compounding(self, monkeypatch):
         """FIXED 2026-09-12 (bug audit #4): each cross-market/time
         multiplier was fit MARGINALLY and none of them, individually,
