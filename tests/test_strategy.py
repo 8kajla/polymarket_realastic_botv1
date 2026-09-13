@@ -1502,8 +1502,8 @@ class TestDecideHedgeAdverseMoveTriggerMultiplier:
         # unmodeled -- must fire at exactly the baseline rate (no
         # dominant_current_price at all -> multiplier never applied), NOT
         # at move==0.0's own rate -- the curve's first breakpoint is
-        # pinned to its own MEASURED value (0.6123 for Bitcoin, a real,
-        # disclosed discontinuity -- see ADVERSE_MOVE_HEDGE_TRIGGER_
+        # pinned to its own MEASURED value (below 1.0 for every asset, a
+        # real, disclosed discontinuity -- see ADVERSE_MOVE_HEDGE_TRIGGER_
         # MULTIPLIER's docstring), not forced to 1.0.
         activity = MarketActivityState()
         record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE", price=0.80)
@@ -1520,9 +1520,9 @@ class TestDecideHedgeAdverseMoveTriggerMultiplier:
 
     def test_move_at_zero_is_lower_than_the_unmultiplied_baseline(self):
         # The curve's own first breakpoint (move==0.0) is a REAL,
-        # measured value below 1.0 (0.6123 for Bitcoin) -- not a no-op.
-        # Confirms the documented discontinuity is actually wired up, not
-        # silently smoothed away.
+        # measured value below 1.0 for Bitcoin -- not a no-op. Confirms
+        # the documented discontinuity is actually wired up, not silently
+        # smoothed away.
         activity = MarketActivityState()
         record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE", price=0.80)
         n = 500

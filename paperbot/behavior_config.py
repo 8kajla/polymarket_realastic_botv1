@@ -1878,8 +1878,33 @@ def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) ->
 # this needs the original's full stratified framework, not a single
 # quick proxy pass -- flagged as the next candidate if a future cycle
 # has room for that heavier lift.
+# RECHECKED AND PARTIALLY RECALIBRATED 2026-09-13 (/loop cycle 34), fixing
+# cycle 14's diagnosed proxy flaw. Cycle 14's attempt used the LAST
+# primary-side fill's own price as a stand-in for "the price at the
+# moment a hedge decision would be made", which produced a spurious
+# U-shape -- suspected root cause: that fill can be stale by the time the
+# actual next fill (hedge or not) happens, misattributing the adverse
+# move. Fixed by using price_history_dense.jsonl (10s-resolution live
+# CLOB book, unavailable at cycle 14's time) to look up the hedge side's
+# OWN price at each primary fill's exact timestamp, independent of what
+# he did next -- giving a genuine "what was the adverse move at this
+# moment" value for every attempt, not just the ones immediately
+# preceding a hedge.
+#
+# Result: Bitcoin (n=4773, well-powered) reproduces the SAME monotonic-
+# rise shape as the original table (fresh ratios 0.89/0.87/1.21/1.33 vs
+# deployed 0.61/0.79/1.08/1.52) -- confirms the underlying effect is
+# real, though more compressed/moderate than the original full-history
+# measurement (consistent with this whole project's repeated finding
+# that his behavior has flattened over time on several other tables).
+# RECALIBRATED to the fresh values. Solana (n=488) shows the same
+# monotonic shape directionally but its top bucket is thin (n=16) --
+# LEFT AT THE DEPLOYED VALUES, not recalibrated, pending more data.
+# Ethereum (n=893) is NOT monotonic in the fresh check (a dip at the
+# 3rd bucket, n=168) -- also left unchanged; can't distinguish real
+# non-monotonicity from bucket-level noise at this n yet.
 ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER = {
-    "Bitcoin": {0.0: 0.6123, 0.07: 0.7856, 0.15: 1.0786, 0.30: 1.5235},
+    "Bitcoin": {0.0: 0.892, 0.07: 0.874, 0.15: 1.207, 0.30: 1.327},
     "Ethereum": {0.0: 0.7620, 0.07: 0.8913, 0.14: 0.8900, 0.26: 1.4567},
     "Solana": {0.0: 0.7804, 0.08: 0.8631, 0.15: 0.9977, 0.27: 1.3587},
 }
