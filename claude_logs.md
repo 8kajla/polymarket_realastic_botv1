@@ -5771,3 +5771,25 @@ problem.
 Tracker status: 12/28 items now carry a real, evidenced verdict (up
 from 9). Remaining: 6-7, 10-11, 13-14, 16-17, 19-20, 22-24, 26 (16
 items). Continuing.
+
+## 2026-09-13: Audit item 14 — BANKROLL_PNL_SIZE_MULTIPLIER is silently clamped/inert for Ethereum on both live bots
+
+Checked what our bots' actual cumulative realized Ethereum PnL is right
+now: paperbot -322.0, paperbot-100 -508.2 -- BOTH already below the
+calibrated table's floor breakpoint (-238.98). Since this multiplier
+clamps flat beyond its measured range (same discipline as every other
+multiplier in the file), it has been sitting PERMANENTLY at its ceiling
+value (1.1724x) for Ethereum on both bots, not actively varying/
+discriminating at all despite being designed as a continuous signal.
+Solana is fine (both bots' PnL sits within the calibrated -356/+55
+range). This isn't a bug in the ORIGINAL calibration (not independently
+re-verified against his current numbers this pass) -- it's a domain-
+shift symptom: our bot's own Ethereum trajectory has drifted worse than
+his historical range ever needed to model, consistent with everything
+else found this session about our Ethereum underperformance. Worth
+flagging as its own category: a correctly-built feature that's silently
+gone inert for us specifically, not because it's wrong but because our
+own performance diverged from the range it was ever meant to cover.
+
+Tracker status: 13/28 items verified. Remaining: 6-7, 10-11, 13, 16-17,
+19-20, 22-24, 26 (15 items). Continuing.
