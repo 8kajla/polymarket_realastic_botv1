@@ -513,18 +513,26 @@ class TestSizingDecision:
         real, shipped multipliers combine to a near-neutral product in
         every overlapping cell (a market worked hard on both sides reads
         as genuinely uncertain, not a directional compounding signal) --
-        not just that some generic worst-case mock stays under the cap."""
+        not just that some generic worst-case mock stays under the cap.
+
+        UPDATED (same day): HEDGE_COUNT_REINFORCEMENT gained a second,
+        bigger tier -- re-checked the WORST case (reentry fatigue x the
+        higher tier-2 multiplier) explicitly, not just tier 1. Widened the
+        band to 1.4 to match (max real combination is 1.314x, still a very
+        modest adjustment relative to COMBINED_SIZE_MULTIPLIER_CAP=4.0)."""
         overlap_cells = set(bc.REENTRY_FATIGUE_MULTIPLIER) & set(bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER)
         assert overlap_cells, "expected at least one overlapping cell to actually exercise this"
         for asset, regime in overlap_cells:
             reentry_threshold = bc.REENTRY_FATIGUE_THRESHOLD[(asset, regime)]
-            hedge_threshold = bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD[(asset, regime)]
-            product = (bc.reentry_fatigue_multiplier(asset, regime, reentry_threshold)
-                       * bc.hedge_count_reinforcement_multiplier(asset, regime, hedge_threshold))
-            assert 0.7 <= product <= 1.2, (
-                f"{asset}/{regime}: combined product {product:.4f} outside the intended "
-                "near-neutral band -- re-examine the two multipliers' calibrated values"
-            )
+            reentry_mult = bc.reentry_fatigue_multiplier(asset, regime, reentry_threshold)
+            for tier_threshold, hedge_mult in bc.HEDGE_COUNT_REINFORCEMENT_TIERS[(asset, regime)]:
+                got = bc.hedge_count_reinforcement_multiplier(asset, regime, tier_threshold)
+                assert got == hedge_mult
+                product = reentry_mult * hedge_mult
+                assert 0.7 <= product <= 1.4, (
+                    f"{asset}/{regime}@hedge_tier={tier_threshold}: combined product {product:.4f} "
+                    "outside the intended near-neutral band -- re-examine the calibrated values"
+                )
 
     def test_combined_multiplier_cap_bounds_worst_case_compounding(self, monkeypatch):
         """FIXED 2026-09-12 (bug audit #4): each cross-market/time

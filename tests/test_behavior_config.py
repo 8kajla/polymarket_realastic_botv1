@@ -937,33 +937,52 @@ class TestHedgeCountReinforcementMultiplier:
         for asset, regime in bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD:
             assert bc.hedge_count_reinforcement_multiplier(asset, regime, None) == 1.0
 
-    def test_noop_below_threshold(self):
-        for (asset, regime), threshold in bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD.items():
-            for n in range(0, threshold):
+    def test_noop_below_first_threshold(self):
+        for (asset, regime), tiers in bc.HEDGE_COUNT_REINFORCEMENT_TIERS.items():
+            first_threshold = tiers[0][0]
+            for n in range(0, first_threshold):
                 assert bc.hedge_count_reinforcement_multiplier(asset, regime, n) == 1.0
 
-    def test_boosts_at_and_beyond_threshold(self):
-        for (asset, regime), expected in bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER.items():
-            threshold = bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD[(asset, regime)]
-            got = bc.hedge_count_reinforcement_multiplier(asset, regime, threshold)
-            assert got == expected
-            got_far = bc.hedge_count_reinforcement_multiplier(asset, regime, threshold + 10)
-            assert got_far == expected
+    def test_boosts_at_each_tier_and_stays_flat_within_it(self):
+        """/loop iter: extended from a single threshold to 2 tiers (the
+        full live-index dose-response keeps climbing past the first
+        threshold, though too noisily bucket-by-bucket to trust a smooth
+        curve). At each tier's own threshold the multiplier steps up;
+        between one tier's threshold and the next, it stays flat."""
+        for (asset, regime), tiers in bc.HEDGE_COUNT_REINFORCEMENT_TIERS.items():
+            assert len(tiers) == 2, "test assumes exactly 2 tiers -- update if this changes"
+            (t1, m1), (t2, m2) = tiers
+            assert t1 < t2 and m1 < m2, "tiers must be ascending in both threshold and multiplier"
+
+            assert bc.hedge_count_reinforcement_multiplier(asset, regime, t1) == m1
+            assert bc.hedge_count_reinforcement_multiplier(asset, regime, t2 - 1) == m1
+            assert bc.hedge_count_reinforcement_multiplier(asset, regime, t2) == m2
+            assert bc.hedge_count_reinforcement_multiplier(asset, regime, t2 + 10) == m2
+
+    def test_backward_compatible_derived_views_match_tier_one(self):
+        # HEDGE_COUNT_REINFORCEMENT_THRESHOLD/MULTIPLIER are derived views
+        # kept for existing callers/tests -- must always reflect tier 1.
+        for key, tiers in bc.HEDGE_COUNT_REINFORCEMENT_TIERS.items():
+            assert bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD[key] == tiers[0][0]
+            assert bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER[key] == tiers[0][1]
 
     def test_every_threshold_cell_has_a_matching_multiplier_and_vice_versa(self):
         assert set(bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD) == set(bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER)
+        assert set(bc.HEDGE_COUNT_REINFORCEMENT_TIERS) == set(bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER)
 
     def test_multiplier_is_a_real_boost_not_a_dampener(self):
-        for key, mult in bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER.items():
-            assert mult > 1.0, f"{key}: expected a boost (>1.0), got {mult}"
+        for key, tiers in bc.HEDGE_COUNT_REINFORCEMENT_TIERS.items():
+            for threshold, mult in tiers:
+                assert mult > 1.0, f"{key}@{threshold}: expected a boost (>1.0), got {mult}"
 
     def test_multiplier_stays_within_the_established_modest_range(self):
         # Consistent with every other multiplier in this file staying well
         # under its own nominal safety cap in practice -- this is a
         # deliberate damping choice, not a mechanical constraint, so pin it
         # down with a test rather than let it silently drift wide later.
-        for key, mult in bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER.items():
-            assert mult <= 2.0, f"{key}: {mult} exceeds the intended modest damped range"
+        for key, tiers in bc.HEDGE_COUNT_REINFORCEMENT_TIERS.items():
+            for threshold, mult in tiers:
+                assert mult <= 2.0, f"{key}@{threshold}: {mult} exceeds the intended modest damped range"
 
 
 class TestAccuracyScoutMultiplier:

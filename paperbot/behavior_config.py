@@ -2014,38 +2014,57 @@ def reentry_fatigue_multiplier(asset: str, regime: str,
 # strategy.py). This is a reward signal (the mirror of REENTRY_FATIGUE's
 # penalty), so the discipline matters just as much in the boosting
 # direction as the dampening one.
-HEDGE_COUNT_REINFORCEMENT_THRESHOLD = {
-    ("Ethereum", "CHEAP"): 2,
-    ("Ethereum", "MID"): 2,
-    ("Solana", "CHEAP"): 2,
-    ("Solana", "MID"): 2,
+#
+# EXTENDED TO A SECOND TIER (2026-09-13, same day): the full live-index
+# dose-response (not just the 1-vs-2+ split above) keeps climbing beyond
+# idx=2, though noisily -- pooled idx>=5 win rates (smoothing over
+# individual-bucket noise, e.g. Solana CHEAP's idx=3 bucket dips BELOW
+# idx=1, n=507, almost certainly sampling noise given idx=2/4/5/6+ are
+# all higher) are meaningfully above the idx>=2 tier already shipped:
+#   Ethereum CHEAP: idx1 11.67% -> idx2-3 pooled 21.88% -> idx>=4 pooled 27.62%
+#   Ethereum MID:   idx1 32.27% -> idx2-3 pooled 49.22% -> idx>=4 pooled 50.34%
+#   Solana CHEAP:   idx1 15.26% -> idx2-3 pooled 14.40% (flat/noisy) -> idx>=4 pooled 31.47%
+#   Solana MID:     idx1 31.39% -> idx2-3 pooled 35.90% -> idx>=4 pooled 42.82%
+# A SECOND threshold at live_hedge_count>=5 (chosen conservatively past
+# the noisiest idx=3/4 buckets, into the region every cell agrees is
+# higher) with a modestly bigger multiplier than tier 1 -- NOT a smooth
+# continuous curve, deliberately: the intermediate buckets are too noisy
+# (n=270-960) and non-monotonic in places to trust a fitted curve over a
+# second conservative step, matching REENTRY_FATIGUE's own discrete-
+# threshold design rather than overfitting the wiggle.
+HEDGE_COUNT_REINFORCEMENT_TIERS = {
+    ("Ethereum", "CHEAP"): [(2, 1.5), (5, 1.8)],
+    ("Ethereum", "MID"): [(2, 1.25), (5, 1.4)],
+    ("Solana", "CHEAP"): [(2, 1.35), (5, 1.6)],
+    ("Solana", "MID"): [(2, 1.15), (5, 1.3)],
 }
-HEDGE_COUNT_REINFORCEMENT_MULTIPLIER = {
-    ("Ethereum", "CHEAP"): 1.5,
-    ("Ethereum", "MID"): 1.25,
-    ("Solana", "CHEAP"): 1.35,
-    ("Solana", "MID"): 1.15,
-}
+# Derived, backward-compatible views onto the tier-1 (already-shipped)
+# values -- kept so existing callers/tests reading "the" threshold or
+# multiplier for a cell still see the original tier-1 numbers.
+HEDGE_COUNT_REINFORCEMENT_THRESHOLD = {k: v[0][0] for k, v in HEDGE_COUNT_REINFORCEMENT_TIERS.items()}
+HEDGE_COUNT_REINFORCEMENT_MULTIPLIER = {k: v[0][1] for k, v in HEDGE_COUNT_REINFORCEMENT_TIERS.items()}
 
 
 def hedge_count_reinforcement_multiplier(asset: str, regime: str,
                                           live_hedge_count: Optional[int]) -> float:
     """1.0 (no-op) for any (asset, regime) cell not in
-    HEDGE_COUNT_REINFORCEMENT_THRESHOLD (Bitcoin, CORE/HIGH, and all
-    dormant assets -- not just uncalibrated, see the module comment
-    above), before that cell's threshold is reached, or for a market's
-    very first entry (real_hedge_fill_count starts at 0, always below
+    HEDGE_COUNT_REINFORCEMENT_TIERS (Bitcoin, CORE/HIGH, and all dormant
+    assets -- not just uncalibrated, see the module comment above), before
+    that cell's first threshold is reached, or for a market's very first
+    entry (real_hedge_fill_count starts at 0, always below every
     threshold, so this is naturally a no-op there without a separate
-    check). Only ever applies to ordinary (non-hedge) same-side entries --
-    the caller is responsible for not applying this to a hedge leg's own
-    sizing, same discipline as REENTRY_FATIGUE_MULTIPLIER above."""
-    key = (asset, regime)
-    threshold = HEDGE_COUNT_REINFORCEMENT_THRESHOLD.get(key)
-    if threshold is None or live_hedge_count is None:
+    check). Steps up again at the second threshold. Only ever applies to
+    ordinary (non-hedge) same-side entries -- the caller is responsible
+    for not applying this to a hedge leg's own sizing, same discipline as
+    REENTRY_FATIGUE_MULTIPLIER above."""
+    tiers = HEDGE_COUNT_REINFORCEMENT_TIERS.get((asset, regime))
+    if tiers is None or live_hedge_count is None:
         return 1.0
-    if live_hedge_count < threshold:
-        return 1.0
-    return HEDGE_COUNT_REINFORCEMENT_MULTIPLIER.get(key, 1.0)
+    result = 1.0
+    for threshold, mult in tiers:  # tiers listed in ascending threshold order
+        if live_hedge_count >= threshold:
+            result = mult
+    return result
 
 
 # ---------------------------------------------------------------------------
