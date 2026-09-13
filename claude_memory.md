@@ -917,3 +917,26 @@ recent, unmeasured shift in the real trader's own CHEAP calibration.
 Flagging as a genuine, real, standing issue for continued investigation
 -- do not dismiss as noise again without re-quantifying against a real
 baseline first.
+
+**Item 4 (CROSS_ASSET_ENTRY_TRIGGER) TESTED AND REJECTED — already
+over-satisfied by the bot's own architecture (2026-09-13).** Before
+building the proposed probability-boost multiplier, checked our OWN
+bots' first-entry PLACE timestamps directly from journalctl (10,812
+first entries, paperbot, 2026-09-11 to 2026-09-13) using the exact same
+10s co-entry methodology as the real-trader finding. Result: our bots'
+own cross-asset co-entry rate is **82.9%** — vastly higher than the real
+trader's already-elevated 32.6% (which itself only beat a 19.7% null).
+Root cause: the bot evaluates every onboarded market for all 3 assets on
+one shared tick loop, so whenever multiple 5-min windows open together
+(the common case, since BTC/ETH/SOL run synchronized 5-min windows),
+their first entries fire within milliseconds of each other for free —
+confirmed directly: ~45% of consecutive first-entry PLACE events are
+<0.1s apart. **Conclusion: do not build.** Raising entry/hedge
+probability further would push the bot's clustering even higher above
+the real trader's rate, actively hurting fidelity rather than improving
+it — the opposite of every other multiplier built this session. This
+closes the "build everything" list's 4th and final item as a rejection,
+not a build. If ever revisited, the real gap is that the bot
+OVER-clusters vs. the trader (an execution-architecture question — some
+form of deliberate staggering — not a decision-probability one), which
+is a materially different and much larger project than a multiplier.
