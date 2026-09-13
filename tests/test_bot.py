@@ -539,6 +539,67 @@ class TestBatchedOnboarding:
         for m in markets:
             assert m.condition_id in bot.activity
 
+
+class TestOnboardingPreservesRestoredActivity:
+    """Regression test for a bug found 2026-09-13 while investigating a
+    real, confirmed-live drawdown: self.markets_by_condition, like self.
+    activity used to be, is never persisted across a restart -- so every
+    market still active before a restart looks "new" to discovery_tick
+    afterward and gets onboarded again. _onboard_markets used to do an
+    UNCONDITIONAL self.activity[cid] = MarketActivityState(), which would
+    silently wipe state that load_activity_state had just restored from
+    disk the instant the first post-restart discovery_tick ran --
+    completely defeating that persistence fix. Fixed with setdefault()."""
+
+    def test_onboarding_an_already_tracked_condition_id_keeps_its_state(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market(condition_id="cond-restored")
+
+        # Simulate a restart that successfully restored this market's
+        # activity from disk (real_hedge_fill_count at its cap -- exactly
+        # the value MAX_HEDGE_COUNT_PER_MARKET must not silently reset).
+        restored = MarketActivityState()
+        restored.record_entry("Up", notional_usd=10.0, regime="MID")
+        for _ in range(6):
+            restored.record_real_fill(is_hedge=True)
+        bot.activity["cond-restored"] = restored
+
+        def fake_poll():
+            return {market.condition_id: market}
+
+        monkeypatch.setattr(bot.discovery, "poll", fake_poll)
+        monkeypatch.setattr(botmod, "bootstrap_book_state", lambda token_id, session=None: BookState(token_id=token_id))
+        monkeypatch.setattr(bot.ws_client, "subscribe", lambda token_ids: asyncio.sleep(0))
+        bot.discovery._last_poll = 0.0
+
+        asyncio.run(bot.discovery_tick(now=1000.0))
+
+        assert bot.activity["cond-restored"] is restored, (
+            "re-onboarding a market that already has restored activity must not replace it"
+        )
+        assert bot.activity["cond-restored"].real_hedge_fill_count == 6, (
+            "the hedge-count cap's own counter must survive being re-onboarded post-restart"
+        )
+
+    def test_onboarding_a_genuinely_new_condition_id_still_gets_fresh_state(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market(condition_id="cond-brand-new")
+        assert "cond-brand-new" not in bot.activity
+
+        def fake_poll():
+            return {market.condition_id: market}
+
+        monkeypatch.setattr(bot.discovery, "poll", fake_poll)
+        monkeypatch.setattr(botmod, "bootstrap_book_state", lambda token_id, session=None: BookState(token_id=token_id))
+        monkeypatch.setattr(bot.ws_client, "subscribe", lambda token_ids: asyncio.sleep(0))
+        bot.discovery._last_poll = 0.0
+
+        asyncio.run(bot.discovery_tick(now=1000.0))
+
+        assert "cond-brand-new" in bot.activity
+        assert bot.activity["cond-brand-new"].entry_count == 0
+        assert bot.activity["cond-brand-new"].real_hedge_fill_count == 0
+
     def test_one_markets_bootstrap_failure_does_not_block_the_others(self, monkeypatch):
         bot = PaperBot(assets=["Bitcoin"], seed=2)
         good_market = make_bitcoin_market(condition_id="cond-good")

@@ -324,7 +324,20 @@ class PaperBot:
         for market in markets:
             logger.info("ONBOARD market=%s asset=%s condition=%s", market.slug, market.asset,
                         market.condition_id)
-            self.activity[market.condition_id] = MarketActivityState()
+            # FIXED 2026-09-13: was an unconditional overwrite -- harmless
+            # for a GENUINELY new market (no existing entry to clobber),
+            # but markets_by_condition (like self.activity used to be) is
+            # never persisted across a restart, so `new_conditions` above
+            # includes every market that was ALREADY active before the
+            # restart too. An unconditional MarketActivityState() here
+            # would silently wipe the very state save_activity_state/
+            # load_activity_state were added to preserve, the instant the
+            # first discovery_tick ran post-restart -- completely
+            # defeating that fix. setdefault() keeps a restored market's
+            # loaded state intact while still initializing a truly new
+            # market with a fresh one, since only the latter has no
+            # existing key to preserve.
+            self.activity.setdefault(market.condition_id, MarketActivityState())
 
         token_jobs = [
             (market, token_id)
