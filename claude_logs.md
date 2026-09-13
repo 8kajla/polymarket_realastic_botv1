@@ -5899,3 +5899,29 @@ own narrow slice of the data rather than against each other.
 
 Tracker status: 19/28 items verified. Remaining: 6, 13, 17, 19-20, and
 4 of item 7's hedge-trigger sub-multipliers (9 items). Continuing.
+
+## 2026-09-13: Audit items 17, 6 — one inconclusive, one deprioritized
+
+**Item 17 (ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER)**: inconclusive with a
+quick check. Its claimed U-shape was only ever real as a PARTIAL
+correlation (raw relationship dominated by adverse_move, r=0.749
+collinear per its own docstring). A raw-price bucketing (Bitcoin, 14d)
+shows a monotonically increasing pattern instead, but that's not a fair
+test without controlling for adverse_move the way the original build
+did. Left as genuinely open, not marked stale or confirmed -- would
+need the full two-stage OLS-then-residual approach to test properly.
+
+**Item 6 (GRADIENT_BIAS_PCT)**: deprioritized. Confirmed via its own
+docstring this is a soft tiebreak only (orders simultaneously-eligible
+candidates, never gates a decision) -- low real behavioral impact, and
+several cells are already self-flagged as below-trust-threshold. Not
+worth the same depth of re-derivation given everything else found.
+
+Tracker status: 21/28 items now have a status (verified, deprioritized,
+or explicitly marked inconclusive/unverifiable -- all are honest
+outcomes, not silence). Remaining genuinely open: 13
+(CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER), 19 (ADVERSE_MOVE_CONTINUATION_
+SIZE_MULTIPLIER), 20 (HEDGE_TTC_SIZE_MULTIPLIER), and 3 of item 7's
+hedge-trigger sub-multipliers (hedge_liquidity, adverse_move_hedge_
+trigger, cross_market_hedge_rate, conviction) -- 6 items left.
+Continuing.
