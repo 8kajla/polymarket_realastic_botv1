@@ -1250,3 +1250,43 @@ GRADIENT_BIAS_PCT (confirmed genuinely infeasible -- needs a continuous
 book-price series market_snapshots.jsonl doesn't have enough density
 for, ~1.04 snapshots/market on average) and RESUMPTION_SIZE_MULTIPLIER
 (confirmed again -- zero post-halt gaps >=4h exist in the data).
+
+## 2026-09-13 (loop cycle 7): SCOUT_PROBABILITY + SCOUT_SIZE_RATIO recalibrated
+
+Pushed past the "2 items remain" conclusion by going back to item #21's
+own note that ACCURACY_SCOUT_MULTIPLIER/SCOUT_SIZE_RATIO were flagged
+"not separately re-checked this pass" when SCOUT_PROBABILITY was
+confirmed sound via a matched-14-day window (pre-halt-aware check, not
+halt-filtered).
+
+Re-ran both with the proper post-halt-only (ts>=HALT_END) filter:
+- SCOUT_PROBABILITY: 0.390->0.3326 (BTC), 0.285->0.2525 (ETH),
+  0.376->0.3072 (SOL), n=1380/1283/1289 markets. Modest ~10-18% relative
+  decline, real but not a collapse.
+- SCOUT_SIZE_RATIO: 0.567->0.9721 (BTC), 0.672->0.9392 (ETH),
+  0.185->0.6697 (SOL), n=459/324/396 scout-case markets. Dramatic
+  shift -- the TENTH multiplier this session (counting the 9 already
+  fixed) to show the weakened/vanished post-halt pattern. Scouted
+  first entries used to be sized well below a normal first entry (as
+  low as 1/5 for Solana); post-halt they're sized almost identically to
+  a normal first entry across all 3 assets.
+
+Why: `scout_size_ratio()` is a straight multiplier applied to every
+scout-case first entry's size in `decide_size()` -- a stale 0.185 for
+Solana meant our bots were sizing scout entries at roughly a fifth of
+what the real trader now actually does, understating exposure on a
+third of all Solana first entries.
+
+How to apply: same discipline as every other post-halt fix this
+session -- filter ts>=HALT_END on trades.jsonl, use the exact
+definition already documented in the code's own docstring (median
+scout-case usdc / regime's post-halt "first"-tier median), never widen
+scope beyond what the docstring already committed to measuring.
+
+533/533 tests passing (value-only change, no test edits needed),
+deployed to all 3 bots, verified healthy.
+
+Still open, lower priority: ACCURACY_SCOUT_MULTIPLIER (pooled,
+needs a resolved-outcome join, more involved methodology) -- next
+candidate if the loop keeps firing and finds nothing else. See
+[[full-behavioral-audit-tracker]].

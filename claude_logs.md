@@ -6189,3 +6189,70 @@ items remain from the original 28-item checklist, both confirmed
 genuinely untestable with any data source available this session
 (GRADIENT_BIAS_PCT -- insufficient snapshot density; RESUMPTION_SIZE_
 MULTIPLIER -- no new qualifying gap exists to test against).
+
+## 2026-09-13: /loop cycle 7 — went back and recalibrated SCOUT_PROBABILITY + SCOUT_SIZE_RATIO
+
+The loop's instruction ("keep repeating until everything is fixed")
+doesn't stop being live just because the original 28-item checklist ran
+out of open items — cycle 6 closed the checklist down to 2 confirmed-
+infeasible items, but item #21's own audit note had explicitly left
+`ACCURACY_SCOUT_MULTIPLIER` and `SCOUT_SIZE_RATIO` as "not separately
+re-checked this pass" (SCOUT_PROBABILITY alone was confirmed sound,
+using a matched-14-day window rather than a halt-aware filter). That's
+a real unchecked thread, not a closed one, so this cycle went and
+checked it properly.
+
+**Methodology**: same post-halt-only (ts>=HALT_END) filter as every
+prior recalibration this session, same collapsed-decision convention
+(merge same-side fills within 5s into one real decision — scout cases
+are single first-entries, not fragments, so collapsing is correct
+here, unlike the floor-lot case). Reused the exact definitions already
+committed to in the code's own docstrings rather than inventing new
+ones:
+- SCOUT_PROBABILITY = frac of markets where the (collapsed) first
+  entry side ends up NOT the eventually-dominant side.
+- SCOUT_SIZE_RATIO = median(scout-case first_entry_usdc / that
+  regime's post-halt ENTRY_SIZING_USD "first"-tier median), computed
+  only over scout cases.
+
+**Results**:
+- SCOUT_PROBABILITY: Bitcoin 0.390->0.3326 (n=1380), Ethereum
+  0.285->0.2525 (n=1283), Solana 0.376->0.3072 (n=1289). All 3 assets
+  drift down ~10-18% relative — real, sample sizes now comfortably
+  above trust bar (vs the original 187-263/asset), but not remotely a
+  "vanished" pattern like most of the other 9 tables fixed this
+  session.
+- SCOUT_SIZE_RATIO: Bitcoin 0.567->0.9721 (n=459 scout markets),
+  Ethereum 0.672->0.9392 (n=324), Solana 0.185->0.6697 (n=396). This
+  one IS the dramatic post-halt shift — the tenth multiplier this
+  session to show the weakened/vanished pattern. Scouted (eventually-
+  wrong-side) first entries used to be sized at a fraction of an
+  ordinary first entry (as low as 1/5 for Solana pre-halt); post-halt
+  they're sized almost the same as an ordinary first entry for all 3
+  assets. He still picks the eventually-wrong side about a third of
+  the time (SCOUT_PROBABILITY, largely unchanged in magnitude), but has
+  nearly stopped discounting the SIZE of that bet when he does — the
+  "tentative small probe" behavior this multiplier exists to replicate
+  has almost entirely disappeared post-halt.
+
+Both changes are pure value edits (no key/shape changes to either
+dict), so no test updates were needed — 533/533 passing unchanged.
+Committed (1dde579), pushed, deployed to all 3 bots
+(paperbot/paperbot-100/coinbase-bot), verified healthy via journalctl
+(orders placing/skipping/bumping normally, no errors on any of the 3
+services).
+
+**Still open, deliberately deferred**: `ACCURACY_SCOUT_MULTIPLIER` —
+pooled across all 3 assets, keyed on a rolling-recent-accuracy bucket
+that needs a resolved-outcome join against trades.jsonl (more involved
+than a straight trade-level recalibration, and the original build
+explicitly circularity-checked it against non-scout-only accuracy —
+any recheck needs to preserve that same care, not just re-run a
+simpler version). Flagged as the next candidate for the following loop
+cycle if it finds nothing else new.
+
+**Running tally: 10 distinct multipliers recalibrated or retired across
+7 /loop cycles**, all traced back to the single 13.6-day-halt root
+cause. Still only 2 confirmed-genuinely-infeasible items (GRADIENT_
+BIAS_PCT, RESUMPTION_SIZE_MULTIPLIER) plus this one lower-priority,
+not-yet-attempted item.
