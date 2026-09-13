@@ -1849,3 +1849,32 @@ actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
 + 1 architectural limitation (now rigorously confirmed) + 1 tested-
 and-rejected candidate fix, across 29 /loop cycles.** See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13: paperbot-100 33h drawdown spiral found -- Bitcoin CHEAP/MID hedge drag, bankroll reset (run4)
+
+While checking $100-bankroll safety controls, found equity had collapsed
+from $402 peak to $0.02 over ~33 hours (Sep 12 04:00 -> Sep 13 13:20
+UTC). Circuit breaker tripped ~30 times as designed (slows, doesn't
+stop the bleed).
+
+Root cause (broken down by asset/hedge/time, hour-by-hour timeline back
+to Sep 8): Bitcoin ordinary entries profitable (+$791); Bitcoin HEDGES
+a persistent, LONG-STANDING drag (predates today's fixes entirely) --
+concentrated in CHEAP (60.6% of hedges, 12.6% win rate, -$120.62) and
+MID (30.6%, -$250.03), while CORE/HIGH hedges are actually profitable.
+This is the OPPOSITE of [[full-behavioral-audit-tracker]] item #27's
+own finding that the REAL trader's CHEAP/MID hedging is genuinely
+beneficial -- a real, unresolved mismatch, not yet root-caused further.
+Ethereum ordinary entries also a separate longstanding loss (-$395).
+
+Per explicit user request ("refill paperbot 100 with 100... see what
+effect it will have after the new changes"): backed up full ledger
+(run4_wiped_20260913_135600.json, following this bot's own established
+reset convention from Sep 8), reset to empty, restarted. Verified
+equity back to exactly $100 (realized_total=0.0000, settled_trades=0
+post-restart).
+
+Full writeup: [[paperbot-100-hedge-drag-and-reset]]. Watch for whether
+the same CHEAP/MID hedge drag recurs under today's corrected
+calibration -- if so, it's not a post-halt-staleness problem, it's
+something more fundamental worth a dedicated investigation.
