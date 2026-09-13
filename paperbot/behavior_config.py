@@ -836,10 +836,20 @@ def cross_market_side_persistence(asset: str, previous_market_won: Optional[bool
 #
 # Per-asset, quartile points of log(previous residual state) -> mean-
 # neutral multiplier on the CURRENT market's first-entry notional.
+# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 3 -- see full-
+# behavioral-audit-tracker.md item 13): re-checked the underlying lag-1
+# log-size-residual autocorrelation this table is built from, post-halt
+# only. Bitcoin's has genuinely vanished (r=0.1445 pre-halt -> r=0.013
+# post-halt) and Ethereum's quartile shape came back essentially flat
+# too (raw medians ~1.0 across all 4 buckets despite a weak r=0.0998 --
+# too little signal to build a real shape from). BOTH REMOVED --
+# asset not in this table is already a clean 1.0 no-op, no need to force
+# a fabricated flat table. Solana's effect is still real and, if
+# anything, slightly STRONGER post-halt (r=0.1385 vs 0.1445 pre-halt) --
+# kept and refreshed with the current quartile shape (not monotonic --
+# kept exactly as measured, not smoothed).
 CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER = {
-    "Bitcoin": {-1.32: 0.7978, -0.26: 1.0128, 0.29: 1.0191, 1.10: 1.1702},
-    "Ethereum": {-2.11: 0.9366, -0.39: 0.8591, 0.38: 1.0435, 1.22: 1.1608},
-    "Solana": {-2.79: 0.9290, -0.37: 0.9170, 0.32: 0.9898, 1.17: 1.1642},
+    "Solana": {-5.052: 0.8333, -0.519: 1.1636, 0.164: 1.0923, 0.534: 0.9108},
 }
 _CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER_CAP = 3.0
 
@@ -1064,10 +1074,23 @@ HEDGE_TRIGGER_PROBABILITY = {
 # live-traded (see the asset-basket timeline finding) and not part of
 # either live bot's --assets scope, so recalibrating them isn't useful
 # right now and there's no fresh data to do it with anyway.
+# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 3 -- same root cause as
+# every other post-halt recalibration this pass, see full-behavioral-
+# audit-tracker.md item 15): CHEAP/MID cleared n>=200 for all three live
+# assets and moved a real amount -- Bitcoin held up reasonably (CHEAP
+# 2.636->2.308, MID 0.476->0.467, both close), but Ethereum/Solana moved
+# a lot (Ethereum CHEAP 1.994->3.362, MID 0.251->0.618; Solana CHEAP
+# 0.923->4.074, MID 0.644->0.529) -- confirms the earlier audit-pass
+# finding that ETH/SOL's hedge sizing specifically had drifted hard
+# post-halt while Bitcoin's had not. CORE also updated (n=48-105,
+# first-pass/THIN, same discipline as every other thin-but-better-than-
+# stale cell in this file). HIGH left UNCHANGED -- post-halt HIGH-band
+# hedge volume is too thin to trust at all yet (n=10-19, well below even
+# this file's usual first-pass bar); revisit once more volume accumulates.
 HEDGE_SIZE_RATIO = {
-    "Bitcoin":     {"CHEAP": 2.6360, "MID": 0.4764, "CORE": 0.1062, "HIGH": 0.0306},
-    "Ethereum":    {"CHEAP": 1.9937, "MID": 0.2511, "CORE": 0.0822, "HIGH": 0.0204},
-    "Solana":      {"CHEAP": 0.9230, "MID": 0.6437, "CORE": 0.0625, "HIGH": 0.0159},
+    "Bitcoin":     {"CHEAP": 2.3077, "MID": 0.4667, "CORE": 0.1001, "HIGH": 0.0306},
+    "Ethereum":    {"CHEAP": 3.3618, "MID": 0.6181, "CORE": 0.1337, "HIGH": 0.0204},
+    "Solana":      {"CHEAP": 4.0743, "MID": 0.5292, "CORE": 0.0879, "HIGH": 0.0159},
     "Dogecoin":    {"CHEAP": 0.1992, "MID": 0.2937, "CORE": 0.0942, "HIGH": 0.0480},
     "Hyperliquid": {"CHEAP": 0.1453, "MID": 0.1742, "CORE": 0.0833, "HIGH": 0.0358},
     "BNB":         {"CHEAP": 0.1063, "MID": 0.1686, "CORE": 0.0503, "HIGH": 0.0285},
@@ -1187,10 +1210,19 @@ def hedge_size_ratio(asset: str, primary_regime: str) -> float:
 # all three assets show q2 (near-zero move) higher than q3 (largest
 # adverse move), a consistent shape kept as real per this file's own
 # "never smoothed to look more uniform" rule (see module docstring).
+# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 3, same root cause as
+# every other post-halt recalibration in this pass -- see full-
+# behavioral-audit-tracker.md item 16): re-derived via the identical
+# OLS-quartile-then-mean-neutral-normalize methodology, post-halt data
+# only (n=575-892 per asset, comfortably above trust). Direction
+# preserved (still a real, sizable positive relationship) but every
+# asset's swing has compressed noticeably from its pre-halt shape --
+# consistent with the same broader post-halt flattening found across
+# hedge sizing generally.
 ADVERSE_MOVE_SIZE_MULTIPLIER = {
-    "Bitcoin": {-0.35: 0.3366, -0.10: 0.5621, 0.05: 2.8117, 0.27: 2.0852},
-    "Ethereum": {-0.48: 0.3405, -0.13: 0.4466, 0.02: 5.0748, 0.21: 2.3048},
-    "Solana": {-0.43: 0.4320, -0.14: 0.4885, 0.02: 2.6819, 0.21: 2.2770},
+    "Bitcoin": {-0.34: 0.2397, -0.08: 0.5931, 0.08: 1.5623, 0.30: 1.6049},
+    "Ethereum": {-0.46: 0.2234, -0.09: 0.2208, 0.08: 2.0140, 0.255: 1.5418},
+    "Solana": {-0.43: 0.1816, -0.13: 0.3382, 0.05: 2.0917, 0.24: 1.3886},
 }
 _ADVERSE_MOVE_SIZE_MULTIPLIER_CAP = 6.0  # symmetric clamp on the final size
 # multiplier -- wider than HEDGE_LIQUIDITY_MULTIPLIER's 3.0 cap since the
@@ -1781,10 +1813,15 @@ def hedge_continuation_size_ratio(hedge_index: int) -> float:
 # slightly at q3 (matching the first-hedge multiplier's own shape); ETH
 # and SOL are fully monotonic here, unlike the first-hedge case -- kept as
 # real, not forced to match the other table's shape.
+# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 3, same root cause as
+# ADVERSE_MOVE_SIZE_MULTIPLIER's matching note above -- see full-
+# behavioral-audit-tracker.md item 19, the single most severely-flattened
+# multiplier found in the whole audit): post-halt data (n=523-1537),
+# same OLS-quartile-then-normalize methodology.
 ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER = {
-    "Bitcoin": {-0.41: 0.2700, -0.09: 0.6799, 0.12: 2.5175, 0.34: 2.1524},
-    "Ethereum": {-0.58: 0.3775, -0.28: 0.3701, 0.02: 2.7088, 0.27: 3.0832},
-    "Solana": {-0.56: 0.3890, -0.30: 0.5251, -0.02: 1.6234, 0.22: 3.8519},
+    "Bitcoin": {-0.565: 0.3970, -0.33: 0.5576, -0.09: 0.7879, 0.27: 2.2575},
+    "Ethereum": {-0.63: 0.4040, -0.45: 0.4535, -0.18: 0.7060, 0.24: 2.4365},
+    "Solana": {-0.65: 0.1764, -0.40: 0.5438, -0.12: 0.6932, 0.21: 2.5866},
 }
 _ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER_CAP = 6.0  # same cap as
 # ADVERSE_MOVE_SIZE_MULTIPLIER -- measured range tops out at ~3.85 (Solana

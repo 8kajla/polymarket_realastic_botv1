@@ -482,12 +482,16 @@ class TestAdverseMoveSizeMultiplier:
         assert 0.5621 < mid_val < 2.8117
 
     def test_flat_beyond_the_measured_range_no_extrapolation(self):
-        at_min = bc.adverse_move_size_multiplier("Bitcoin", -0.35)
-        below_min = bc.adverse_move_size_multiplier("Bitcoin", -0.99)
+        # Endpoints derived from the table itself (not hardcoded) --
+        # robust to recalibration, since the exact min/max keys shift
+        # every time this table gets re-derived from fresh data.
+        keys = sorted(bc.ADVERSE_MOVE_SIZE_MULTIPLIER["Bitcoin"])
+        at_min = bc.adverse_move_size_multiplier("Bitcoin", keys[0])
+        below_min = bc.adverse_move_size_multiplier("Bitcoin", keys[0] - 0.5)
         assert at_min == below_min
 
-        at_max = bc.adverse_move_size_multiplier("Bitcoin", 0.27)
-        above_max = bc.adverse_move_size_multiplier("Bitcoin", 0.99)
+        at_max = bc.adverse_move_size_multiplier("Bitcoin", keys[-1])
+        above_max = bc.adverse_move_size_multiplier("Bitcoin", keys[-1] + 0.5)
         assert at_max == above_max
 
     def test_largest_adverse_move_scores_higher_than_most_favorable_move(self):
@@ -594,12 +598,15 @@ class TestAdverseMoveContinuationSizeMultiplier:
         assert 0.6799 < mid_val < 2.5175
 
     def test_flat_beyond_the_measured_range_no_extrapolation(self):
-        at_min = bc.adverse_move_continuation_size_multiplier("Bitcoin", -0.41)
-        below_min = bc.adverse_move_continuation_size_multiplier("Bitcoin", -0.99)
+        # Endpoints derived from the table itself, same robustness reason
+        # as TestAdverseMoveSizeMultiplier's matching test.
+        keys = sorted(bc.ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER["Bitcoin"])
+        at_min = bc.adverse_move_continuation_size_multiplier("Bitcoin", keys[0])
+        below_min = bc.adverse_move_continuation_size_multiplier("Bitcoin", keys[0] - 0.5)
         assert at_min == below_min
 
-        at_max = bc.adverse_move_continuation_size_multiplier("Bitcoin", 0.34)
-        above_max = bc.adverse_move_continuation_size_multiplier("Bitcoin", 0.99)
+        at_max = bc.adverse_move_continuation_size_multiplier("Bitcoin", keys[-1])
+        above_max = bc.adverse_move_continuation_size_multiplier("Bitcoin", keys[-1] + 0.5)
         assert at_max == above_max
 
     def test_largest_adverse_move_scores_higher_than_most_favorable_move(self):

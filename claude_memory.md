@@ -1110,3 +1110,34 @@ production code actually calls this).
 Remaining queued: #13 CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER, #15
 HEDGE_SIZE_RATIO (ETH/SOL), #16/#19 ADVERSE_MOVE_(CONTINUATION_)SIZE_
 MULTIPLIER.
+
+**FIXED (2026-09-13, /loop cycle 3)**: recalibrated `HEDGE_SIZE_RATIO`
+(CHEAP/MID/CORE for all 3 live assets -- HIGH left unchanged, too thin
+post-halt to trust), `ADVERSE_MOVE_SIZE_MULTIPLIER`, and `ADVERSE_MOVE_
+CONTINUATION_SIZE_MULTIPLIER` (both via the same OLS-quartile-then-
+normalize methodology, post-halt-only data). Also re-checked `CROSS_
+MARKET_SIZE_MOMENTUM_MULTIPLIER`'s underlying autocorrelation post-halt
+specifically: Bitcoin's has genuinely vanished (r=0.0128) and Ethereum's
+quartile shape came back flat too (r=0.0998 too weak to build a real
+shape from) -- both REMOVED from the table (clean 1.0 no-op) rather than
+forcing a fabricated flat curve; Solana's is still real and, if
+anything, slightly stronger post-halt (r=0.1385) -- kept and refreshed.
+
+Fixed 4 tests: two hardcoded-endpoint "flat beyond range" tests broke
+because the table's actual min/max keys moved during recalibration --
+switched to deriving endpoints from the table itself (robust to future
+recalibrations); two size-momentum tests used Bitcoin, which no longer
+has a real effect to test -- switched to Solana, the one asset where
+the effect actually still exists.
+
+This closes out ALL SIX of the cross-cutting flattening findings from
+the full audit (items 8, 10, 13, 15, 16, 19) plus items 1 and 3/4 --
+every post-halt-stale table identified in the audit is now recalibrated
+against current data. 535/535 tests passing, deployed to all 3 bots.
+
+Remaining from the original 28-item checklist: items left deliberately
+deferred as lower-priority (GRADIENT_BIAS_PCT, FLOOR_LOT_PROBABILITY,
+3 hedge-trigger sub-multipliers) or genuinely inconclusive
+(ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER, RESUMPTION_SIZE_MULTIPLIER) --
+none of these showed the severe, clear-cut staleness the six fixed
+items did.

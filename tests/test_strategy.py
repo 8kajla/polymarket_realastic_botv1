@@ -317,26 +317,34 @@ class TestSizingDecision:
         assert notional_no_arg == notional_explicit_none
 
     def test_cross_market_size_momentum_scales_first_entry_size(self):
+        # Bitcoin (and Ethereum) were REMOVED from CROSS_MARKET_SIZE_
+        # MOMENTUM_MULTIPLIER in the 2026-09-13 post-halt recalibration --
+        # their autocorrelation genuinely vanished post-halt (see the
+        # table's own docstring). Solana is the one asset where the
+        # effect is still real, so it's the one this test needs to use to
+        # actually exercise the scaling behavior rather than a no-op.
         def avg_notional(residual, n=400):
             rng = random.Random(41)
             total = 0.0
             for _ in range(n):
-                notional, _ = decide_size("Bitcoin", "MID", "first", 0.5, rng,
+                notional, _ = decide_size("Solana", "MID", "first", 0.5, rng,
                                            size_momentum_residual=residual)
                 total += notional
             return total / n
 
-        low = avg_notional(-1.3)
-        high = avg_notional(1.1)
+        keys = sorted(bc.CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER["Solana"])
+        low = avg_notional(keys[0])
+        high = avg_notional(keys[-1])
         assert low < high
 
     def test_cross_market_size_momentum_only_applies_to_the_first_tier(self):
         # The finding was measured on first-entry size specifically --
         # later position tiers in the same market must be unaffected.
+        # Uses Solana for the same reason as the test just above.
         rng_a = random.Random(43)
         rng_b = random.Random(43)
-        notional_no_residual, _ = decide_size("Bitcoin", "MID", "4th_plus", 0.5, rng_a)
-        notional_with_residual, _ = decide_size("Bitcoin", "MID", "4th_plus", 0.5, rng_b,
+        notional_no_residual, _ = decide_size("Solana", "MID", "4th_plus", 0.5, rng_a)
+        notional_with_residual, _ = decide_size("Solana", "MID", "4th_plus", 0.5, rng_b,
                                                  size_momentum_residual=1.1)
         assert notional_no_residual == notional_with_residual
 
