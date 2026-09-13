@@ -417,12 +417,23 @@ class TestSizingDecision:
     def test_reentry_fatigue_dampens_size_at_and_beyond_threshold(self):
         # Exercise every calibrated (asset, regime) cell, not just MID --
         # this generalized 2026-09-13 from an originally MID-only feature.
+        # Price must be a realistic value FOR EACH regime (not one fixed
+        # 0.5 for all of them, which real strategy.py code could never
+        # produce -- regime and price always come from the same
+        # classify_regime(price) call in production) -- a fixed 0.5 for
+        # CORE/HIGH regimes started hitting WITHIN_BAND_SIZE_SLOPE's own
+        # extrapolation cap after the 2026-09-13 post-halt recalibration
+        # steepened some slopes, saturating COMBINED_SIZE_MULTIPLIER_CAP
+        # and masking the very effect this test means to isolate.
+        REALISTIC_PRICE = {"CHEAP": 0.15, "MID": 0.5, "CORE": 0.80, "HIGH": 0.95}
         for (asset, regime), threshold in bc.REENTRY_FATIGUE_THRESHOLD.items():
+            price = REALISTIC_PRICE[regime]
+
             def avg_notional(real_fill_count, n=400):
                 rng = random.Random(89)
                 total = 0.0
                 for _ in range(n):
-                    notional, _ = decide_size(asset, regime, "4th_plus", 0.5, rng,
+                    notional, _ = decide_size(asset, regime, "4th_plus", price, rng,
                                                real_fill_count=real_fill_count)
                     total += notional
                 return total / n

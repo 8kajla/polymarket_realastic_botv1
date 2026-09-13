@@ -241,12 +241,25 @@ ENTRY_SIZING_USD = {
 # bias (a weighted coin flip), never a hard rule.
 # ---------------------------------------------------------------------------
 SIDE_PERSISTENCE = {
+    # CORRECTED 2026-09-13 (full-audit root-cause pass): the claim below
+    # ("TRADER_PROFILE.md section 8 confirmed a real, non-confounded
+    # win-rate difference by persist-vs-switch") is WRONG -- re-derived
+    # fresh and found the original measurement was confounded by
+    # CHEAP/HIGH price complementarity (switching AWAY from a held CHEAP
+    # side mechanically lands you near the complementary HIGH side, which
+    # wins more because it's priced as the favorite, nothing to do with
+    # persist-vs-switch itself). Properly controlled (bucketed by the
+    # CURRENT/resulting entry's own price band, not the held side's), 11
+    # of 12 (asset, regime) cells show NO significant win-rate difference.
+    # This table still accurately replicates a REAL, large behavioral
+    # FREQUENCY (he does persist this often) -- that part was never in
+    # question -- but it is STYLE, not an EDGE: don't read the values
+    # below as "this predicts winning," only as "this matches how often
+    # he sticks with a side." See full-behavioral-audit-tracker.md item 1
+    # in project memory for the complete derivation.
+    #
     # MADE REGIME-DEPENDENT 2026-09-08 for the three active assets (Bitcoin/
-    # Ethereum/Solana) -- TRADER_PROFILE.md section 8 confirmed a real,
-    # non-confounded win-rate difference by (regime, persist-vs-switch) back
-    # when SIDE_PERSISTENCE was still asset-level only, and flagged "would
-    # need a second full calibration pass" to turn that into real per-regime
-    # persistence rates. This is that pass: each cell below is P(this entry
+    # Ethereum/Solana). This is that pass: each cell below is P(this entry
     # keeps the same side | the side CURRENTLY held was last trading in this
     # regime) -- i.e. keyed by the PREVIOUS entry's own regime, not this
     # entry's resulting one (the only framing usable at decision time; see
@@ -269,8 +282,18 @@ SIDE_PERSISTENCE = {
     # (n=4,255, +2.4pp), CORE 0.9309->0.9511 (n=3,027, +2.0pp), HIGH
     # 0.9167->0.9448 (n=1,577, +2.8pp). MID's +0.7pp gap wasn't
     # significant, left as-is.
-    "Bitcoin": {"CHEAP": 0.9076, "MID": 0.9295, "CORE": 0.9511, "HIGH": 0.9448},
-    "Ethereum": {"CHEAP": 0.9179, "MID": 0.8948, "CORE": 0.8710, "HIGH": 0.8842},
+    # RECALIBRATED 2026-09-13 (post-halt, same root cause as ENTRY_SIZING_
+    # USD/HEDGE_TRIGGER_PROBABILITY's matching notes): every cell above
+    # was still measuring the pre-halt regime. Post-halt-only data (since
+    # 2026-09-06 14:21 UTC, ~1 week, all cells n>=200 OK) shows a real,
+    # substantial drop almost everywhere -- Bitcoin CHEAP -13.5pp, MID
+    # -7.5pp, CORE -8.5pp, HIGH -6.1pp; Ethereum -7.9pp to -9.3pp across
+    # all four regimes; Solana CHEAP -14.3pp, MID -13.8pp, CORE -10.1pp
+    # (Solana HIGH close, +3.8pp). His persistence HABIT shifted alongside
+    # his sizing habit at the same halt boundary -- one more facet of the
+    # same broader post-halt behavioral regime change.
+    "Bitcoin": {"CHEAP": 0.7731, "MID": 0.8246, "CORE": 0.8663, "HIGH": 0.8841},
+    "Ethereum": {"CHEAP": 0.8253, "MID": 0.8027, "CORE": 0.7814, "HIGH": 0.8055},
     # RECALIBRATED AGAIN 2026-09-08, same later pass (and same "actually
     # since the 09-06 resumption" correction applies): CHEAP dropped
     # substantially, 0.8797->0.8065 (n=1,504, -7.3pp, the largest
@@ -293,7 +316,7 @@ SIDE_PERSISTENCE = {
     # continuously shifting since the Sept 6 resumption, not settling
     # into a fixed new normal -- these tables are chasing a moving
     # target and may need periodic re-checks, not a one-time fix.
-    "Solana": {"CHEAP": 0.8065, "MID": 0.8616, "CORE": 0.8532, "HIGH": 0.8120},
+    "Solana": {"CHEAP": 0.6640, "MID": 0.7239, "CORE": 0.7525, "HIGH": 0.8500},
     # Dogecoin/Hyperliquid/BNB are dormant (see ASSET_REGIME_DISTRIBUTION_PCT's
     # comment) -- not worth the same rigor while untraded. Kept at their old
     # single blended value, just reshaped to the same per-regime dict shape
@@ -477,19 +500,35 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
 # ENTRY_SIZING_USD's discrete buckets can't express. Capped (see
 # within_band_size_multiplier) against extrapolating past where the data
 # actually supports it.
+# RECALIBRATED 2026-09-13 (post-halt, same root cause as ENTRY_SIZING_
+# USD/SIDE_PERSISTENCE's matching notes above -- see full-behavioral-
+# audit-tracker.md item 10 in project memory): every cell below was
+# still fit on pre-halt-dominated data. Re-derived via the same OLS-of-
+# log(usdcSize)-on-price methodology, restricted to ONLY post-halt data
+# (since 2026-09-06 14:21 UTC). CHEAP/MID cleared n>=200 for all three
+# assets; CORE/HIGH stay THIN (n=69-139) -- a real, substantial slope
+# still shows up in the same direction everywhere, but treat these as a
+# first-pass estimate pending more post-halt CORE/HIGH volume. The
+# slope changes are NOT uniform by direction, only by regime: CHEAP
+# dropped sharply for all three assets (e.g. Bitcoin 4.74->1.92, Solana
+# 3.97->0.65), MID mostly dropped too, but CORE actually rose for all
+# three (Bitcoin 4.19->4.78, Ethereum 3.21->8.65, Solana 4.50->7.74)
+# while HIGH dropped for all three (e.g. Bitcoin 13.47->8.46). Real,
+# regime-specific shifts, not a single uniform "everything flattened"
+# story -- kept as measured, not smoothed toward one narrative.
 WITHIN_BAND_SIZE_SLOPE = {
-    "Bitcoin": {"CORE": {"slope": 4.19, "band_mean_price": 0.795},
-                "HIGH": {"slope": 13.47, "band_mean_price": 0.947},
-                "CHEAP": {"slope": 4.7433, "band_mean_price": 0.1529},
-                "MID": {"slope": 2.9664, "band_mean_price": 0.4900}},
-    "Ethereum": {"CORE": {"slope": 3.21, "band_mean_price": 0.799},
-                 "HIGH": {"slope": 21.09, "band_mean_price": 0.955},
-                 "CHEAP": {"slope": 4.8979, "band_mean_price": 0.1212},
-                 "MID": {"slope": 3.4679, "band_mean_price": 0.4726}},
-    "Solana": {"CORE": {"slope": 4.50, "band_mean_price": 0.801},
-               "HIGH": {"slope": 28.16, "band_mean_price": 0.949},
-               "CHEAP": {"slope": 3.9698, "band_mean_price": 0.1350},
-               "MID": {"slope": 3.1983, "band_mean_price": 0.4563}},
+    "Bitcoin": {"CORE": {"slope": 4.7755, "band_mean_price": 0.7865},
+                "HIGH": {"slope": 8.4602, "band_mean_price": 0.9396},
+                "CHEAP": {"slope": 1.9179, "band_mean_price": 0.1959},
+                "MID": {"slope": 2.3301, "band_mean_price": 0.4639}},
+    "Ethereum": {"CORE": {"slope": 8.6511, "band_mean_price": 0.8012},
+                 "HIGH": {"slope": 14.8418, "band_mean_price": 0.9369},
+                 "CHEAP": {"slope": 0.8809, "band_mean_price": 0.1684},
+                 "MID": {"slope": 3.7741, "band_mean_price": 0.4550}},
+    "Solana": {"CORE": {"slope": 7.7354, "band_mean_price": 0.8080},
+               "HIGH": {"slope": 20.5223, "band_mean_price": 0.9340},
+               "CHEAP": {"slope": 0.6450, "band_mean_price": 0.1814},
+               "MID": {"slope": 1.6615, "band_mean_price": 0.4407}},
 }
 _WITHIN_BAND_MULTIPLIER_CAP = 5.0  # symmetric: multiplier clamped to [1/cap, cap]
 # CHEAP/MID cells ADDED 2026-09-11: the original 2026-09-08 pass only

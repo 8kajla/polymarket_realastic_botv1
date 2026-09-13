@@ -276,8 +276,11 @@ class TestWithinBandSizeMultiplier:
                 assert low < 1.0 < high, f"{asset}/{regime}: expected low<1.0<high, got {low}/{high}"
 
     def test_capped_against_extrapolation(self):
-        # Ethereum HIGH has the steepest slope (21.09) -- at the extreme
-        # edge of the band this must still be bounded, not blow up.
+        # Ethereum HIGH has one of the steepest slopes in the table
+        # (exact value has shifted across recalibrations -- see
+        # WITHIN_BAND_SIZE_SLOPE's own docstring for the current numbers)
+        # -- at the extreme edge of the band this must still be bounded,
+        # not blow up.
         mult = bc.within_band_size_multiplier("Ethereum", "HIGH", 1.0)
         assert mult <= 5.0
 

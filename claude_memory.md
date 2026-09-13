@@ -1089,3 +1089,24 @@ tables from the audit (WITHIN_BAND_SIZE_SLOPE, CROSS_MARKET_SIZE_
 MOMENTUM_MULTIPLIER, HEDGE_SIZE_RATIO for ETH/SOL, ADVERSE_MOVE_SIZE_
 MULTIPLIER, ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER) still need the
 same post-halt-only recalibration -- queued for the next /loop cycle.
+
+**FIXED (2026-09-13, /loop cycle 2)**: recalibrated `SIDE_PERSISTENCE`
+and `WITHIN_BAND_SIZE_SLOPE` post-halt (same methodology/root cause as
+cycle 1's ENTRY_SIZING_USD/HEDGE_TRIGGER_PROBABILITY fixes). Also
+corrected SIDE_PERSISTENCE's misleading docstring, which incorrectly
+claimed a "non-confounded win-rate difference" justification -- the
+2026-09-13 audit found that claim was itself confounded by CHEAP/HIGH
+price complementarity; the table still accurately replicates a real
+behavioral FREQUENCY, just isn't a predictive edge, and the docstring
+now says so honestly. WITHIN_BAND_SIZE_SLOPE's post-halt shift is
+regime-specific, not uniform: CHEAP/MID slopes dropped sharply for all
+3 assets, but CORE slopes actually ROSE while HIGH dropped -- kept as
+measured, not smoothed into one false "everything flattened" narrative.
+Both live on all 3 bots, 535/535 tests passing (1 test's fixed-price-
+for-every-regime assumption broke against the new steeper CORE slope
+and was fixed to use realistic per-regime prices, matching how
+production code actually calls this).
+
+Remaining queued: #13 CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER, #15
+HEDGE_SIZE_RATIO (ETH/SOL), #16/#19 ADVERSE_MOVE_(CONTINUATION_)SIZE_
+MULTIPLIER.
