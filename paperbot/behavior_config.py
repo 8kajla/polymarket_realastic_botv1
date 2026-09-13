@@ -1955,11 +1955,28 @@ def adverse_move_continuation_size_multiplier(asset: str, adverse_move: Optional
 # entire window). n=263/187/239 markets respectively -- below this
 # project's usual n>=500 trade-level trust bar (though comparable to
 # HEDGE_TRIGGER_PROBABILITY's n>=200-market bar for the same kind of
-# once-per-market binary measurement). Treat as a first-pass estimate, not
-# a fully-trusted recalibration -- revisit once more post-resumption data
-# accumulates. Dogecoin/Hyperliquid/BNB default to 0.0 probability
-# (no-op, unchanged first-entry behavior) since there's no live data to
-# calibrate them from at all right now.
+# once-per-market binary measurement). Dogecoin/Hyperliquid/BNB default to
+# 0.0 probability (no-op, unchanged first-entry behavior) since there's no
+# live data to calibrate them from at all right now.
+#
+# RECALIBRATED 2026-09-13 (post-halt audit, same 13.6-day-halt root cause
+# as the other 9 tables fixed this pass -- see full-behavioral-audit-
+# tracker.md). Post-halt-only (ts>=HALT_END), same "eventually-non-
+# dominant first entry" definition, collapsed decisions: n=1380/1283/1289
+# markets -- comfortably above trust bar now, unlike the original 14-day
+# pass. SCOUT_PROBABILITY: 0.390->0.3326 (BTC), 0.285->0.2525 (ETH),
+# 0.376->0.3072 (SOL) -- a real but modest ~10-18% relative decline for
+# all three, not a collapse like the other 9 tables. SCOUT_SIZE_RATIO:
+# same post-halt window, same median(first_entry_usdc / regime's "first"-
+# tier post-halt median) definition, n=459/324/396 scout-case markets:
+# 0.567->0.9721 (BTC), 0.672->0.9392 (ETH), 0.185->0.6697 (SOL) -- THIS one
+# is the dramatic post-halt shift: scouted first entries used to be sized
+# at a fraction of a normal first entry (as low as a fifth for Solana);
+# post-halt they're sized nearly the SAME as a normal first entry for all
+# three assets. The "tentative, small probe" behavior this multiplier was
+# built to replicate has almost entirely disappeared -- he still picks the
+# eventually-wrong side about a third of the time (SCOUT_PROBABILITY
+# above), but no longer discounts its size much when he does.
 # ACCURACY-conditioned scout rate. Added 2026-09-11: real, cross-asset-
 # POOLED finding (BTC-only was marginal, z=2.18; pooling all three assets
 # strengthens it to z=6.94) that his ROLLING recent accuracy (correctness
@@ -2025,15 +2042,15 @@ def accuracy_scout_multiplier(rolling_accuracy: Optional[float]) -> float:
 
 
 SCOUT_PROBABILITY = {
-    "Bitcoin":  0.390,
-    "Ethereum": 0.285,
-    "Solana":   0.376,
+    "Bitcoin":  0.3326,
+    "Ethereum": 0.2525,
+    "Solana":   0.3072,
 }
 
 SCOUT_SIZE_RATIO = {
-    "Bitcoin":  0.567,
-    "Ethereum": 0.672,
-    "Solana":   0.185,
+    "Bitcoin":  0.9721,
+    "Ethereum": 0.9392,
+    "Solana":   0.6697,
 }
 
 # Only reachable if SCOUT_PROBABILITY somehow got a nonzero entry for an
