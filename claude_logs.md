@@ -5876,3 +5876,26 @@ the checklist finishes.
 Tracker status: 18/28 items now carry an evidenced verdict, plus a new
 cross-cutting synthesis. Remaining genuinely unchecked: 6, 13, 16-17,
 19-20, and 4 of item 7's sub-multipliers (9 items). Continuing.
+
+## 2026-09-13: Audit item 16 — ADVERSE_MOVE_SIZE_MULTIPLIER stale, strengthens the cross-cutting pattern to 4/4
+
+Fresh Bitcoin first-hedge quartiles (7-14d, n=1222, both windows
+identical since all the data is within the last week) vs deployed
+table, matched by adverse_move level: move~-0.33 ratio 0.152 vs static
+0.337 (-55%), move~-0.10 ratio 0.413 vs static 0.562 (-27%), move~+0.08
+ratio 1.020 vs static 2.812 (-64%), move~+0.29 ratio 1.111 vs static
+2.085 (-47%). Direction preserved, magnitude substantially flattened,
+especially at the high-adverse-move end.
+
+**This is the FOURTH independent multiplier (after 8, 10, 26) showing
+the same "still real, but substantially muted" shape** -- now spanning
+BOTH entry sizing (8, 10, 26) and hedge sizing (16), which makes this
+very unlikely to be coincidence. Updated the tracker's cross-cutting
+section: this may be the single most important discovery of the whole
+audit -- a real, coherent, project-wide behavioral shift toward flatter/
+more-uniform sizing that no individual multiplier's own isolated
+recalibration would ever surface, since each was checked against its
+own narrow slice of the data rather than against each other.
+
+Tracker status: 19/28 items verified. Remaining: 6, 13, 17, 19-20, and
+4 of item 7's hedge-trigger sub-multipliers (9 items). Continuing.
