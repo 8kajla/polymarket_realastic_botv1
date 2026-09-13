@@ -5608,3 +5608,41 @@ starting now with item 27 (the core hedge=insurance interpretation)
 since the user specifically challenged whether the project's foundation
 itself is right, and this is the single most foundational unquestioned
 assumption in the whole hedge subsystem.
+
+## 2026-09-13: Audit item 3 & 27 verified — one major new fix candidate found
+
+**Item 27 (core "hedge = insurance" premise): CONFIRMED SOUND.** Tested
+per-market total ROI (both legs combined) for hedged vs unhedged
+markets, stratified by first-entry regime (30d real data): hedging
+substantially improves BOTH mean and worst-case (p10) outcomes in
+CHEAP (hedged mean +0.168/p10 -0.474 vs unhedged mean -0.089/p10
+-1.000) and MID (hedged +0.067/-0.603 vs unhedged -0.127/-1.000) --
+correctly REVERSES in CORE/HIGH (hedging a likely-winner is a net drag
+there, matching this project's own already-much-lower calibrated hedge
+rates in those bands). This foundational assumption holds up.
+
+**Item 3 (HEDGE_TRIGGER_PROBABILITY baseline): STALE, high severity.**
+This project already knew his overall hedge rate has been declining
+(hedge-rate-secular-decline.md, discovered iter 143) but never checked
+the LIVE deployed table's actual current gap. Did that: compared the
+static table to a fresh 3-day real hedge rate --
+  Bitcoin: MID 80.2%->64.2% (-16pp), CORE 47.5%->36.1% (-11.4pp)
+  Ethereum: CHEAP 53.4%->32.0% (-21.4pp), MID 65.6%->45.7% (-19.9pp)
+  Solana: CHEAP 72.3%->42.9% (-29.4pp), MID 72.9%->48.3% (-24.6pp),
+          CORE 55.2%->23.3% (-31.9pp), HIGH 30.4%->11.5% (-18.9pp)
+Nearly every cell is substantially stale, ALL in the same direction
+(we over-hedge relative to his current behavior) -- Solana worst,
+off by up to 32 percentage points. This is likely the single most
+consequential, actionable finding of the audit so far: it means our
+bots hedge far more often than he currently does. hedge_attempt_hazard
+(item 4) inherits this by construction. HEDGE_CONTINUATION_PROBABILITY
+(item 5) not yet separately checked but suspect for the same reason.
+
+NOT YET FIXED -- this changes live hedge-trigger behavior substantially
+and needs explicit user sign-off before recalibrating (a rolling/time-
+decayed recalibration would be more robust than another one-time fixed
+constant, given the decline is real, large, and still ongoing/unexplained).
+
+Continuing the audit tracker (25 items remain unchecked or partially
+checked: items 5-6, 8-26, 28). Full tracker at
+full-behavioral-audit-tracker.md in project memory.
