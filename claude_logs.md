@@ -6515,3 +6515,125 @@ response, built the same day or close to it, never independently
 post-halt-checked): `HEDGE_COUNT_REINFORCEMENT` (REENTRY_FATIGUE's own
 mirror-image signal), `HEDGE_TRIGGER_AFTER_BIG_LOSS`, and
 `BANKROLL_PNL_SIZE_MULTIPLIER`.
+
+## 2026-09-13: /loop cycle 11 — HEDGE_COUNT_REINFORCEMENT checked, genuinely underpowered post-halt (not recalibrated)
+
+Continued past REENTRY_FATIGUE (cycle 10) to its explicitly-flagged
+sibling: `HEDGE_COUNT_REINFORCEMENT`, built the same day, same market-
+outcome-dose-response category (needing 2+ hedges against a market's
+original side predicts that side wins more).
+
+**Methodology**: reconstructed the exact live-hedge-count derivation —
+for each market, track a running count of opposite-side (hedge) fills
+seen so far; for every ORIGINAL-side fill placed after at least one
+hedge already exists, record (live_hedge_count_so_far, did the original
+side eventually win), bucketed by this fill's own price into a regime.
+Post-halt-only (ts>=HALT_END), same tier boundaries as production
+(baseline hedge_count==1, tier1 2-4, tier2 5+).
+
+**Result — noisy and internally inconsistent in all 4 cells**, unlike
+REENTRY_FATIGUE's clean split:
+- Ethereum/CHEAP: tier1 ratio 2.625x (z=2.330) but tier2 ratio only
+  1.067x — LOWER than tier1, impossible for a genuine dose-response.
+- Ethereum/MID: tier1 not significant (z=0.981); tier2 REVERSES sign
+  (z=-2.359, ratio 0.577x).
+- Solana/CHEAP: tier1 wrong direction (z=-1.671); tier2 not
+  significant (z=0.544).
+- Solana/MID: tier1 not significant (z=0.580); tier2 real (z=4.176) —
+  internally inconsistent with its own tier1.
+
+**Root cause identified, not just "it's noisy"**: only ~4.9 days of
+post-halt data exist as of this check (confirmed directly via
+`time.time() - HALT_END`), versus the original's multi-week TWAP-era
+window. This table's population is additionally narrower than most —
+only original-side entries placed AFTER at least one hedge already
+exists — and hedge activity itself has separately been found to be in
+secular decline (see hedge-rate-secular-decline in project memory).
+Bucket sizes collapsed to n=45-149/cell/tier, roughly 1/13th to 1/60th
+of the original calibration's n=814-2,812.
+
+**Verdict: genuinely "can't independently verify YET," a different
+category from a "confirmed vanished" cell.** Kept the table at its
+original TWAP-era values rather than recalibrate on underpowered,
+internally-contradictory noise, or silently skip the check. Documented
+directly in the table's own docstring with the exact per-cell numbers
+and the sample-size root cause, so a future pass knows exactly what was
+checked and why nothing changed. No value changes, so no test changes
+needed — 534/534 still passing at this point.
+
+## 2026-09-13: /loop cycle 12 — HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER retired, no detectable effect post-halt
+
+Checked the last hedge-activity-dependent candidate flagged after
+cycle 10: `HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER` (a top-decile
+single-market loss raising hedge propensity in the very next market,
+Ethereum/Solana only, originally confirmed via Mantel-Haenszel-
+controlled odds ratios of 1.613/1.569).
+
+**Methodology**: reconstructed bot.py's exact `_is_top_decile_loss`
+logic — per asset, a rolling deque (maxlen 50) of losing markets' loss
+magnitudes, flagging a market as "top-decile" once its loss (computed
+directionally, no rebate, from real per-fill price/size/outcome) is at
+or above the rolling 90th percentile (linear interpolation) of that
+window, requiring at least 20 samples before ever flagging. For each
+market, recorded whether the PREVIOUS market of that asset had just
+been flagged, and whether THIS market ended up hedged (dual-sided) at
+all. Post-halt-only. Used a simplified raw pooled comparison rather
+than the original's full Mantel-Haenszel stratification — a reasonable
+simplification here since the post-halt window (~4.9 days) is far too
+short for the kind of secular hedge-rate drift MH-control exists to
+correct for in the first place.
+
+**Result — a clean, unambiguous null**, a different character from
+cycle 11's noisy result:
+- Ethereum: after-big-loss hedge rate 0.4730 (n=74) vs baseline 0.4526
+  (n=1149), ratio=1.045, z=0.341
+- Solana: after-big-loss hedge rate 0.5469 (n=64) vs baseline 0.5401
+  (n=1172), ratio=1.013, z=0.106
+
+Both ratios sit within 5% of 1.0 with z well under 1 for both assets —
+no sign-flipping, no internal inconsistency between sub-buckets (unlike
+cycle 11), just a flat, unremarkable comparison. n=64-74 flagged
+markets is on the thinner side but comparable to other checks trusted
+this session (e.g. the CROSS_MARKET_SIDE_PERSISTENCE CHEAP-band check
+used n=151-295 and was treated as informative). Treated as a genuine
+vanished-effect verdict and REMOVED entirely —
+`HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER` is now an empty dict, same
+treatment as `HEDGE_LIQUIDITY_MULTIPLIER`'s cycle-6 retirement.
+
+**Test fixes** (same retirement pattern as cycle 6's
+HEDGE_LIQUIDITY_MULTIPLIER):
+- `test_behavior_config.py`: replaced 4 now-vacuous
+  `TestHedgeTriggerAfterBigLossMultiplier` tests (iterating an empty
+  dict, silently no-op-ing without failing) with 3 explicit
+  retirement-confirming tests (`test_always_neutral_now_the_table_is_
+  empty`, `test_noop_when_not_after_a_big_loss_or_unknown`,
+  `test_table_is_empty`).
+- `test_strategy.py`:
+  `test_after_big_loss_fires_more_often_for_calibrated_assets` would
+  have started FAILING OUTRIGHT, not just going vacuous — it asserted
+  Ethereum fires strictly more often after a big loss
+  (`n_after_loss > n_normal`), which is no longer true now the
+  multiplier is a no-op. Replaced with a no-op check across all 3
+  assets (Bitcoin/Ethereum/Solana). `test_respects_the_per_instance_
+  feature_flag` was keyed on Ethereum specifically, which would have
+  silently gone vacuous the same way REENTRY_FATIGUE's Ethereum/MID
+  flag test did in cycle 10 — fixed by mocking
+  `bc.hedge_trigger_after_big_loss_multiplier` directly (returning 3.0
+  when after_big_loss else 1.0) so the flag's own gating logic is
+  tested independent of whatever the live table currently holds, the
+  same WIRING-test pattern used for `hedge_liquidity_multiplier`'s own
+  post-retirement flag test.
+
+531/531 tests passing, deployed to all 3 bots
+(paperbot/paperbot-100/coinbase-bot), verified healthy via journalctl
+(no errors/tracebacks on any of the 3 services).
+
+**Running tally: 14 tables recalibrated or retired, plus 1 confirmed-
+unripe (HEDGE_COUNT_REINFORCEMENT), across 12 /loop cycles.** Only one
+candidate remains from the post-cycle-10 list: `BANKROLL_PNL_SIZE_
+MULTIPLIER` (built 2026-09-12, Ethereum/Solana only). Unlike the last
+two, it's a first-entry SIZING signal keyed on running realized PNL,
+not hedge-activity-dependent — a different risk profile (its own risk
+is whatever the accumulated PNL trajectory looks like within a
+~4.9-day post-halt window, not hedge-activity sparsity), worth checking
+on its own terms rather than assuming the same underpowering applies.

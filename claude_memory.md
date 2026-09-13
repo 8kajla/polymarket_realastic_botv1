@@ -1387,3 +1387,36 @@ cycles.** Same-category candidates for further cycles: HEDGE_COUNT_
 REINFORCEMENT (REENTRY_FATIGUE's mirror image, same day/category),
 HEDGE_TRIGGER_AFTER_BIG_LOSS, BANKROLL_PNL_SIZE_MULTIPLIER. See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 11): HEDGE_COUNT_REINFORCEMENT checked -- genuinely underpowered post-halt, not recalibrated
+
+Checked REENTRY_FATIGUE's sibling table (built same day, same market-
+outcome-dose-response category). Unlike REENTRY_FATIGUE's clean
+3-kept/3-vanished split, ALL 4 cells came back noisy/internally
+inconsistent (e.g. tier2 ratio lower than tier1, or sign-reversed).
+Root cause: only ~4.9 days of post-halt data exist, and this table's
+population (original-side entries placed only after a hedge already
+exists) is further thinned by the hedge-rate secular decline --
+buckets collapsed to n=45-149, ~1/13-1/60 of original. Verdict: "can't
+independently verify YET" (documented in the table's own docstring),
+kept at original TWAP-era values -- distinct from a "vanished" verdict.
+
+## 2026-09-13 (loop cycle 12): HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER retired
+
+Checked the last hedge-activity-dependent candidate. Unlike cycle 11's
+noisy result, this one came back a clean, unambiguous null for both
+Ethereum (ratio=1.045, z=0.341, n=74) and Solana (ratio=1.013, z=0.106,
+n=64) -- no sign-flipping, no internal inconsistency, just flat. REMOVED
+entirely (empty dict), same retirement pattern as HEDGE_LIQUIDITY_
+MULTIPLIER. Fixed one test that would have started outright FAILING
+(not just going vacuous) since it asserted a boost that no longer
+exists; switched the feature-flag test to mock the function directly
+since no real calibrated asset remains.
+
+531/531 tests passing, deployed to all 3 bots, verified healthy.
+
+**Running tally: 14 tables recalibrated/retired + 1 confirmed-unripe
+across 12 /loop cycles.** Last remaining candidate: BANKROLL_PNL_SIZE_
+MULTIPLIER (2026-09-12, ETH/SOL) -- a sizing signal, not hedge-activity
+dependent, so a different risk profile than the last two. See
+[[full-behavioral-audit-tracker]].
