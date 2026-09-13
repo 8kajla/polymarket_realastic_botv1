@@ -484,17 +484,37 @@ FLOOR_LOT_PROBABILITY = {
     # assets (previously modeled as flat-by-position, like Dogecoin) --
     # moved to the same per-tier dict structure as Hyperliquid/BNB below,
     # and added to FLOOR_LOT_POSITION_DEPENDENT_ASSETS.
+    #
+    # INDEX SEMANTICS CORRECTED 2026-09-13 (/loop cycle 26, same day as
+    # ENTRY_SIZING_USD's and REENTRY_FATIGUE's own fixes): this table is
+    # ALSO keyed by position_tier, which live comes from position_tier_
+    # for_index(real_fill_count) -- the same combined hedge+ordinary
+    # counter, not a same-side/dominant-only sub-index. The cycle-6
+    # derivation above used a sub-index (didn't account for interspersed
+    # hedge fills advancing the true shared counter), same bug class as
+    # cycles 20-22. Redone with the correct combined index (raw,
+    # uncollapsed fills -- floor lots ARE the tiny fragments collapsing
+    # would erase, unchanged from cycle 6's own reasoning) plus the
+    # cycle-18-corrected HALT_END boundary, never previously applied to
+    # this table. Most cells shift a further 10-30%, mostly DOWN (fewer
+    # floor-lot probes at a given position than the mis-indexed version
+    # suggested) -- consistent direction and magnitude with the broader
+    # post-halt softening pattern found across many other tables this
+    # session. CORE/first and HIGH/first for both assets stayed below
+    # n>=200 under this more selective definition and were left
+    # unchanged (Ethereum HIGH/first looked like a +197% swing but at
+    # n=106 that's thin-sample noise, not a real signal).
     "Ethereum": {
-        "CHEAP": {"first": 0.0786, "2nd_3rd": 0.0766, "4th_plus": 0.1283},
-        "MID":   {"first": 0.1366, "2nd_3rd": 0.1565, "4th_plus": 0.1284},
-        "CORE":  {"first": 0.0857, "2nd_3rd": 0.1423, "4th_plus": 0.1787},
-        "HIGH":  {"first": 0.0127, "2nd_3rd": 0.0611, "4th_plus": 0.0682},
+        "CHEAP": {"first": 0.0917, "2nd_3rd": 0.0860, "4th_plus": 0.1133},
+        "MID":   {"first": 0.1183, "2nd_3rd": 0.1341, "4th_plus": 0.1035},
+        "CORE":  {"first": 0.0857, "2nd_3rd": 0.1100, "4th_plus": 0.1577},  # first THIN (n=172)
+        "HIGH":  {"first": 0.0127, "2nd_3rd": 0.0512, "4th_plus": 0.0618},  # first THIN (n=106)
     },
     "Solana": {
-        "CHEAP": {"first": 0.1244, "2nd_3rd": 0.1140, "4th_plus": 0.2309},
-        "MID":   {"first": 0.2857, "2nd_3rd": 0.2938, "4th_plus": 0.3606},
-        "CORE":  {"first": 0.1736, "2nd_3rd": 0.2443, "4th_plus": 0.2972},
-        "HIGH":  {"first": 0.0854, "2nd_3rd": 0.0900, "4th_plus": 0.1603},
+        "CHEAP": {"first": 0.0877, "2nd_3rd": 0.1101, "4th_plus": 0.1931},
+        "MID":   {"first": 0.2296, "2nd_3rd": 0.2454, "4th_plus": 0.3314},
+        "CORE":  {"first": 0.1736, "2nd_3rd": 0.2069, "4th_plus": 0.2547},  # first THIN (n=165)
+        "HIGH":  {"first": 0.0854, "2nd_3rd": 0.0780, "4th_plus": 0.1359},  # first THIN (n=113)
     },
     "Dogecoin": {
         "CHEAP": 0.1520, "MID": 0.1986, "CORE": 0.2209, "HIGH": 0.0923,
