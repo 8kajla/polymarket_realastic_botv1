@@ -1036,30 +1036,33 @@ class TestHedgeCountReinforcementMultiplier:
 class TestHedgeTriggerAfterBigLossMultiplier:
     """Hedge propensity after a big loss, added 2026-09-13 -- a market's
     own asset having just taken a top-decile-sized rolling loss (bot.py's
-    _is_top_decile_loss, min 20 samples before ever triggering) predicts
-    the NEXT market's first hedge trigger fires more readily, for
-    Ethereum/Solana. Bitcoin and the "not after a big loss" case are both
-    deliberately no-ops -- this only ever pushes probability UP, never
-    down, mirroring HEDGE_COUNT_REINFORCEMENT's boost-only design."""
+    _is_top_decile_loss, min 20 samples before ever triggering) predicted
+    the NEXT market's first hedge trigger fired more readily, for
+    Ethereum/Solana. RETIRED 2026-09-13 (post-halt, /loop cycle 11): a
+    simplified post-halt-only re-check (raw pooled comparison, not the
+    original's full Mantel-Haenszel stratification -- a reasonable
+    simplification given the post-halt window is only ~4.9 days, too
+    short for the kind of secular drift MH-control exists to handle)
+    found no detectable effect for either asset (Ethereum ratio=1.045,
+    z=0.341, n=74 flagged markets; Solana ratio=1.013, z=0.106, n=64) --
+    see the module docstring in behavior_config.py for the full numbers.
+    HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER is now an empty dict; every
+    asset (including the two that used to have a real boost) gets the
+    function's own no-op fallback."""
 
-    def test_noop_for_uncalibrated_asset(self):
-        assert bc.hedge_trigger_after_big_loss_multiplier("Bitcoin", True) == 1.0
+    def test_always_neutral_now_the_table_is_empty(self):
+        # Every asset, including the two that used to have a real boost,
+        # must be a strict no-op now the underlying signal is gone.
+        for asset in ("Bitcoin", "Ethereum", "Solana", "Dogecoin", "Hyperliquid", "BNB"):
+            assert bc.hedge_trigger_after_big_loss_multiplier(asset, True) == 1.0
 
-    def test_noop_when_not_after_a_big_loss(self):
-        for asset in bc.HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER:
+    def test_noop_when_not_after_a_big_loss_or_unknown(self):
+        for asset in ("Ethereum", "Solana"):
             assert bc.hedge_trigger_after_big_loss_multiplier(asset, False) == 1.0
-
-    def test_noop_when_after_big_loss_is_none(self):
-        for asset in bc.HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER:
             assert bc.hedge_trigger_after_big_loss_multiplier(asset, None) == 1.0
 
-    def test_boosts_calibrated_assets_after_a_big_loss(self):
-        for asset, mult in bc.HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER.items():
-            assert bc.hedge_trigger_after_big_loss_multiplier(asset, True) == mult
-
-    def test_multiplier_is_a_real_boost_not_a_dampener(self):
-        for asset, mult in bc.HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER.items():
-            assert mult > 1.0, f"{asset}: expected a boost (>1.0), got {mult}"
+    def test_table_is_empty(self):
+        assert bc.HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER == {}
 
 
 class TestAccuracyScoutMultiplier:

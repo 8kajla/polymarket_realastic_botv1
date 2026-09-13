@@ -2462,10 +2462,27 @@ def hedge_ttc_size_multiplier(asset: str, regime: str, seconds_remaining: float)
 # consistent with how every other hedge-trigger finding here has been
 # implemented, and decide_hedge already clamps the combined probability to
 # [0, 1] regardless).
-HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER = {
-    "Ethereum": 1.613,
-    "Solana": 1.569,
-}
+#
+# CHECKED FOR POST-HALT FRESHNESS 2026-09-13 (/loop cycle 11) -- REMOVED,
+# effect not detectable post-halt. Simplified re-check (raw pooled
+# comparison, not the full Mantel-Haenszel stratification the original
+# used -- a reasonable simplification here since the post-halt window is
+# only ~4.9 days, far too short for the kind of secular hedge-rate drift
+# MH-stratification exists to control for in the first place):
+#   Ethereum: after-big-loss hedge rate 0.4730 (n=74) vs baseline 0.4526
+#     (n=1149), ratio=1.045, z=0.341
+#   Solana:   after-big-loss hedge rate 0.5469 (n=64) vs baseline 0.5401
+#     (n=1172), ratio=1.013, z=0.106
+# Both ratios sit within 5% of 1.0 with z well under 1 -- no detectable
+# effect, a much weaker signal than a borderline case, though n=64-74
+# flagged markets (vs the original's much larger multi-week sample) means
+# this can't fully rule out a real but smaller remaining effect the way
+# REENTRY_FATIGUE's cleaner removals could. Removed rather than kept at a
+# stale, unverifiable-either-way value, consistent with this session's
+# discipline -- revisit once meaningfully more post-halt data
+# accumulates (both the flag's own >=20-loss-sample warmup and the
+# comparison itself need more history than ~5 days can provide).
+HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER: dict = {}
 
 
 def hedge_trigger_after_big_loss_multiplier(asset: str, after_big_loss: Optional[bool]) -> float:

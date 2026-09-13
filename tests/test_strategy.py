@@ -1393,35 +1393,39 @@ class TestDecideHedgeAfterBigLossMultiplier:
         )
         assert n_no_arg == n_explicit_none
 
-    def test_after_big_loss_fires_more_often_for_calibrated_assets(self):
-        activity = MarketActivityState()
-        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CHEAP")
-        n = 500
-        n_normal = sum(
-            1 for seed in range(n)
-            if decide_hedge("Ethereum", activity, random.Random(seed), after_big_loss=False) is not None
-        )
-        n_after_loss = sum(
-            1 for seed in range(n)
-            if decide_hedge("Ethereum", activity, random.Random(seed), after_big_loss=True) is not None
-        )
-        assert n_after_loss > n_normal
-
-    def test_noop_for_bitcoin(self):
-        activity = MarketActivityState()
-        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CHEAP")
-        n = 500
-        n_normal = sum(
-            1 for seed in range(n)
-            if decide_hedge("Bitcoin", activity, random.Random(seed), after_big_loss=False) is not None
-        )
-        n_after_loss = sum(
-            1 for seed in range(n)
-            if decide_hedge("Bitcoin", activity, random.Random(seed), after_big_loss=True) is not None
-        )
-        assert n_normal == n_after_loss, "Bitcoin is not calibrated -- after_big_loss must be a strict no-op"
+    def test_noop_for_all_assets_now_the_table_is_retired(self):
+        # RETIRED 2026-09-13 (post-halt, /loop cycle 11): the effect
+        # this multiplier replicated is no longer detectable post-halt
+        # for either Ethereum or Solana -- see
+        # HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER's docstring in
+        # behavior_config.py. This test used to assert Ethereum fires
+        # MORE after a big loss; now every asset (including the two that
+        # used to have a real boost) must be a strict no-op.
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            activity = MarketActivityState()
+            record_filled_entry(activity, "Up", notional_usd=10.0, regime="CHEAP")
+            n = 500
+            n_normal = sum(
+                1 for seed in range(n)
+                if decide_hedge(asset, activity, random.Random(seed), after_big_loss=False) is not None
+            )
+            n_after_loss = sum(
+                1 for seed in range(n)
+                if decide_hedge(asset, activity, random.Random(seed), after_big_loss=True) is not None
+            )
+            assert n_normal == n_after_loss, f"{asset}: after_big_loss must be a strict no-op now the table is empty"
 
     def test_respects_the_per_instance_feature_flag(self, monkeypatch):
+        # Mocks the underlying multiplier directly rather than relying on
+        # a currently-calibrated asset -- HEDGE_TRIGGER_AFTER_BIG_LOSS_
+        # MULTIPLIER is now empty (retired post-halt, cycle 11), so no
+        # real asset exercises the flag's gating any more. This tests the
+        # WIRING (the flag actually suppresses the multiplier's effect)
+        # independent of whatever the table currently holds -- the same
+        # pattern used for hedge_liquidity_multiplier's own flag test
+        # after ITS retirement.
+        monkeypatch.setattr(bc, "hedge_trigger_after_big_loss_multiplier",
+                             lambda asset, after_big_loss: 3.0 if after_big_loss else 1.0)
         monkeypatch.setattr(config, "ENABLE_HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER", False)
         activity = MarketActivityState()
         record_filled_entry(activity, "Up", notional_usd=10.0, regime="CHEAP")
