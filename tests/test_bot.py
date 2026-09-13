@@ -48,6 +48,12 @@ def make_market_for_asset(asset, condition_id="cond-1", end_time=2000.0):
 def wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0):
     bot.markets_by_condition[market.condition_id] = market
     bot.activity[market.condition_id] = MarketActivityState()
+    # ADDED 2026-09-13 alongside token_id_to_asset (TRADE_PRINT_COUNTS
+    # diagnostic): real onboarding always sets this alongside book_states
+    # -- mirror that here too so tests using this shortcut see the same
+    # state a real _onboard_markets call would produce.
+    bot.token_id_to_asset[market.token_id_up] = market.asset
+    bot.token_id_to_asset[market.token_id_down] = market.asset
     up = BookState(token_id=market.token_id_up)
     up.apply_snapshot(bids=[(bid, depth)], asks=[(ask, depth)])
     bot.book_states[market.token_id_up] = up
@@ -820,6 +826,82 @@ class TestRestingOrderIdsClearsOnFillViaTradePrint:
         asyncio.run(bot.strategy_tick(now=1002.0))
         assert market.condition_id in bot.resting_order_ids
         assert order_id not in bot.resting_order_ids[market.condition_id]
+
+
+class TestTradePrintCountsByAsset:
+    """ADDED 2026-09-13: diagnostic instrumentation for a real, confirmed-
+    live puzzle -- Solana's ordinary-order fill rate is ~0.1% vs Bitcoin's
+    ~25%, and fills only ever happen via a real SELL-side trade print
+    consuming queue -- see token_id_to_asset's own docstring in __init__
+    for the full context. These confirm the counting wiring itself works
+    before trusting what it reports live."""
+
+    def test_token_id_to_asset_populated_on_onboard(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market)
+        asyncio.run(bot._onboard_markets([market]))
+        assert bot.token_id_to_asset[market.token_id_up] == "Bitcoin"
+        assert bot.token_id_to_asset[market.token_id_down] == "Bitcoin"
+
+    def test_token_id_to_asset_cleared_on_retire(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market)
+        asyncio.run(bot._onboard_markets([market]))
+        asyncio.run(bot._retire_market(market))
+        assert market.token_id_up not in bot.token_id_to_asset
+        assert market.token_id_down not in bot.token_id_to_asset
+
+    def test_sell_print_increments_both_total_and_sell(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=2)
+        market = make_bitcoin_market()
+        book = wire_market(bot, market, bid=0.20, ask=0.21, depth=50.0)
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        book.apply_last_trade_price(price=0.20, size=5.0, side="SELL", ts=1001.0)
+        bot.manage_orders_tick(now=1001.0)
+
+        counts = bot.trade_print_counts_by_asset["Bitcoin"]
+        assert counts["total"] == 1
+        assert counts["sell"] == 1
+
+    def test_buy_print_increments_total_but_not_sell(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=2)
+        market = make_bitcoin_market()
+        book = wire_market(bot, market, bid=0.20, ask=0.21, depth=50.0)
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        book.apply_last_trade_price(price=0.20, size=5.0, side="BUY", ts=1001.0)
+        bot.manage_orders_tick(now=1001.0)
+
+        counts = bot.trade_print_counts_by_asset["Bitcoin"]
+        assert counts["total"] == 1
+        assert counts["sell"] == 0
+
+    def test_log_pnl_summary_clears_the_counts(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=2)
+        market = make_bitcoin_market()
+        book = wire_market(bot, market, bid=0.20, ask=0.21, depth=50.0)
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        book.apply_last_trade_price(price=0.20, size=5.0, side="SELL", ts=1001.0)
+        bot.manage_orders_tick(now=1001.0)
+        assert bot.trade_print_counts_by_asset  # non-empty before logging
+
+        bot.log_pnl_summary(now=1002.0)
+
+        assert not bot.trade_print_counts_by_asset, \
+            "counts must reset after each heartbeat so consecutive log lines are comparable"
+
+    def test_untracked_token_id_resolves_to_none_not_a_crash(self):
+        # A book can in principle emit a print for a token that was never
+        # onboarded (e.g. a race during retire) -- the counting lookup
+        # must degrade to a silent no-op (token_id_to_asset.get returns
+        # None, guarded by the `if asset is not None` check in
+        # manage_orders_tick), not raise.
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        assert bot.token_id_to_asset.get("some-unknown-token-id") is None
+        assert not bot.trade_print_counts_by_asset
 
 
 class TestRealFillCountWiring:

@@ -24,7 +24,7 @@ import random
 import signal
 import sys
 import time
-from collections import deque
+from collections import defaultdict, deque
 
 import requests
 
@@ -129,6 +129,21 @@ class PaperBot:
         self.rng = random.Random(seed)
 
         self.book_states: dict[str, BookState] = {}          # token_id -> BookState
+        # ADDED 2026-09-13: diagnostic-only instrumentation for a real,
+        # confirmed-live puzzle -- Solana's ordinary-order fill rate is
+        # ~0.1% (vs Bitcoin's ~25%), uniform across every regime band (not
+        # a composition effect), and survives even CHEAP's most aggressive
+        # QUEUE_SAFETY_FACTOR_OVERRIDE (0.10). Fills only ever happen via
+        # on_trade_print consuming a real SELL-side trade print at-or-
+        # through our resting price -- see its own docstring -- so the
+        # open question is whether Solana's real trade-print volume is
+        # genuinely thin (a real market-liquidity fact, not fixable by
+        # tuning queue_safety_factor) or whether prints simply aren't
+        # arriving for it at all (a feed/subscription bug). No existing
+        # log line could distinguish these -- this counts prints received
+        # per asset, split by side, surfaced via log_pnl_summary below.
+        self.token_id_to_asset: dict[str, str] = {}
+        self.trade_print_counts_by_asset: dict = defaultdict(lambda: {"total": 0, "sell": 0})
         # ADDED 2026-09-13: restore per-market state (real_hedge_fill_
         # count, cost_by_side, last_side, etc.) that survived a previous
         # graceful shutdown -- see save_activity_state's own docstring in
@@ -338,6 +353,8 @@ class PaperBot:
             # market with a fresh one, since only the latter has no
             # existing key to preserve.
             self.activity.setdefault(market.condition_id, MarketActivityState())
+            self.token_id_to_asset[market.token_id_up] = market.asset
+            self.token_id_to_asset[market.token_id_down] = market.asset
 
         token_jobs = [
             (market, token_id)
@@ -403,6 +420,8 @@ class PaperBot:
         self.pending_resolution[market.condition_id] = market
         self.book_states.pop(market.token_id_up, None)
         self.book_states.pop(market.token_id_down, None)
+        self.token_id_to_asset.pop(market.token_id_up, None)
+        self.token_id_to_asset.pop(market.token_id_down, None)
         # Bounded-memory cleanup for a long-running process: none of this
         # per-market state is needed again once a market is no longer in
         # markets_by_condition -- strategy_tick will never evaluate it
@@ -931,6 +950,15 @@ class PaperBot:
 
         for token_id, book in self.book_states.items():
             for trade in book.drain_pending_trades():
+                # DIAGNOSTIC (2026-09-13): see token_id_to_asset's own
+                # docstring in __init__ -- counts received prints by asset
+                # and side, surfaced periodically via log_pnl_summary.
+                asset = self.token_id_to_asset.get(token_id)
+                if asset is not None:
+                    counts = self.trade_print_counts_by_asset[asset]
+                    counts["total"] += 1
+                    if trade.side.upper() == "SELL":
+                        counts["sell"] += 1
                 try:
                     self.fill_sim.on_trade_print(token_id, trade)
                 except Exception:
@@ -1223,6 +1251,15 @@ class PaperBot:
             scout["scout_trades"], scout["scout_pnl"],
             committed_now, self._peak_committed_capital,
         )
+        # DIAGNOSTIC (2026-09-13): see token_id_to_asset's own docstring in
+        # __init__. Logged as its own line (not folded into PNL_SUMMARY
+        # above) since it's a period-since-last-log count, not a lifetime
+        # total, and resets after each log so consecutive lines are
+        # directly comparable heartbeats rather than an ever-growing sum.
+        if self.trade_print_counts_by_asset:
+            logger.info("TRADE_PRINT_COUNTS since last heartbeat: %s",
+                        dict(self.trade_print_counts_by_asset))
+            self.trade_print_counts_by_asset.clear()
 
     # -- main loop -----------------------------------------------------
 
