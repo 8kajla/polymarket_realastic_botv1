@@ -5747,3 +5747,27 @@ Tracker status: 9/28 items now carry a real, evidenced verdict:
 - Queued, lower priority: FLOOR_LOT_PROBABILITY (9)
 
 19 items remain fully unchecked (6-7, 10-14, 16-24, 26). Continuing.
+
+## 2026-09-13: Audit items 12, 18, 21 — mixed results, mostly reassuring
+
+**Item 12 (RESUMPTION_SIZE_MULTIPLIER)**: structurally unverifiable
+further right now -- checked for any 4h+ gap since its 2026-09-10 build
+date; none exists in the entire trade mirror (only the original 327h
+halt and one 26h gap from June, both pre-dating it). Its own docstring
+already honestly flags this as n=1/unreplicated. Nothing new to report,
+but confirms the limitation is real.
+
+**Item 18 (HEDGE_CONTINUATION_SIZE_RATIO)**: CONFIRMED, holds up. Fresh
+10-day pooled ratio by hedge index vs the table: +9.3%/-0.1%/-11.9% for
+idx 2/3/4 -- all reasonable.
+
+**Item 21 (SCOUT_PROBABILITY)**: CONFIRMED, holds up. Its own docstring
+flagged the original ~200-market sample as below trust and asked for a
+revisit "once more data accumulates" -- did that with a 14-day matched
+window against the full mirror: fresh rate within 2.2-6.4pp for all 3
+assets. Small, expected drift from a thin original sample, not a real
+problem.
+
+Tracker status: 12/28 items now carry a real, evidenced verdict (up
+from 9). Remaining: 6-7, 10-11, 13-14, 16-17, 19-20, 22-24, 26 (16
+items). Continuing.
