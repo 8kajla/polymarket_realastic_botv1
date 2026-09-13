@@ -5368,3 +5368,54 @@ orphans.
 This closes item 5 (the interaction/regression audit) of the "build
 everything" list with one real, fixed finding. Moving to the final item:
 the standalone "coinbase bot" instance.
+
+## 2026-09-13: Coinbase-momentum bot built — standalone, separate from the trader-replica bots (item 6, final)
+
+Built the explicitly-requested standalone "coinbase bot": a genuinely
+separate paper-trading instance implementing the external-Coinbase-spot-
+momentum-into-side-selection design that was researched earlier and
+deliberately rejected for the main bots (paperbot/paperbot-100), since
+the real trader doesn't appear to read an external feed directly.
+
+**New files** (none of this touches strategy.py/behavior_config.py — the
+trader-replica code is completely untouched):
+- `paperbot/coinbase_feed.py`: live poller against Coinbase Exchange's
+  public (no-key) ticker API — confirmed reachable from the AWS server
+  (unlike Binance, HTTP 451 there). Maintains a rolling per-asset
+  (ts, price) history; `trailing_return()` computes the N-minute return,
+  returning None (not a biased short-window estimate) until history
+  genuinely reaches back that far — a real bug caught by its own test
+  suite before shipping (the original draft would silently use whatever
+  oldest sample existed as a stand-in for "N minutes ago").
+- `paperbot/coinbase_strategy.py`: pure decision logic mirroring the
+  validated finding exactly — trailing 3-min return's sign picks the
+  side, gated to CHEAP/MID only (CORE/HIGH were never part of the
+  validated edge) and a 0.0002 deadband (matches the research script).
+  One-shot, no hedging, flat sizing — deliberately far simpler than the
+  trader-replica pipeline, since this bets on the edge directly rather
+  than replicating a person's decision process.
+- `paperbot/coinbase_bot.py`: `CoinbaseMomentumBot(PaperBot)` — reuses
+  PaperBot's market discovery, book/WS handling, fill simulation, ledger,
+  resolution tracking, and bankroll/drawdown safety controls as-is
+  (all generic infra), overriding only strategy_tick (polls the feed
+  first) and _evaluate_one_market (one order per market, no re-entry,
+  drawdown circuit breaker still inherited and re-checked explicitly
+  since this bot's "is this a new market" condition differs from the
+  trader-replica bot's).
+- `run_coinbase_bot.py`: entrypoint, same shape as run_bot.py.
+- Config additions in config.py (MOMENTUM_MIN_MOVE, MOMENTUM_LOOKBACK_
+  MINUTES, MOMENTUM_ORDER_NOTIONAL_USD, COINBASE_POLL_INTERVAL_SECONDS) —
+  isolated to their own section, never read by strategy.py/bot.py.
+- Separate ledger/bankroll via the existing PAPERBOT_DATA_DIR env var
+  (no code change needed — Ledger.load/save already accept a path
+  override) — a new systemd instance just points it at its own directory.
+
+**Tests**: 34 new tests across test_coinbase_feed.py (12),
+test_coinbase_strategy.py (15), test_coinbase_bot.py (7) — including the
+real trailing_return bug caught above. Full suite: 527/527 passing.
+
+This closes the final item of the "build everything" list. All 6 items
+now done: (1) hedge TTC sizing, (2) hedge-count reinforcement tier 2,
+(3) hedge-propensity-after-big-loss, (4) cross-asset entry trigger
+[tested and rejected — already over-satisfied], (5) full interaction
+audit [1 real gap found and fixed], (6) the standalone coinbase bot.

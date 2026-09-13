@@ -842,3 +842,44 @@ MAX_HEDGE_COUNT_PER_MARKET = int(os.environ.get("MAX_HEDGE_COUNT_PER_MARKET", "6
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(os.environ.get("PAPERBOT_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 LEDGER_PATH = DATA_DIR / "paper_ledger.json"
+
+# ---------------------------------------------------------------------------
+# Coinbase-momentum bot (2026-09-13) -- a wholly separate, standalone paper
+# strategy, NOT part of the trader-replica bot above and never read by
+# strategy.py/behavior_config.py. See paperbot/coinbase_strategy.py,
+# paperbot/coinbase_feed.py, and paperbot/coinbase_bot.py.
+#
+# Backstory: "does real external spot-price momentum predict which side
+# wins" was confirmed real and well-validated in CHEAP/MID bands (see
+# the spot-momentum finding in project memory: CHEAP 40.5% vs 14.5% win
+# rate z=9.78, MID 63.1% vs 36.4% z=14.58, aligned vs against). But the
+# real trader does NOT appear to act on it directly -- a separate check
+# confirmed he follows Polymarket's own contract price when it disagrees
+# with external spot, not an external feed. Wiring this into the
+# trader-replica bots (paperbot/paperbot-100) would replicate the
+# correlation, not his actual mechanism -- so instead of forcing it into
+# behavior_config.py's calibration tables, it lives here as its own
+# independent bet on the raw statistical edge, run as a genuinely
+# separate bot instance with its own ledger/bankroll (via
+# PAPERBOT_DATA_DIR pointed at a separate directory) and systemd unit.
+#
+# MOMENTUM_MIN_MOVE: deadband below which a trailing return is treated as
+# noise, not a real directional signal -- matches the exact threshold
+# used in the validating research (scratch_spot_momentum_side_check.py).
+MOMENTUM_MIN_MOVE = float(os.environ.get("MOMENTUM_MIN_MOVE", "0.0002"))
+# MOMENTUM_LOOKBACK_MINUTES: the trailing-return window -- matches the
+# validated finding exactly (3-minute real exchange spot return).
+MOMENTUM_LOOKBACK_MINUTES = float(os.environ.get("MOMENTUM_LOOKBACK_MINUTES", "3.0"))
+# MOMENTUM_ORDER_NOTIONAL_USD: flat per-market order size. Deliberately
+# NOT the trader-replica ENTRY_SIZING_USD calibration tables (this bot
+# isn't replicating his sizing behavior, just testing whether the
+# directional edge itself is exploitable) -- a small, simple, constant
+# bet size, bumped up to the exchange minimum when necessary same as the
+# main bot.
+MOMENTUM_ORDER_NOTIONAL_USD = float(os.environ.get("MOMENTUM_ORDER_NOTIONAL_USD", "5.0"))
+# COINBASE_POLL_INTERVAL_SECONDS: minimum gap between live ticker polls
+# per asset, against Coinbase's public (no-key) Exchange API -- confirmed
+# reachable from this project's AWS server (unlike Binance, which
+# returns HTTP 451 there; see live-momentum-wiring-tested-rejected.md).
+# 15s comfortably clears Coinbase's public rate limit for 3 products.
+COINBASE_POLL_INTERVAL_SECONDS = float(os.environ.get("COINBASE_POLL_INTERVAL_SECONDS", "15.0"))
