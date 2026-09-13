@@ -6057,3 +6057,32 @@ ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER (needs the full partial-correlation
 methodology redone, not a simple fresh-data refresh), and 3 hedge-
 trigger sub-multipliers not yet independently re-derived. These are the
 next /loop cycle's target.
+
+## 2026-09-13: /loop cycle 4 complete — ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER fixed, 3 items attempted/blocked
+
+Recalibrated ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER with the full original
+partial-correlation methodology (not a shortcut) on post-halt data:
+OLS of log(hedge_ratio) on adverse_move, then bucket the residual by
+raw hedge price. Real finding: relationship stronger than before
+(r=0.335-0.454 vs original 0.103), but the shape flipped from U-shaped
+to monotonically increasing for all 3 assets. Caught and fixed an
+internal cap inconsistency the recalibration exposed (new low end
+0.2072 was below the old cap's own floor 1/3=0.333) by raising the cap
+to 6.0. Rewrote the whole test class since several tests asserted the
+now-false U-shape.
+
+Attempted cross_market_hedge_rate_multiplier's recalibration too: hit a
+degenerate-zero-mass problem in a naive 4-way quartile split (too many
+markets have prev_hedge_rate exactly 0). The original table's own
+asymmetric point-count per asset suggests it used a dedicated zero
+bucket instead -- didn't have time to correctly replicate that this
+cycle, so left the table unchanged rather than ship something degenerate.
+hedge_liquidity_multiplier needs Gamma's liquidityNum, not present in
+trades.jsonl -- blocked by data source. conviction_hedge_multiplier not
+yet attempted.
+
+535/535 passing, deployed to all 3 bots, verified healthy.
+
+Tracker updated. Remaining: GRADIENT_BIAS_PCT, FLOOR_LOT_PROBABILITY
+(low priority), RESUMPTION_SIZE_MULTIPLIER (unverifiable), and the 3
+hedge-trigger sub-multipliers (2 blocked, 1 unattempted).
