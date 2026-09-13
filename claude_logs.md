@@ -5925,3 +5925,17 @@ SIZE_MULTIPLIER), 20 (HEDGE_TTC_SIZE_MULTIPLIER), and 3 of item 7's
 hedge-trigger sub-multipliers (hedge_liquidity, adverse_move_hedge_
 trigger, cross_market_hedge_rate, conviction) -- 6 items left.
 Continuing.
+
+## 2026-09-13: Audit item 13 — CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER's effect has essentially vanished
+
+Fresh Bitcoin lag-1 log-size-residual autocorrelation (14d, n=1805):
+r=0.0109 -- essentially zero, vs the original calibration's r=0.1445
+(already a modest effect, now gone). Fifth independent sizing signal
+(after 8, 10, 16, 26) to have weakened or vanished since these tables
+were built -- the cross-cutting "sizing has flattened" pattern keeps
+strengthening with every additional check, now 5 for 5.
+
+Tracker status: 22/28 items resolved (verified/deprioritized/marked
+inconclusive). Remaining: 19 (ADVERSE_MOVE_CONTINUATION_SIZE_
+MULTIPLIER), 20 (HEDGE_TTC_SIZE_MULTIPLIER, this session's own), and 3
+of item 7's hedge-trigger sub-multipliers. Continuing.
