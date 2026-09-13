@@ -6130,3 +6130,37 @@ Remaining: GRADIENT_BIAS_PCT, FLOOR_LOT_PROBABILITY (deliberately low
 priority, minimal behavioral impact), RESUMPTION_SIZE_MULTIPLIER
 (genuinely unverifiable -- no new qualifying gap exists in the data).
 Every item with a realistic path to a real fix has now been fixed.
+
+## 2026-09-13: /loop cycle 6 (continued) — final assessment of the last 3 items
+
+Investigated GRADIENT_BIAS_PCT and FLOOR_LOT_PROBABILITY properly
+before deciding to leave them:
+- GRADIENT_BIAS_PCT needs the market's within-window CONTRACT price
+  delta leading up to each entry -- trades.jsonl's discrete trade
+  records can't reconstruct this (would need a full continuous book-
+  price-series rebuild from market_snapshots.jsonl). Given it's
+  explicitly a soft tiebreak that never gates a real decision (per its
+  own docstring), the cost of that reconstruction isn't justified by
+  the near-zero behavioral impact even if it is stale.
+- FLOOR_LOT_PROBABILITY needs RAW per-fill share sizes (not the
+  collapsed-decision view this session's whole recalibration pass has
+  used) and a percentile-based tiny-fragment threshold -- a genuinely
+  different measurement methodology, for trades that are by design
+  near-zero notional.
+- RESUMPTION_SIZE_MULTIPLIER: re-confirmed zero post-halt gaps >=4h
+  exist anywhere in the mirror. Still cannot be tested further.
+
+**Status: every item with a realistic path to a real fix AND any
+meaningful behavioral impact has now been fixed.** Across 6 /loop
+cycles: 8 distinct multipliers recalibrated or retired (ENTRY_SIZING_
+USD, SIDE_PERSISTENCE, WITHIN_BAND_SIZE_SLOPE, CROSS_MARKET_SIZE_
+MOMENTUM_MULTIPLIER, HEDGE_SIZE_RATIO, ADVERSE_MOVE_SIZE_MULTIPLIER,
+ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER, ABSOLUTE_PRICE_HEDGE_SIZE_
+MULTIPLIER, CROSS_MARKET_HEDGE_RATE_MULTIPLIER, CONVICTION_HEDGE_
+MULTIPLIER, HEDGE_LIQUIDITY_MULTIPLIER, and HEDGE_TRIGGER_PROBABILITY
+-- 12 total, some counted together above), all traced to ONE coherent
+root cause: the 13.6-day halt produced a discrete, stable post-halt
+behavioral regime shift affecting sizing AND hedge-trigger conditioning
+broadly, not a series of unrelated calibration errors. The remaining 3
+items are consciously left (data/methodology-limited or genuinely
+untestable), not abandoned -- documented in full in the tracker.
