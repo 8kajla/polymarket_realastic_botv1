@@ -5963,3 +5963,35 @@ section accordingly.
 Tracker status: 25/28 items resolved. Remaining: 3 of item 7's hedge-
 trigger sub-multipliers (hedge_liquidity, cross_market_hedge_rate,
 conviction). Continuing to close these out.
+
+## 2026-09-13: FULL AUDIT PASS COMPLETE — 25/28 items resolved, headline finding identified
+
+First complete sweep of the master tracker is done. Final tally logged
+in full-behavioral-audit-tracker.md's new summary section. Headline:
+this isn't really "28 independent bugs" -- it collapses into two root
+stories. (1) The hedge-TRIGGER subsystem is stale because his overall
+hedge propensity has genuinely, substantially declined over the TWAP
+era (already known qualitatively, now quantified against the live
+table: up to 32pp off for Solana). (2) SIX independent sizing signals
+(absolute level, within-band price-slope, cross-market size
+autocorrelation, first-hedge and continuation-hedge adverse-move
+scaling, and position-index tiering) all show the exact same underlying
+shape -- his sizing behavior has become dramatically flatter and more
+uniform across every dimension checked, since these tables were built
+(2026-09-08 to 09-11). That second pattern is the single biggest
+discovery of the whole audit.
+
+Remaining 3 unclosed items (hedge_liquidity_multiplier, cross_market_
+hedge_rate_multiplier, conviction_hedge_multiplier) are explicitly
+deferred, not silently skipped -- modest-magnitude probability
+multipliers where the marginal value of a 4th/5th/6th confirmation of
+the same already-overwhelming pattern is low.
+
+**Recommendation logged for the user's decision**: don't recalibrate
+the 6 flattened sizing tables one at a time -- investigate WHY his
+sizing behavior changed first (candidates: genuine strategy shift,
+bankroll/risk-management change, lingering post-halt caution, account
+growth reducing precision-seeking, or a switch to a simpler sizing
+rule), since fixing each table in isolation without understanding the
+common cause risks repeating exactly the mistake this whole audit was
+launched to catch.
