@@ -1,10 +1,11 @@
 # What We Built — The Real Story, In Order
 
 A plain-language, **chronologically accurate** recap of this project,
-pulled straight from the actual commit history (67 code changes total,
-spanning 2026-09-06 to 2026-09-11) — not a tidied-up summary. Corrected
-after the first draft wrongly implied all three bots existed together
-from the start; they didn't.
+pulled straight from the actual commit history — not a tidied-up
+summary. Corrected after the first draft wrongly implied all three bots
+existed together from the start; they didn't. Sections 1-8 below cover
+2026-09-06 through 2026-09-11 (67 code changes); section 9 covers the
+much larger research-and-build effort that followed on 2026-09-12/13.
 
 ---
 
@@ -150,7 +151,7 @@ Every one of these six got its own on/off switch — on by default for
 `paperbot`/`paperbot-100`, explicitly off for `paperbot-mini` — following
 the same control-group discipline set up back in Phase 3.
 
-## 8. Where things stand right now
+## 8. Where things stood after Phase 6 (Sept 11)
 
 - **67 real code changes** since Sept 6, the vast majority of them
   happening before the three-bot control setup even existed.
@@ -165,9 +166,103 @@ the same control-group discipline set up back in Phase 3.
   reasoning behind it, so future work builds on it instead of
   re-discovering the same things.
 
-**In short:** this wasn't "build three bots and calibrate them all
-together." It was one bot, hardened and calibrated through dozens of real
-fixes first; then a second, bankroll-limited bot rode along through
-another few dozen changes; and only after that did we deliberately freeze
-one copy as a permanent control so the *next* round of changes — including
-tonight's six — could be judged against something that never moved.
+## 9. Phase 7 — a much bigger, mostly autonomous research-and-build pass (Sept 12–13)
+
+Starting the evening of Sept 12, work shifted into a long, largely
+self-directed research loop (checked in on but not micromanaged),
+running continuously across two days. It found, checked, and — where
+warranted — built on far more ground than Phase 5's original "7 findings"
+research pass:
+
+- **Filled a data-quality gap that had quietly undermined most earlier
+  win-rate findings**: the "which side actually won" lookup only covered
+  ~9% of all historical markets (populated lazily, not backfilled). Ran a
+  ~12.5-hour backfill to bring that to 100% coverage (80,849 markets),
+  then re-validated the project's key findings against the complete data
+  instead of the earlier partial sample.
+- **The single biggest new discovery of this whole project**: real
+  exchange spot-price momentum (external to Polymarket, from live
+  Coinbase-style 1-minute candles) in the 2-3 minutes before a bet
+  predicts whether that bet wins — a strong, cross-asset, statistically
+  overwhelming signal, confirmed stable across time, across sessions, and
+  independent of a dozen different confounding explanations that were
+  each specifically tested and ruled out.
+- **Found that Bitcoin gets a measurably different, more attentive
+  treatment than Ethereum or Solana** — four independent signals all
+  point the same way: which coin's moves "lead" the others when he trades
+  several at once, how many times he re-visits the same market, how
+  detailed his bet-laddering is, and how precisely he times his insurance
+  bets — with Bitcoin consistently the sharpest on every measure.
+- **Two new real behaviors were built into the bots**, each only after
+  passing the project's full checklist (statistically real, survives
+  splitting the data into different time periods, not secretly some other
+  known effect in disguise, checked for the specific way it would be
+  used before shipping):
+  1. A market he's already added to many times without it resolving
+     tends to go worse than usual from then on — so the bots now size
+     down further additions once that threshold is crossed, in the
+     specific coin/price-range combinations where this was actually
+     confirmed.
+  2. The flip side: a market that's already needed two or more insurance
+     bets tends to have his *original* pick come through more often than
+     expected, not less — so the bots now size up further same-side bets
+     once that happens, again only where confirmed.
+- **A live self-correction, caught and fixed mid-stream**: an earlier
+  "the closer to closing time, the bigger he bets" finding was built up
+  across many checks and repeatedly called the most solid result of the
+  whole project — until a standard cross-check (does this hold up
+  separately in each price range, not just pooled together) revealed it
+  actually reverses in two of the four price ranges. The overclaim was
+  explicitly retracted and rewritten as the real, more nuanced
+  price-range-dependent picture. The lesson from that mistake —
+  "always split by price range before believing a pooled result" — was
+  then applied as a standing checklist item for the rest of the pass, and
+  caught several more would-be false positives before they were ever
+  written up as real.
+- **A second, similar near-miss, corrected the same way**: a follow-up
+  finding — that a big loss makes the very next bet more likely to be
+  insured — looked "unconfirmed" under the project's usual before/after
+  check, until a real, separate discovery explained why: overall
+  insurance-buying has been quietly declining for months, for reasons not
+  yet understood, and that slow decline was distorting the simple
+  before/after comparison. Controlling for it properly showed the
+  original loss-reaction finding was real all along, just needed the
+  right method. Checked the mirror case too (does winning big make him
+  bet more aggressively, not just more cautiously after losing?) — no,
+  that reaction only exists after losses, not wins.
+- **Confirmed the two rotations away from other coins probably weren't
+  performance-driven** for one of them (the coins he dropped were
+  actually doing *better*, not worse, at the time — consistent with an
+  earlier finding that this was likely a platform listing change, not his
+  own choice) and genuinely may have been for the other.
+- Dozens of other candidate patterns were tested and honestly rejected —
+  copying specific public bot strategies people have written up online,
+  various calendar/day-of-week effects, an apparent order-book signal
+  that turned out to be a data-collection bug, and more — each written
+  down so nobody re-tests the same dead end later.
+
+**One correction to Phase 3/8 above, caught while writing this section**:
+`paperbot-mini`, described above as the permanent frozen control, is no
+longer running as of this pass — only `paperbot` and `paperbot-100` are
+live on the server. When and why it was retired isn't recorded anywhere
+in this project's own notes; flagging honestly rather than guessing.
+
+## 10. Where things stand right now
+
+- Two live bots — `paperbot` (unconstrained) and `paperbot-100` ($100
+  bankroll with its own safety limits) — both on the latest behavior,
+  460 automated tests passing.
+- The historical "who actually won" data is now 100% complete, not ~9%,
+  so every win-rate finding from this point on is checked against the
+  full picture.
+- The single strongest, most-validated finding in the project's history
+  is the real-exchange-momentum signal described above.
+- A handful of real, well-documented open questions remain deliberately
+  unbuilt for now — a slow, unexplained decline in how often he buys
+  insurance over the months studied; a confirmed "reacts within about
+  20-50 seconds of a market suddenly becoming clear-cut" pattern that
+  would need a genuinely new piece of bot architecture, not just a
+  calibration tweak, to act on.
+- Every finding — confirmed, corrected, or rejected — is written down
+  with the reasoning and the actual numbers behind it, continuing the
+  same discipline from Phase 5 at much greater scale.
