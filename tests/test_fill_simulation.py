@@ -143,6 +143,27 @@ class TestPerRegimeQueueSafetyFactorOverride:
         assert order.price == pytest.approx(0.95)
         assert order.queue_ahead_discounted == pytest.approx(20.0)  # 200 * 0.10, not 200 * 0.25
 
+    def test_reprice_moves_placed_at_but_not_original_placed_at(self):
+        # ADDED 2026-09-13 (/loop cycle 17): placed_at is deliberately
+        # overwritten on every reprice (see _reprice()'s own comment --
+        # "time-to-fill measured from the latest resting price"), but
+        # original_placed_at must stay at the FIRST placement time --
+        # that's the whole point of having it, for the TTC-composition
+        # research question this closes a data gap for (see
+        # SimulatedOrder.original_placed_at's own docstring).
+        book = make_book(best_bid=0.90, bid_depth_at_best=100.0, best_ask=0.92, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.90, regime="HIGH"), book, now=10.0)
+        assert order.placed_at == 10.0
+        assert order.original_placed_at == 10.0
+
+        book.apply_snapshot(bids=[(0.95, 200.0)], asks=[(0.97, 100.0)])
+        seconds_remaining = {"cond-1": 1000}
+        sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=99.0)
+
+        assert order.placed_at == 99.0, "placed_at should still move on reprice, unchanged behavior"
+        assert order.original_placed_at == 10.0, "original_placed_at must survive the reprice"
+
     def test_empty_override_dict_is_also_a_full_noop(self):
         book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
         sim = FillSimulator(queue_safety_factor=0.25, queue_safety_factor_by_regime={})

@@ -247,6 +247,86 @@ class TestFillsBreakdownPersisted:
         assert reloaded.records[0].fills == [{"size": 10.0, "price": 0.20, "ts": 1.0}]
 
 
+class TestOriginalPlacementTimePersisted:
+    """ADDED 2026-09-13 (/loop cycle 17): closes the TTC-composition data
+    gap flagged in cheap-edge-gap-root-cause-persistence-miscalibration
+    (project memory) -- previously nothing on SettlementRecord answered
+    "when did the bot DECIDE to place this order", only "when did it
+    resolve/fill". Sourced from SimulatedOrder.original_placed_at, NOT
+    the mutable .placed_at (which _reprice() deliberately overwrites on
+    every reprice -- see its own comment in fill_simulation.py)."""
+
+    def test_records_the_original_placement_time(self):
+        ledger = Ledger()
+        order = make_filled_order(price=0.20, size=10.0, side="Down")
+        record = ledger.settle_order(order, winning_side="Down")
+        assert record.placed_at == 0.0  # make_filled_order's placed_at=0.0
+
+    def test_survives_a_reprice_unlike_the_mutable_placed_at_field(self):
+        # original_placed_at must stay at the FIRST placement time even
+        # after order.placed_at gets overwritten by a reprice -- that's
+        # the whole point of having a separate, untouched field.
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-1", token_id="tok-up",
+            asset="Bitcoin", regime="MID", position_tier="first", side="Up",
+            price=0.55, original_size=10.0, is_floor_lot=False,
+            placed_at=100.0, remaining_size=0.0,
+        )
+        assert order.original_placed_at == 100.0
+
+        # simulate what _reprice() does to placed_at directly (same
+        # mutation, without needing a full FillSimulator/book setup)
+        order.placed_at = 250.0
+        assert order.original_placed_at == 100.0, (
+            "a reprice must never move original_placed_at"
+        )
+
+        order.fills.append(Fill(size=10.0, price=0.55, ts=260.0))
+        order.status = OrderStatus.FILLED
+        ledger = Ledger()
+        record = ledger.settle_order(order, winning_side="Up")
+        assert record.placed_at == 100.0, (
+            "the settlement record must keep the ORIGINAL decision time, "
+            "not the last reprice's timestamp"
+        )
+
+    def test_explicit_original_placed_at_is_not_overridden(self):
+        # A caller that already knows the true original time (e.g.
+        # reconstructing an order mid-flight) can pass it explicitly;
+        # __post_init__ must not clobber it with placed_at.
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-1", token_id="tok-up",
+            asset="Bitcoin", regime="MID", position_tier="first", side="Up",
+            price=0.55, original_size=10.0, is_floor_lot=False,
+            placed_at=250.0, original_placed_at=100.0, remaining_size=0.0,
+        )
+        assert order.original_placed_at == 100.0
+
+    def test_old_records_without_placed_at_default_to_none_not_a_crash(self):
+        """Same backward-compatibility discipline as fills/rebate_usd
+        above: a ledger.json saved before this field existed has no
+        'placed_at' key at all -- must load cleanly as None, never
+        fabricate a placement time we don't have."""
+        raw = {
+            "order_id": 1, "condition_id": "c1", "asset": "Bitcoin", "regime": "CHEAP",
+            "side": "Up", "entry_price": 0.2, "filled_size": 10.0, "entry_cost": 2.0,
+            "winning_side": "Up", "won": True, "payout": 10.0, "pnl": 8.0,
+            "settled_at": 1.0, "is_floor_lot": False,
+        }
+        record = SettlementRecord(**raw)
+        assert record.placed_at is None
+
+    def test_persists_and_reloads_placed_at_correctly(self, tmp_path):
+        path = tmp_path / "ledger.json"
+        ledger = Ledger()
+        order = make_filled_order(price=0.20, size=10.0, side="Down")
+        ledger.settle_order(order, winning_side="Down")
+        ledger.save(path)
+
+        reloaded = Ledger.load(path)
+        assert reloaded.records[0].placed_at == 0.0
+
+
 class TestRealizedPnlRecompute:
     def test_pnl_recomputes_from_records_not_a_running_counter(self):
         ledger = Ledger()

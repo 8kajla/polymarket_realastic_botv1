@@ -66,6 +66,25 @@ class SettlementRecord:
     # additive: defaults to [] so every existing ledger.json (saved before
     # this field existed) still loads cleanly via SettlementRecord(**raw).
     fills: list = field(default_factory=list)
+    # ADDED 2026-09-13 (/loop cycle 17, closing the TTC-composition data
+    # gap flagged in cheap-edge-gap-root-cause-persistence-miscalibration
+    # project memory): the ENTRY decision's own ORIGINAL placement
+    # timestamp -- sourced from order.original_placed_at, NOT order.
+    # placed_at (that field is deliberately mutated on every reprice, see
+    # its own comment in fill_simulation.py, so by settlement time it
+    # reflects the LAST reprice rather than when the strategy first
+    # decided to place this order -- original_placed_at was added
+    # alongside this field specifically to give this record an untouched
+    # value to source from). Lets a future analysis finally test whether
+    # this bot enters CHEAP markets at different window-timing than the
+    # real trader does at the same price, which was previously
+    # impossible -- every existing timestamp on this record (settled_at,
+    # each fill's own ts) answers "when did it resolve/fill", never "when
+    # did the bot DECIDE to place this order". Optional/None default,
+    # same backward-compatible pattern as `fills` above -- every existing
+    # ledger.json predating this field still loads cleanly via
+    # SettlementRecord(**raw).
+    placed_at: Optional[float] = None
 
     def pnl_with_rebate(self) -> float:
         return self.pnl + self.rebate_usd
@@ -148,6 +167,7 @@ class Ledger:
             is_scout=order.is_scout,
             rebate_usd=rebate_usd,
             fills=[{"size": f.size, "price": f.price, "ts": f.ts} for f in order.fills],
+            placed_at=order.original_placed_at,
         )
         self.records.append(record)
         self._settled_order_ids.add(order.order_id)

@@ -82,6 +82,18 @@ class SimulatedOrder:
     placed_at: float
     is_hedge: bool = False
     is_scout: bool = False
+    # ADDED 2026-09-13 (/loop cycle 17): placed_at above is deliberately
+    # MUTATED by _reprice() (see its own comment -- "time-to-fill measured
+    # from the latest resting price"), so by settlement time it reflects
+    # the LAST reprice, not when the strategy actually first decided to
+    # place this order. That distinction didn't matter before -- nothing
+    # downstream needed the ORIGINAL decision time -- but the TTC-
+    # composition research question (does this bot enter CHEAP markets at
+    # different window-timing than the real trader, at the same price)
+    # specifically needs the untouched original moment. Set once here,
+    # in __post_init__ below (defaults to placed_at's own construction-
+    # time value), and never touched again by any reprice.
+    original_placed_at: Optional[float] = None
 
     # None means "not yet initialized -- default to original_size" (see
     # __post_init__). This is deliberately NOT 0.0: a caller must be able
@@ -120,6 +132,8 @@ class SimulatedOrder:
     def __post_init__(self):
         if self.remaining_size is None:
             self.remaining_size = self.original_size
+        if self.original_placed_at is None:
+            self.original_placed_at = self.placed_at
 
     @property
     def filled_size(self) -> float:
