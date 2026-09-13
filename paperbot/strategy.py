@@ -6,12 +6,14 @@ the fill simulator directly (bot.py wires those together).
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from . import behavior_config as bc
@@ -156,6 +158,54 @@ class MarketActivityState:
         expected.
         """
         self.cost_by_side[side] = max(0.0, self.cost_by_side.get(side, 0.0) - notional_usd)
+
+
+# ---------------------------------------------------------------------------
+# PERSISTENCE for the dict[condition_id -> MarketActivityState] every
+# PaperBot instance keeps as `self.activity`. ADDED 2026-09-13, closing a
+# real, confirmed-live bug found the same day: PaperBot.__init__ built
+# self.activity as a plain empty dict with NO reconstruction from anything
+# on disk -- meaning EVERY restart (including an ordinary graceful
+# `systemctl restart` during a deploy, not just a crash) silently wiped
+# real_hedge_fill_count, cost_by_side, last_side, and every other
+# in-progress-market counter for any market still open at that moment.
+# Confirmed impact: MAX_HEDGE_COUNT_PER_MARKET's own cap is enforced
+# against real_hedge_fill_count, which resets to 0 on every restart --
+# so a market already at its 6-hedge cap gets a FRESH allowance of 6 more
+# the instant the bot restarts mid-market. Found via a live ledger
+# analysis showing one market with 19 separate hedge fills (should have
+# been capped at 6) and a broader pattern of Bitcoin hedges destroying
+# ~$2,549 of value across CHEAP/MID/HIGH bands in the main paperbot's
+# full history -- a large fraction of which is consistent with hedge-
+# laddering runaways exactly like this.
+#
+# Same JSON-dict-of-dataclasses pattern as Ledger.save()/load() in
+# ledger.py (dataclasses.asdict() out, dict-unpack back in via **kwargs --
+# every field here is already a plain JSON-safe type: str/int/float/
+# Optional/dict, no sets or custom objects). Deliberately NOT wrapped in
+# Ledger itself -- this is per-market LIVE state, not an append-only
+# settlement log, and mixing the two would violate ledger.py's own "never
+# a running counter, always recomputed" discipline for realized_pnl().
+def save_activity_state(activity: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {cid: asdict(state) for cid, state in activity.items()}
+    path.write_text(json.dumps(payload, indent=2))
+
+
+def load_activity_state(path: Path) -> dict:
+    """Returns {} if the file doesn't exist yet (first run ever, or an
+    older deploy that predates this field) -- same graceful-empty-default
+    discipline as Ledger.load(). A condition_id whose market has since
+    fully resolved and rotated out is harmless: strategy_tick/manage_
+    orders_tick only ever look up self.activity for markets still in
+    markets_by_condition, so a stale leftover entry is simply never read
+    again until the next _retire_market call (or a future new market
+    that coincidentally reuses the same condition_id, which cannot happen
+    since condition_ids are unique on-chain identifiers) pops it."""
+    if not path.exists():
+        return {}
+    raw = json.loads(path.read_text())
+    return {cid: MarketActivityState(**fields) for cid, fields in raw.items()}
 
 
 @dataclass

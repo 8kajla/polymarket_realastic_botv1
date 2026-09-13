@@ -842,6 +842,14 @@ MAX_HEDGE_COUNT_PER_MARKET = int(os.environ.get("MAX_HEDGE_COUNT_PER_MARKET", "6
 # ---------------------------------------------------------------------------
 DATA_DIR = Path(os.environ.get("PAPERBOT_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 LEDGER_PATH = DATA_DIR / "paper_ledger.json"
+# ADDED 2026-09-13: see MarketActivityState persistence in bot.py's own
+# save_activity/load_activity docstrings for the bug this closes -- until
+# now, self.activity (per-market state: real_hedge_fill_count, cost_by_
+# side, last_side, etc.) existed ONLY in memory and was silently wiped on
+# every restart, resetting MAX_HEDGE_COUNT_PER_MARKET's own counter to
+# zero for any market still in progress. Same directory/gitignore
+# treatment as LEDGER_PATH -- real run state, never committed.
+ACTIVITY_STATE_PATH = DATA_DIR / "activity_state.json"
 
 # ---------------------------------------------------------------------------
 # Coinbase-momentum bot (2026-09-13, extended same day) -- a separate bot

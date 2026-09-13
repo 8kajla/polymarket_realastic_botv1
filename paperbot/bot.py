@@ -40,7 +40,10 @@ from .market_discovery import (
     infer_resolution_from_price,
     parse_resolution,
 )
-from .strategy import MarketActivityState, build_order_intent, safe_postonly_price, would_cross_spread
+from .strategy import (
+    MarketActivityState, build_order_intent, load_activity_state, safe_postonly_price,
+    save_activity_state, would_cross_spread,
+)
 
 logger = logging.getLogger("paperbot.bot")
 
@@ -126,7 +129,14 @@ class PaperBot:
         self.rng = random.Random(seed)
 
         self.book_states: dict[str, BookState] = {}          # token_id -> BookState
-        self.activity: dict[str, MarketActivityState] = {}    # condition_id -> state
+        # ADDED 2026-09-13: restore per-market state (real_hedge_fill_
+        # count, cost_by_side, last_side, etc.) that survived a previous
+        # graceful shutdown -- see save_activity_state's own docstring in
+        # strategy.py for the bug this closes (every restart used to
+        # silently reset MAX_HEDGE_COUNT_PER_MARKET's own counter to 0
+        # for any market still in progress). {} if this is the first run
+        # ever, or the file predates this field.
+        self.activity: dict[str, MarketActivityState] = load_activity_state(config.ACTIVITY_STATE_PATH)
         self.markets_by_condition: dict[str, Market] = {}
         self.resting_order_ids: dict[str, set[int]] = {}       # condition_id -> {order_id, ...}
         self.halted_conditions: set[str] = set()
@@ -1088,6 +1098,11 @@ class PaperBot:
             settled = [self.ledger.settle_order(order, winning_side) for order in with_fills]
             settled = [r for r in settled if r is not None]
             self.ledger.save()
+            # This market's own activity entry was already popped by
+            # _retire_market (before resolution ever completes) -- saving
+            # here just persists everyone ELSE still in progress, same
+            # cadence as the ledger save right above.
+            save_activity_state(self.activity, config.ACTIVITY_STATE_PATH)
             # Diagnostic (2026-09-08): settle_order() silently returns None
             # for a filled order whose status isn't FILLED/PARTIALLY_FILLED
             # (e.g. CANCELLED after a partial fill, if that ever happens --
@@ -1239,6 +1254,14 @@ class PaperBot:
         finally:
             ws_task.cancel()
             self.ledger.save()
+            # Same reasoning as the ledger save right above -- a redeploy
+            # sends SIGTERM (graceful), so this always runs on an ordinary
+            # `systemctl restart`, not just a clean manual stop. Closes the
+            # bug save_activity_state's own docstring describes: without
+            # this, every restart silently reset every in-progress
+            # market's real_hedge_fill_count/cost_by_side/last_side to
+            # zero, including MAX_HEDGE_COUNT_PER_MARKET's own cap.
+            save_activity_state(self.activity, config.ACTIVITY_STATE_PATH)
             self.log_pnl_summary()
             logger.info("Shut down cleanly.")
 

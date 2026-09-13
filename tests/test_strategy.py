@@ -14,6 +14,8 @@ from paperbot.strategy import (
     decide_hedge,
     decide_side,
     decide_size,
+    load_activity_state,
+    save_activity_state,
     timing_ok,
 )
 
@@ -922,6 +924,85 @@ class TestMarketActivityStateHedgeTracking:
         activity.release_unfilled("Up", 10.0)
         assert activity.cost_by_side["Up"] == 0.0
         assert activity.cost_by_side["Down"] == 3.0
+
+
+class TestActivityStatePersistence:
+    """ADDED 2026-09-13: closes a real, confirmed-live bug -- PaperBot's
+    self.activity used to exist ONLY in memory, so every restart (an
+    ordinary graceful `systemctl restart` during a deploy, not just a
+    crash) silently reset every in-progress market's real_hedge_fill_
+    count/cost_by_side/last_side to zero, including MAX_HEDGE_COUNT_
+    PER_MARKET's own cap -- confirmed live via a ledger showing one
+    market with 19 separate hedge fills (should have been capped at 6)."""
+
+    def test_round_trips_a_populated_activity_dict(self, tmp_path):
+        path = tmp_path / "activity_state.json"
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID", price=0.55)
+        activity.record_entry("Down", notional_usd=3.0, regime="CHEAP", is_hedge=True)
+        activity.record_real_fill(is_hedge=False)
+        activity.record_real_fill(is_hedge=True)
+        original = {"cond-1": activity}
+
+        save_activity_state(original, path)
+        reloaded = load_activity_state(path)
+
+        assert set(reloaded) == {"cond-1"}
+        restored = reloaded["cond-1"]
+        assert restored.entry_count == activity.entry_count
+        assert restored.cost_by_side == activity.cost_by_side
+        assert restored.last_side == activity.last_side
+        assert restored.first_entry_regime == activity.first_entry_regime
+        assert restored.first_entry_price == activity.first_entry_price
+        assert restored.hedge_count == activity.hedge_count
+        assert restored.real_fill_count == activity.real_fill_count
+        assert restored.real_hedge_fill_count == activity.real_hedge_fill_count
+
+    def test_restored_state_still_enforces_the_hedge_count_cap(self, tmp_path):
+        # The exact bug this closes: real_hedge_fill_count must survive a
+        # save/load round-trip so a market already at its cap doesn't get
+        # a fresh allowance after a restart.
+        path = tmp_path / "activity_state.json"
+        activity = MarketActivityState()
+        for _ in range(6):
+            activity.record_real_fill(is_hedge=True)
+        assert activity.real_hedge_fill_count == 6
+
+        save_activity_state({"cond-1": activity}, path)
+        restored = load_activity_state(path)["cond-1"]
+        assert restored.real_hedge_fill_count == 6, (
+            "a restart must not reset the counter MAX_HEDGE_COUNT_PER_MARKET enforces against"
+        )
+
+    def test_multiple_markets_round_trip_independently(self, tmp_path):
+        path = tmp_path / "activity_state.json"
+        a1 = MarketActivityState()
+        a1.record_entry("Up", notional_usd=10.0, regime="MID")
+        a2 = MarketActivityState()
+        a2.record_entry("Down", notional_usd=4.0, regime="HIGH")
+
+        save_activity_state({"cond-1": a1, "cond-2": a2}, path)
+        reloaded = load_activity_state(path)
+
+        assert set(reloaded) == {"cond-1", "cond-2"}
+        assert reloaded["cond-1"].first_entry_regime == "MID"
+        assert reloaded["cond-2"].first_entry_regime == "HIGH"
+
+    def test_load_returns_empty_dict_when_file_does_not_exist(self, tmp_path):
+        # First-ever run, or an older deploy that predates this field --
+        # same graceful-empty-default discipline as Ledger.load().
+        missing_path = tmp_path / "does_not_exist.json"
+        assert load_activity_state(missing_path) == {}
+
+    def test_save_creates_parent_directory_if_missing(self, tmp_path):
+        nested_path = tmp_path / "nested" / "dir" / "activity_state.json"
+        save_activity_state({"cond-1": MarketActivityState()}, nested_path)
+        assert nested_path.exists()
+
+    def test_empty_activity_dict_round_trips_to_empty(self, tmp_path):
+        path = tmp_path / "activity_state.json"
+        save_activity_state({}, path)
+        assert load_activity_state(path) == {}
 
 
 class TestDecideHedge:
