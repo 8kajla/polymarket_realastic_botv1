@@ -5853,3 +5853,26 @@ MULTIPLIER, ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER), 19-20 (ADVERSE_MOVE_
 CONTINUATION_SIZE_MULTIPLIER, HEDGE_TTC_SIZE_MULTIPLIER), plus the 4
 remaining hedge-trigger multipliers from item 7 (10 items left).
 Continuing.
+
+## 2026-09-13: Audit item 10 — WITHIN_BAND_SIZE_SLOPE stale, and a cross-cutting pattern emerges
+
+Fresh OLS slope of log(usdcSize) on price within-band (Bitcoin, 5-14d,
+pure-Python regression since the server has no numpy) vs the deployed
+table: CHEAP slope 1.92-2.27 vs static 4.743 (-52% to -59%), HIGH slope
+8.20-8.46 vs static 13.47 (-37% to -39%). Direction preserved, magnitude
+substantially weakened.
+
+**Noticed a cross-cutting pattern across items 8, 10, and 26**: three
+independent sizing checks -- absolute level, within-band price-
+sensitivity, and position-index tiering -- all show his sizing behavior
+has gotten FLATTER / less differentiated across every dimension checked
+so far, not just drifted to a new level. Smaller in aggregate (8),
+responds less steeply to price-within-band (10), no longer meaningfully
+varies by re-entry count (26). Reads as one coherent underlying
+behavioral shift rather than three coincidences -- added as its own
+section in the tracker file, flagged for a dedicated investigation once
+the checklist finishes.
+
+Tracker status: 18/28 items now carry an evidenced verdict, plus a new
+cross-cutting synthesis. Remaining genuinely unchecked: 6, 13, 16-17,
+19-20, and 4 of item 7's sub-multipliers (9 items). Continuing.
