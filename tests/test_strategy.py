@@ -1373,15 +1373,23 @@ class TestBuildOrderIntentHedge:
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
             <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
 
-    def test_hedge_sizing_is_unaffected_by_time_to_close(self, monkeypatch):
-        """TTC_SIZE_MULTIPLIER is deliberately scoped to the ordinary
-        entry-curve path only (decide_size's own docstring) -- the raw
-        trade data it was measured from doesn't distinguish hedge-shaped
-        trades from ordinary ones, so it must never touch
-        HEDGE_SIZE_RATIO's formula. Bitcoin IS calibrated in
+    def test_hedge_sizing_is_unaffected_by_the_ENTRY_side_ttc_multiplier(self, monkeypatch):
+        """TTC_SIZE_MULTIPLIER (the entry-only one) is deliberately scoped
+        to the ordinary entry-curve path only (decide_size's own
+        docstring) -- the raw trade data it was measured from doesn't
+        distinguish hedge-shaped trades from ordinary ones, so it must
+        never touch HEDGE_SIZE_RATIO's formula. Bitcoin IS calibrated in
         TTC_SIZE_MULTIPLIER (unlike BNB, used in the other hedge tests
         above), so this specifically exercises the case where a no-op
-        would be silently wrong if the scoping broke."""
+        would be silently wrong if the scoping broke.
+
+        UPDATED 2026-09-13: hedge notional is no longer TTC-invariant --
+        HEDGE_TTC_SIZE_MULTIPLIER (a separate, hedge-specific curve, see
+        its own docstring) now legitimately makes it vary with
+        time-to-close. This test now confirms the observed variation
+        matches THAT curve exactly, not the entry-side one (which would
+        imply the old scoping bug had crept back in disguised as the new
+        feature)."""
         market_early = make_market(end_time=1000.0, asset="Bitcoin")
         market_late = make_market(end_time=1000.0, asset="Bitcoin")
         up_book = make_liquid_book(price=0.80, token_id="up")    # CORE primary
@@ -1397,9 +1405,12 @@ class TestBuildOrderIntentHedge:
         intent_early = hedge_at(now=1000.0 - 270.0)  # 270s remaining
         intent_late = hedge_at(now=1000.0 - 90.0)    # 90s remaining -- same seed, different ttc
 
-        assert intent_early.notional_usd == intent_late.notional_usd, (
-            "hedge notional must be identical regardless of time-to-close -- "
-            "the ttc multiplier must not leak into HEDGE_SIZE_RATIO's formula"
+        expected_ratio = bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 90.0) / \
+            bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 270.0)
+        got_ratio = intent_late.notional_usd / intent_early.notional_usd
+        assert abs(got_ratio - expected_ratio) < 1e-9, (
+            "the late/early notional ratio must match HEDGE_TTC_SIZE_MULTIPLIER exactly, "
+            "not the entry-side TTC_SIZE_MULTIPLIER (which would be a scoping regression)"
         )
 
     def test_no_hedge_falls_through_to_normal_flow(self, monkeypatch):
@@ -1543,6 +1554,77 @@ class TestBuildOrderIntentHedge:
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
             <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
 
+    def test_hedge_size_scales_with_ttc_in_cheap(self, monkeypatch):
+        """build_order_intent's hedge-sizing block, added 2026-09-13:
+        the hedge's notional must include HEDGE_TTC_SIZE_MULTIPLIER,
+        computed from the hedge side's own regime and seconds_remaining --
+        re-derived specifically for hedges (CHEAP shrinks toward close,
+        matching the same direction already shipped for entries). No
+        price= kwarg on record_filled_entry -- first_entry_price stays
+        unset so ADVERSE_MOVE_SIZE_MULTIPLIER is skipped, isolating the
+        TTC multiplier being tested here (same precedent as
+        test_adverse_move_multiplier_is_a_noop_when_first_entry_price_was_never_recorded)."""
+        market = make_market(end_time=210.0, asset="Bitcoin")  # seconds_remaining=210 at now=0.0
+        up_book = make_liquid_book(price=0.80, token_id="up")     # dominant
+        down_book = make_liquid_book(price=0.15, token_id="down")  # hedge side -> CHEAP
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE")
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        assert intent is not None
+        assert intent.is_hedge is True
+        expected_ratio = (bc.hedge_size_ratio("Bitcoin", "CORE")
+                           * bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.15)
+                           * bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 210.0))
+        expected_notional = 10.0 * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_hedge_ttc_multiplier_respects_the_per_instance_feature_flag(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_HEDGE_TTC_SIZE_MULTIPLIER", False)
+        market = make_market(end_time=210.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE")
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        expected_ratio = (bc.hedge_size_ratio("Bitcoin", "CORE")
+                           * bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.15))
+        expected_notional = 10.0 * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_hedge_ttc_multiplier_also_applies_to_continuation_hedges(self, monkeypatch):
+        # Calibrated on all hedge trades pooled (first + continuation), so
+        # it must apply to both, unlike the hedge_count==0-only multipliers.
+        # No price= kwarg on the first entry -- first_entry_price stays
+        # unset so ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER is skipped,
+        # isolating the TTC multiplier being tested here.
+        market = make_market(end_time=210.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE")
+        record_filled_entry(activity, "Down", notional_usd=1.0, regime="CHEAP", is_hedge=True)
+        assert activity.hedge_count == 1
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        expected_ratio = bc.hedge_continuation_size_ratio(2) * bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 210.0)
+        dominant_cost = 10.0
+        expected_notional = dominant_cost * expected_ratio
+        assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
     def test_hedge_size_also_scales_with_absolute_hedge_price(self, monkeypatch):
         """build_order_intent's hedge-sizing block, added 2026-09-12:
         the first hedge's notional must also include
@@ -1562,7 +1644,8 @@ class TestBuildOrderIntentHedge:
         adverse_move = 0.80 - (1.0 - 0.11)
         expected_ratio = (bc.hedge_size_ratio("Bitcoin", "CORE")
                            * bc.adverse_move_size_multiplier("Bitcoin", adverse_move)
-                           * bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.11))
+                           * bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.11)
+                           * bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 1000.0))
         expected_notional = 10.0 * expected_ratio
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
             <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
@@ -1584,7 +1667,9 @@ class TestBuildOrderIntentHedge:
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
 
         adverse_move = 0.80 - (1.0 - 0.11)
-        expected_ratio = bc.hedge_size_ratio("Bitcoin", "CORE") * bc.adverse_move_size_multiplier("Bitcoin", adverse_move)
+        expected_ratio = (bc.hedge_size_ratio("Bitcoin", "CORE")
+                           * bc.adverse_move_size_multiplier("Bitcoin", adverse_move)
+                           * bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 1000.0))
         expected_notional = 10.0 * expected_ratio
         assert expected_notional * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
             <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01

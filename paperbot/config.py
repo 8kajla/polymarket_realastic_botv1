@@ -524,6 +524,18 @@ ENABLE_TTC_SIZE_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for HEDGE_TTC_SIZE_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-13 -- hedge sizing's own version of
+# TTC_SIZE_MULTIPLIER above. Re-derived and regime-composition-checked
+# specifically against hedge data (not just inherited from the entry-side
+# correction) -- real and cross-asset-consistent in CHEAP/HIGH only; MID/
+# CORE deliberately excluded (genuinely inconsistent signs across assets
+# there). Default TRUE everywhere.
+ENABLE_HEDGE_TTC_SIZE_MULTIPLIER = os.environ.get(
+    "ENABLE_HEDGE_TTC_SIZE_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Feature flag for HEDGE_LIQUIDITY_MULTIPLIER (see its docstring in
 # behavior_config.py). Added 2026-09-10, same night and same reasoning as
 # ENABLE_TTC_SIZE_MULTIPLIER directly above -- default TRUE everywhere,

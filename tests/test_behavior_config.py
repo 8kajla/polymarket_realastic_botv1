@@ -326,6 +326,62 @@ class TestTtcSizeMultiplier:
         assert mult_low >= 1.0 / 5.0
 
 
+class TestHedgeTtcSizeMultiplier:
+    """Hedge sizing's own time-to-close scaling, added 2026-09-13 --
+    re-derived and regime-composition-checked specifically against hedge
+    data (the entry-side TTC_SIZE_MULTIPLIER's regime correction was never
+    verified against the original hedge data). Real and cross-asset-
+    consistent in CHEAP/HIGH only -- MID/CORE showed genuinely
+    inconsistent signs across assets and are deliberately excluded."""
+
+    def test_neutral_for_assets_not_in_the_table(self):
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            for regime in ("CHEAP", "MID", "CORE", "HIGH"):
+                assert bc.hedge_ttc_size_multiplier(asset, regime, 150.0) == 1.0
+
+    def test_neutral_for_mid_and_core_not_just_unrecognized_regimes(self):
+        # Deliberately excluded (real, cross-asset-inconsistent signs),
+        # not just uncalibrated -- see the module docstring.
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            for regime in ("MID", "CORE"):
+                assert bc.hedge_ttc_size_multiplier(asset, regime, 90.0) == 1.0
+                assert bc.hedge_ttc_size_multiplier(asset, regime, 270.0) == 1.0
+
+    def test_exact_at_each_calibrated_midpoint(self):
+        for asset, regimes in bc.HEDGE_TTC_SIZE_MULTIPLIER.items():
+            for regime, curve in regimes.items():
+                for midpoint, expected in curve.items():
+                    got = bc.hedge_ttc_size_multiplier(asset, regime, float(midpoint))
+                    assert abs(got - expected) < 1e-9, f"{asset}/{regime}@{midpoint}: {got} != {expected}"
+
+    def test_interpolates_between_midpoints(self):
+        low = bc.hedge_ttc_size_multiplier("Bitcoin", "HIGH", 210.0)
+        high = bc.hedge_ttc_size_multiplier("Bitcoin", "HIGH", 150.0)
+        mid = bc.hedge_ttc_size_multiplier("Bitcoin", "HIGH", 180.0)
+        assert abs(mid - (low + high) / 2) < 1e-9
+
+    def test_flat_beyond_the_measured_range_no_extrapolation(self):
+        at_90 = bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 90.0)
+        below_90 = bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 10.0)
+        assert at_90 == below_90
+
+        at_270 = bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 270.0)
+        above_270 = bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 295.0)
+        assert at_270 == above_270
+
+    def test_high_regime_grows_toward_close_for_every_live_asset(self):
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            early = bc.hedge_ttc_size_multiplier(asset, "HIGH", 270.0)
+            late = bc.hedge_ttc_size_multiplier(asset, "HIGH", 90.0)
+            assert late > early, f"{asset}: expected HIGH hedge size to grow toward close"
+
+    def test_cheap_regime_shrinks_toward_close_for_every_live_asset(self):
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            early = bc.hedge_ttc_size_multiplier(asset, "CHEAP", 270.0)
+            late = bc.hedge_ttc_size_multiplier(asset, "CHEAP", 90.0)
+            assert late < early, f"{asset}: expected CHEAP hedge size to shrink toward close"
+
+
 class TestHedgeLiquidityMultiplier:
     """Liquidity-conditioned first-hedge trigger, added 2026-09-10 --
     confirmed real, well-powered (t=5.263, n=1023/322) correlation

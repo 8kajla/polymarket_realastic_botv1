@@ -2046,3 +2046,87 @@ def hedge_count_reinforcement_multiplier(asset: str, regime: str,
     if live_hedge_count < threshold:
         return 1.0
     return HEDGE_COUNT_REINFORCEMENT_MULTIPLIER.get(key, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# HEDGE TTC (time-to-close) SIZE MULTIPLIER. Added 2026-09-13: hedge sizing's
+# own version of TTC_SIZE_MULTIPLIER above, which only ever covered ordinary
+# entries. The original urgency-scaling finding (iters 60-62) was measured
+# on hedges specifically, generalized to entries (iter 82) and shipped
+# there as TTC_SIZE_MULTIPLIER -- but the regime-composition correction that
+# followed (iter 84, confirmed cross-asset at iter 115/117) was verified
+# only for entries, never re-checked against the ORIGINAL hedge data. Redone
+# here specifically for hedges before building this:
+#
+# Regime-composition-controlled hedge size by TTC quartile, TWAP-era,
+# cross-asset (Welch t comparing the most-urgent vs least-urgent quartile
+# within each regime, same-side hedge trades only):
+#   CHEAP: BTC t=-18.15, ETH t=-11.25, SOL t=-11.05 -- all REVERSED (urgent
+#          hedges are SMALLER), consistent cross-asset, matches the
+#          direction already confirmed for entries in this band.
+#   HIGH:  BTC t=+7.83, ETH t=+2.10, SOL t=+6.62 -- consistently POSITIVE
+#          (urgent hedges are BIGGER), matches entries' strongest band.
+#   MID:   BTC t=-7.47, ETH t=+0.44, SOL t=+7.45 -- genuinely inconsistent
+#          across assets (different signs), unlike entries' MID cell.
+#          NOT included -- would need per-asset calibration to be safe,
+#          not attempted here.
+#   CORE:  BTC t=-2.09, ETH t=-5.94, SOL t=+2.87 -- also inconsistent
+#          across assets. NOT included, same reasoning as MID.
+#
+# Temporal stability (both halves): CHEAP survives cleanly for BTC/ETH
+# (t=-17.05/-8.88 and -7.75/-6.42); SOL's second half is borderline
+# (t=-2.35, just under the bar but same direction, n=6635). HIGH shows a
+# real STRENGTHENING-OVER-TIME pattern for all 3 assets rather than flat
+# stability -- first half is weak/sub-bar (t=1.72-2.43), second half is
+# strong (t=2.97-8.83), same direction both halves, no sign flip. Built
+# anyway (same direction throughout, growing not reversing -- a different
+# failure mode than the sign-flipping instability that killed other
+# threads this session), but this is a real caveat worth remembering if
+# HIGH's calibration is ever revisited with fresh data.
+#
+# Continuous, mean-neutral multiplier at the same 4 TTC midpoints as
+# TTC_SIZE_MULTIPLIER (270/210/150/90s remaining), same bucket-mean-ratio
+# construction. Thin early-window HIGH buckets (BTC/ETH n=18-24, SOL n=48
+# at the 270 midpoint) clamped to the next trusted bucket's value, same
+# "don't trust a thin ratio" discipline TTC_SIZE_MULTIPLIER's own docstring
+# already applies. MID/CORE deliberately absent (not just uncalibrated) --
+# hedge_ttc_size_multiplier returns 1.0 (no-op) for any (asset, regime) not
+# in this table.
+HEDGE_TTC_SIZE_MULTIPLIER = {
+    "Bitcoin": {
+        "CHEAP": {270: 1.3295, 210: 1.1142, 150: 1.0334, 90: 0.8815},
+        "HIGH": {270: 0.6268, 210: 0.6268, 150: 0.8964, 90: 1.1139},
+    },
+    "Ethereum": {
+        "CHEAP": {270: 1.0950, 210: 1.1240, 150: 1.0712, 90: 0.8705},
+        "HIGH": {270: 0.7633, 210: 0.7633, 150: 0.8937, 90: 1.0683},
+    },
+    "Solana": {
+        "CHEAP": {270: 1.3698, 210: 1.1546, 150: 0.9997, 90: 0.9000},
+        "HIGH": {270: 0.6247, 210: 0.6247, 150: 0.8840, 90: 1.1200},
+    },
+}
+
+
+def hedge_ttc_size_multiplier(asset: str, regime: str, seconds_remaining: float) -> float:
+    """Continuous, mean-neutral size multiplier on HEDGE notional as a
+    function of time remaining in the market's 5-minute window. 1.0
+    (no-op) for any (asset, regime) not in HEDGE_TTC_SIZE_MULTIPLIER --
+    MID and CORE deliberately excluded (real, cross-asset-inconsistent
+    signs found there, not just uncalibrated), same treatment as every
+    other deliberately-scoped-narrow multiplier in this file. Flat beyond
+    the measured [90, 270] range -- clamped to the nearest endpoint's
+    value, same interpolation logic as ttc_size_multiplier above (shares
+    the same 4 TTC midpoints, deliberately kept as separate tables/
+    functions since the two curves' shapes and included regimes differ)."""
+    curve = HEDGE_TTC_SIZE_MULTIPLIER.get(asset, {}).get(regime)
+    if curve is None:
+        return 1.0
+    ttc = max(90.0, min(270.0, seconds_remaining))
+    for i in range(len(_TTC_MULTIPLIER_MIDPOINTS) - 1):
+        hi_mid, lo_mid = _TTC_MULTIPLIER_MIDPOINTS[i], _TTC_MULTIPLIER_MIDPOINTS[i + 1]
+        if lo_mid <= ttc <= hi_mid:
+            hi_val, lo_val = curve[hi_mid], curve[lo_mid]
+            frac = (ttc - lo_mid) / (hi_mid - lo_mid)
+            return lo_val + frac * (hi_val - lo_val)
+    return curve[_TTC_MULTIPLIER_MIDPOINTS[0] if ttc >= 270 else _TTC_MULTIPLIER_MIDPOINTS[-1]]

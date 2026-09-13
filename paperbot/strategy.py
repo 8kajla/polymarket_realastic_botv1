@@ -770,6 +770,15 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             if config.ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER and activity.first_entry_price is not None:
                 adverse_move = activity.first_entry_price - (1.0 - price)
                 ratio *= bc.adverse_move_continuation_size_multiplier(market.asset, adverse_move)
+        # HEDGE TTC (time-to-close) scaling (2026-09-13 finding): re-derived
+        # and regime-composition-checked specifically for hedges (the
+        # entry-side correction at TTC_SIZE_MULTIPLIER was never verified
+        # against the original hedge data) -- real and cross-asset-
+        # consistent in CHEAP/HIGH only. Applies to both the first hedge
+        # and continuation hedges (calibrated on all hedge trades pooled).
+        # See HEDGE_TTC_SIZE_MULTIPLIER's docstring in behavior_config.py.
+        if config.ENABLE_HEDGE_TTC_SIZE_MULTIPLIER and seconds_remaining is not None:
+            ratio *= bc.hedge_ttc_size_multiplier(market.asset, regime, seconds_remaining)
         jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)
         notional = max(dominant_cost * ratio * jitter, 0.0)
         is_floor_lot = False
