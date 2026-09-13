@@ -195,21 +195,39 @@ ENTRY_SIZING_USD = {
     # still catching up) -- those are a first-pass estimate, not a fully-
     # trusted recalibration; revisit once more post-halt volume
     # accumulates. Re-derive again if a comparably large gap ever recurs.
+    #
+    # "first" TIER RE-SPOT-CHECKED 2026-09-13 (/loop cycle 19), following
+    # cycle 18's discovery that this session's HALT_END boundary had been
+    # ~46h too late (see cycle 18's tracker entry) -- combined with more
+    # calendar time simply having passed since this table was last
+    # touched, re-ran the exact same standalone-only (single-sided
+    # market, first decision) median methodology. Updated only the cells
+    # that clear this table's own n>=200 trust bar (n=225-462): Bitcoin
+    # MID 2.356->2.279 (n=260), Ethereum CHEAP 1.300->1.079 (n=462),
+    # Ethereum MID 2.051->1.976 (n=277), Solana CHEAP 1.370->1.350
+    # (n=350), Solana MID 1.891->1.840 (n=225) -- all modest further
+    # declines (1-17%), consistent with continued softening in the same
+    # direction as this table's original post-halt fix, not a reversal.
+    # CHEAP/CORE/HIGH cells NOT already listed above stay UNCHANGED --
+    # their fresh samples (n=57-161) don't clear the trust bar either
+    # (some showing much larger apparent swings, e.g. Bitcoin HIGH -33%
+    # at n=57 -- exactly the kind of thin-sample noise this bar exists
+    # to guard against, not shipped on that basis).
     "Bitcoin": {
         "CHEAP": {"first": 1.584, "2nd_3rd": 1.449, "4th_plus": 1.380},
-        "MID":   {"first": 2.356, "2nd_3rd": 2.332, "4th_plus": 2.385},
+        "MID":   {"first": 2.279, "2nd_3rd": 2.332, "4th_plus": 2.385},
         "CORE":  {"first": 5.621, "2nd_3rd": 5.928, "4th_plus": 5.928},
         "HIGH":  {"first": 21.620, "2nd_3rd": 18.600, "4th_plus": 18.600},
     },
     "Ethereum": {
-        "CHEAP": {"first": 1.300, "2nd_3rd": 1.050, "4th_plus": 0.677},
-        "MID":   {"first": 2.051, "2nd_3rd": 2.072, "4th_plus": 2.010},
-        "CORE":  {"first": 5.396, "2nd_3rd": 5.079, "4th_plus": 4.818},  # first/4th_plus THIN (n=191/183)
-        "HIGH":  {"first": 16.284, "2nd_3rd": 14.469, "4th_plus": 14.469},  # 4th_plus THIN (n=183)
+        "CHEAP": {"first": 1.079, "2nd_3rd": 1.050, "4th_plus": 0.677},
+        "MID":   {"first": 1.976, "2nd_3rd": 2.072, "4th_plus": 2.010},
+        "CORE":  {"first": 5.396, "2nd_3rd": 5.079, "4th_plus": 4.818},  # first/4th_plus THIN (n=191/183, still thin at n=113 on 2026-09-13 recheck)
+        "HIGH":  {"first": 16.284, "2nd_3rd": 14.469, "4th_plus": 14.469},  # 4th_plus THIN (n=183, still thin at n=84 on 2026-09-13 recheck)
     },
     "Solana": {
-        "CHEAP": {"first": 1.370, "2nd_3rd": 1.050, "4th_plus": 0.583},
-        "MID":   {"first": 1.891, "2nd_3rd": 1.891, "4th_plus": 1.769},
+        "CHEAP": {"first": 1.350, "2nd_3rd": 1.050, "4th_plus": 0.583},
+        "MID":   {"first": 1.840, "2nd_3rd": 1.891, "4th_plus": 1.769},
         "CORE":  {"first": 5.032, "2nd_3rd": 4.608, "4th_plus": 4.818},  # 4th_plus THIN (n=129)
         "HIGH":  {"first": 14.469, "2nd_3rd": 14.469, "4th_plus": 14.469},  # 4th_plus THIN (n=161)
     },
