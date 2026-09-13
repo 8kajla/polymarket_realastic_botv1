@@ -6086,3 +6086,22 @@ yet attempted.
 Tracker updated. Remaining: GRADIENT_BIAS_PCT, FLOOR_LOT_PROBABILITY
 (low priority), RESUMPTION_SIZE_MULTIPLIER (unverifiable), and the 3
 hedge-trigger sub-multipliers (2 blocked, 1 unattempted).
+
+## 2026-09-13: /loop cycle 5 complete — hedge-trigger sub-multipliers fixed, deployed
+
+CROSS_MARKET_HEDGE_RATE_MULTIPLIER and CONVICTION_HEDGE_MULTIPLIER both
+recalibrated. The conviction one is a genuinely new, notable finding:
+checking correlation strength per-cell (not just quartile shape) showed
+the effect has weakened to near-zero in 8 of 9 (asset, regime) cells --
+this is the seventh distinct multiplier this session (after the six
+sizing items) to show the same pattern. The post-halt behavioral shift
+wasn't just about sizing -- it reached into hedge-trigger conditioning
+(when does a big/small first entry predict later hedging) too.
+
+535/535 passing, deployed to all 3 bots, verified healthy via
+journalctl.
+
+Remaining: GRADIENT_BIAS_PCT, FLOOR_LOT_PROBABILITY (low priority),
+RESUMPTION_SIZE_MULTIPLIER (unverifiable), HEDGE_LIQUIDITY_MULTIPLIER
+(blocked by data source -- needs Gamma liquidityNum snapshots, not in
+trades.jsonl).
