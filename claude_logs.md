@@ -5665,3 +5665,40 @@ re-verified (1 CONFOUNDED, 2 CONFIRMED-but-miscalibrated, 3 STALE/high-
 severity, 4 inherits #3, 5 CONFIRMED, 27 CONFIRMED). 22 items remain
 (sizing-only multipliers 8-24, structural assumptions 6,25-26,28).
 Continuing.
+
+## 2026-09-13: Audit item 8 — ENTRY_SIZING_USD is critically stale (biggest finding yet)
+
+The base sizing table itself -- most foundational piece in the whole
+project, governs the DOLLAR SIZE of every single entry -- has an
+explicit, never-actioned TODO in its own docstring from 2026-09-08:
+"Re-check once more calendar time has passed since the resumption" (the
+13.6-day halt ended 2026-09-06; only ~2.3 days of post-halt data existed
+when this table was last touched, and only "4th_plus" cells were
+updated even then -- "first"/"2nd_3rd" were explicitly left at their
+OLDER pre-halt full-history values). A full week has now passed. Never
+re-checked until today.
+
+Fresh median FIRST-entry USDC size (last 3-7 days) vs the deployed
+"first" tier:
+  Bitcoin: CHEAP ~-13-16%, MID -47%, CORE -55-57%, HIGH -52-58%
+  Ethereum: CHEAP +11-24% (wrong direction), MID -32-34%, CORE -41-42%, HIGH -49-54%
+  Solana: CHEAP +8-25% (wrong direction), MID -34-55%, CORE -33-41%, HIGH -40%
+
+MID/CORE/HIGH are dramatically stale across ALL THREE live assets --
+our bot currently bets 30-58% MORE dollars per entry than he actually
+does right now in those bands. CHEAP is comparatively close and, for
+ETH/SOL, is actually running the OPPOSITE direction (he now sizes CHEAP
+somewhat BIGGER than the table assumes).
+
+This is likely THE most consequential finding of the whole audit so
+far -- completely independent of any win-rate/side-selection question,
+our bot's bet sizes no longer resemble his current ones at all outside
+CHEAP. This alone would produce wildly different PnL volatility/
+exposure characteristics from the real trader, regardless of how
+accurate the SIDE-selection logic is. NOT YET FIXED -- flagged for
+explicit recalibration decision.
+
+Tracker status: 7/28 items now verified (added item 8: STALE-CRITICAL).
+Continuing to items 9+ (FLOOR_LOT_PROBABILITY, WITHIN_BAND_SIZE_SLOPE,
+and the rest of the sizing multipliers), plus the still-open structural
+items (regime band boundaries, position-tier bucketing).
