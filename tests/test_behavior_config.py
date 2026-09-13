@@ -1055,18 +1055,26 @@ class TestHedgeTriggerAfterBigLossMultiplier:
 class TestAccuracyScoutMultiplier:
     """Accuracy-conditioned scout rate, added 2026-09-11 -- real, cross-
     asset-POOLED (only the pooled version was circularity-checked), so
-    this multiplier is a single shared curve, not per-asset."""
+    this multiplier is a single shared curve, not per-asset.
+    Recalibrated 2026-09-13 (post-halt) -- the sign of the relationship
+    reversed post-halt (better accuracy now predicts MORE scouting), a
+    real, circularity-checked, time-stable finding, not noise."""
 
     def test_noop_when_accuracy_unavailable(self):
         assert bc.accuracy_scout_multiplier(None) == 1.0
 
-    def test_decreases_with_accuracy(self):
-        # The finding: worse recent accuracy -> more scouting (higher
-        # multiplier); better accuracy -> less scouting.
+    def test_increases_with_accuracy(self):
+        # RECALIBRATED 2026-09-13 (post-halt, /loop cycle 8): the
+        # relationship reversed sign post-halt, confirmed via the same
+        # circularity check (non-scout-only rolling accuracy) the
+        # original build used -- survives, same sign, even slightly
+        # stronger. Better recent accuracy now predicts MORE scouting,
+        # not less; see ACCURACY_SCOUT_MULTIPLIER's docstring for the
+        # full stability check (time-split, per-asset breakdown).
         xs = sorted(bc.ACCURACY_SCOUT_MULTIPLIER.keys())
         low_acc = bc.accuracy_scout_multiplier(xs[0])
         high_acc = bc.accuracy_scout_multiplier(xs[-1])
-        assert low_acc > high_acc
+        assert high_acc > low_acc
 
     def test_flat_beyond_the_measured_range(self):
         xs = sorted(bc.ACCURACY_SCOUT_MULTIPLIER.keys())

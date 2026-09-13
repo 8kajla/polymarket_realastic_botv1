@@ -2006,11 +2006,43 @@ def adverse_move_continuation_size_multiplier(asset: str, adverse_move: Optional
 #
 # Rolling-accuracy bucket -> mean-neutral multiplier on SCOUT_PROBABILITY.
 # Pooled across BTC/ETH/SOL (overall pooled scout rate = 0.07475).
+#
+# RECALIBRATED 2026-09-13 (post-halt audit, /loop cycle 8 -- the last item
+# flagged unchecked in item #21's own audit note). Post-halt-only
+# (ts>=HALT_END), same rolling-accuracy definition as production
+# (dominant_side==winning_side over the last ACCURACY_ROLLING_WINDOW=10
+# resolved markets, pooled across assets, resolved via resolution_cache.
+# json joined on slug), n=3770 rows with a full-enough window (>=3
+# resolved markets) to bucket. Re-ran the exact same circularity check
+# the original build used (recompute rolling accuracy from ONLY non-
+# scout/committed markets, since scout bets are separately known to be
+# less accurate and would otherwise mechanically bias recent accuracy
+# down right after a scouting streak) -- the finding SURVIVES and even
+# slightly strengthens under that correction (r=0.0976, t=6.014 vs
+# r=0.0917, t=5.655 using the production all-trades definition), exactly
+# matching how the original passed its own circularity check.
+#
+# The surprising part: the RELATIONSHIP HAS REVERSED SIGN post-halt.
+# Original (pre-halt): worse recent accuracy -> more scouting (a
+# "hedge my uncertainty" story), multiplier fell monotonically from
+# 1.8753 at the low end to 0.4133 at the high end. Post-halt: BETTER
+# recent accuracy now predicts MORE scouting (0.9450 -> 1.2676, rising).
+# Verified this isn't a fluke: pooled effect is stable across a time
+# split (first-half r=0.0782/t=3.405, second-half r=0.0599/t=2.604 --
+# same sign, comparable size, both windows well within post-halt data),
+# and the same "Bitcoin alone is only marginal, Ethereum/Solana carry
+# the pooled signal" pattern the original build reported also holds here
+# (Bitcoin t=0.999, not significant; Ethereum t=2.815; Solana t=3.553).
+# Also, like the other 9 tables fixed this session, the EFFECT SIZE has
+# collapsed even though the direction flipped: post-halt range is
+# 0.945-1.268 (a ~1.3x spread) vs the original 0.413-1.875 (a ~4.5x
+# spread) -- another instance of the broad post-halt flattening pattern,
+# just with an added sign reversal this table alone shows.
 ACCURACY_SCOUT_MULTIPLIER = {
-    0.3: 1.8753,
-    0.6: 1.3751,
-    0.8: 0.7228,
-    1.0: 0.4133,
+    0.3: 0.9450,
+    0.6: 0.8749,
+    0.8: 1.1082,
+    1.0: 1.2676,
 }
 _ACCURACY_SCOUT_MULTIPLIER_CAP = 3.0
 
