@@ -5793,3 +5793,27 @@ own performance diverged from the range it was ever meant to cover.
 
 Tracker status: 13/28 items verified. Remaining: 6-7, 10-11, 13, 16-17,
 19-20, 22-24, 26 (15 items). Continuing.
+
+## 2026-09-13: Audit item 26 — the tiered position-size DECAY SHAPE itself has apparently flattened out
+
+Checked Bitcoin MID dominant-side entry size by exact same-side entry
+index (14d, price band held fixed to isolate this from item 8's level
+staleness): idx 0 through 6 = $2.391, $2.385, $2.385, $2.392, $2.470,
+$2.422, $2.496 -- essentially flat across every single index. The
+deployed ENTRY_SIZING_USD table claims a dramatic first ($4.209) ->
+2nd_3rd ($2.226) -> 4th_plus ($2.385) shape, a real ~2x drop after the
+first entry. That shape is NOT present in current data -- once "first"
+gets corrected down to its true current value (already found stale in
+item 8), it turns out to be nearly identical to 2nd_3rd/4th_plus. This
+isn't just a level problem (item 8) -- the whole TIERED-DECAY SHAPE
+this project's sizing model has assumed since day one may no longer be
+real. First entries don't look meaningfully bigger than later ones
+anymore, at least for BTC/MID. Connects directly to and reinforces item
+8; whatever fix gets built for ENTRY_SIZING_USD needs to reconsider
+whether 3 separate tiers should even survive, not just get fresh
+numbers plugged into the same shape.
+
+Tracker status: 14/28 items now carry a real, evidenced verdict.
+Remaining: 6-7, 10-11, 13, 16-17, 19-20, 22-24 (13 items, all sizing-
+only multipliers or deliberate risk mechanisms from this session).
+Continuing.
