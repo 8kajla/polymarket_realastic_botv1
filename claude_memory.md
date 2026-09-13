@@ -1358,3 +1358,32 @@ the other 2026-09-13-dated built features (REENTRY_FATIGUE,
 HEDGE_COUNT_REINFORCEMENT, HEDGE_TRIGGER_AFTER_BIG_LOSS,
 BANKROLL_PNL_SIZE_MULTIPLIER) haven't had their OWN post-halt-freshness
 checked yet. See [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 10): REENTRY_FATIGUE recalibrated — 3 of 6 cells vanished post-halt
+
+First cycle to go beyond the closed 28-item checklist. REENTRY_FATIGUE
+is a market-OUTCOME dose-response finding (real win rates by live
+position index, not a replicated-sizing curve) calibrated on TWAP-era
+data spanning both pre/post halt -- never independently checked for
+post-halt freshness.
+
+Recomputed pre-cliff-avg vs post-cliff win rate per cell on post-halt-
+only raw fills, same thresholds/semantics as original. Bitcoin/CORE,
+Ethereum/CHEAP, Solana/CHEAP still real (z=-6.5/-5.8/-2.9), values
+refreshed. Ethereum/MID, Solana/MID, Ethereum/CORE genuinely vanished
+(z<1.5, 2 of 3 reversed direction) -- REMOVED from the table entirely,
+not underpowering (n=215-2103/side in each removed cell).
+
+Why: this is a market microstructure effect, not purely behavioral --
+post-halt basket dropped BNB and volume roughly halved, so real win-
+rate-by-position-index patterns can legitimately shift even where the
+trader's OWN behavior didn't change.
+
+534/534 tests passing (1 new + 1 fixed to use a still-live cell instead
+of a now-removed one), deployed to all 3 bots, verified healthy.
+
+**Running tally: 13 multipliers/tables recalibrated across 10 /loop
+cycles.** Same-category candidates for further cycles: HEDGE_COUNT_
+REINFORCEMENT (REENTRY_FATIGUE's mirror image, same day/category),
+HEDGE_TRIGGER_AFTER_BIG_LOSS, BANKROLL_PNL_SIZE_MULTIPLIER. See
+[[full-behavioral-audit-tracker]].

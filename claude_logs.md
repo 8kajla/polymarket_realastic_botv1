@@ -6420,3 +6420,98 @@ HEDGE_TRIGGER_AFTER_BIG_LOSS, and BANKROLL_PNL_SIZE_MULTIPLIER from
 2026-09-12) have never had their OWN post-halt freshness specifically
 checked, since they were built using data windows that may themselves
 straddle the halt.
+
+## 2026-09-13: /loop cycle 10 — REENTRY_FATIGUE recalibrated, 3 of 6 cells vanished post-halt (first cycle beyond the closed 28-item checklist)
+
+With the original audit and every concrete follow-up thread closed
+after cycle 9, this cycle opened new ground: `REENTRY_FATIGUE`
+(built 2026-09-13 earlier this session, /loop iter 130) and its 3
+sibling features built the same day (`HEDGE_COUNT_REINFORCEMENT`,
+`HEDGE_TRIGGER_AFTER_BIG_LOSS`) plus `BANKROLL_PNL_SIZE_MULTIPLIER`
+(2026-09-12) were flagged as never independently checked for post-halt
+freshness, since all were calibrated on windows that themselves likely
+straddle the halt.
+
+**Why REENTRY_FATIGUE specifically first**: unlike almost every table
+fixed this session, it's a market-OUTCOME dose-response finding (real
+win rate by live same-side position index within a market) rather than
+a replicated-sizing finding — it's a deliberate risk dampener, not a
+mimicked behavior. That makes it sensitive to drift in real market
+microstructure, not just the trader's own decision process — and real
+microstructure DID change post-halt (BNB dropped from the basket
+permanently, overall volume roughly halved), giving a distinct,
+concrete reason to suspect staleness independent of anything about the
+trader himself.
+
+**Methodology**: reconstructed the exact original derivation — for each
+of the 6 originally-included (asset, regime) cells, walked RAW per-fill
+trades (not collapsed decisions, since real_fill_count in production
+increments once per confirmed fill, matching one JSONL row each),
+grouped by market+side, assigned each fill a 1-indexed position among
+same-side fills in that market, bucketed by its OWN price into a
+regime, and joined resolution_cache.json for the market's actual
+winning side. Computed pre-cliff-average win rate (idx 1 through
+threshold) vs post-cliff win rate (idx threshold+1 onward), post-halt-
+only (ts>=HALT_END), same cliff thresholds as the original (not
+re-derived this cycle — see scope-limit note below).
+
+**Results**:
+- KEPT, recalibrated (still clear this file's own |z|>=2.58 bar on the
+  post-halt sample alone): Bitcoin/CORE 0.88->0.9179 (z=-6.479, a
+  MILDER drop than before), Ethereum/CHEAP 0.73->0.6480 (z=-5.791, a
+  STRONGER drop), Solana/CHEAP 0.77->0.7412 (z=-2.938, roughly similar
+  magnitude).
+- REMOVED (genuinely vanished, not underpowered — n=215 to 2103 fills
+  per side of the split in every removed cell, comfortably above this
+  session's usual trust floor): Ethereum/MID (z=1.482, post-cliff win
+  rate is now HIGHER than pre-cliff — reversed, not just weakened),
+  Solana/MID (z=-0.637, indistinguishable from flat), Ethereum/CORE
+  (z=0.533, post-cliff HIGHER again). Two of the three removed cells
+  didn't just weaken to insignificance, they flipped direction —
+  matching the "genuine disappearance, not sampling noise" standard
+  this session has applied throughout (e.g. CROSS_MARKET_SIZE_MOMENTUM,
+  HEDGE_LIQUIDITY_MULTIPLIER, CONVICTION_HEDGE_MULTIPLIER earlier).
+
+**Scope limit flagged honestly**: the cliff thresholds themselves (5
+for MID cells, 8 for CORE/CHEAP cells) were kept as originally derived,
+not re-run through fresh cliff-detection on post-halt-only data —
+re-deriving the cliff POINT itself (not just the ratio at a fixed
+point) is a larger analysis than this cycle's scope; documented as a
+known limitation in the table's own docstring rather than silently
+assumed unchanged.
+
+**Test fixes**:
+- Added `test_noop_for_cells_that_vanished_post_halt` locking in the 3
+  removed cells now correctly return 1.0 (no-op).
+- `test_reentry_fatigue_respects_the_per_instance_feature_flag` was
+  keyed on Ethereum/MID — now removed from the table, which would have
+  made the test trivially pass (notional_low == notional_high) even
+  with the flag left ON, silently no longer exercising the flag's own
+  gating logic. Switched to Ethereum/CHEAP (still live), restoring the
+  test's actual intent.
+- `test_reentry_fatigue_and_hedge_count_reinforcement_dont_compound_
+  pathologically`'s docstring updated: the overlap between
+  REENTRY_FATIGUE and HEDGE_COUNT_REINFORCEMENT is now 2 cells (both
+  CHEAP) instead of 4, since Ethereum/MID and Solana/MID dropped out of
+  REENTRY_FATIGUE. The test itself computes the overlap set dynamically
+  (`set(bc.REENTRY_FATIGUE_MULTIPLIER) & set(bc.HEDGE_COUNT_
+  REINFORCEMENT_MULTIPLIER)`), so no assertion changes were needed —
+  manually verified the combined-product band (0.7-1.4) still holds for
+  both remaining cells at both hedge tiers before trusting that.
+- Every other test in both REENTRY_FATIGUE/HEDGE_COUNT_REINFORCEMENT
+  classes already derives inputs/expectations from the tables
+  dynamically (iterating `.items()`), so needed no changes — a concrete
+  payoff of this session's repeated "derive from the table, don't
+  hardcode" fixes paying off on its own this time.
+
+534/534 tests passing (1 new test), deployed to all 3 bots
+(paperbot/paperbot-100/coinbase-bot), verified healthy via journalctl
+(no errors/tracebacks on any of the 3 services).
+
+**Running tally: 13 distinct multipliers/tables recalibrated across 10
+/loop cycles.** Same-category candidates flagged for further cycles,
+sharing REENTRY_FATIGUE's own risk profile (market-outcome dose-
+response, built the same day or close to it, never independently
+post-halt-checked): `HEDGE_COUNT_REINFORCEMENT` (REENTRY_FATIGUE's own
+mirror-image signal), `HEDGE_TRIGGER_AFTER_BIG_LOSS`, and
+`BANKROLL_PNL_SIZE_MULTIPLIER`.
