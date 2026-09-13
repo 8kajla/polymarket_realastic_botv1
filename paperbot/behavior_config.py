@@ -962,6 +962,37 @@ def cross_market_size_momentum_multiplier(asset: str, prev_size_residual: Option
 # Quartile points of (cumulative realized P&L for this asset, mean-
 # neutral multiplier), built the same way as every other table here:
 # quartile-bucket means, normalized so the population average is 1.0.
+#
+# CHECKED FOR POST-HALT FRESHNESS 2026-09-13 (/loop cycle 13), NOT
+# RECALIBRATED -- weakened to a genuinely unstable/inconclusive state,
+# a third distinct verdict alongside REENTRY_FATIGUE's clean removals
+# and HEDGE_COUNT_REINFORCEMENT's clean underpowering. Recomputed a
+# size-residual proxy (log(first-entry usdc / that regime's post-halt
+# ENTRY_SIZING_USD "first"-tier median)) against a fresh running
+# cumulative directional pnl per asset, reset to 0 at HALT_END (the
+# fair "epoch" analogue to a bot restart, matching how production's
+# Ledger.realized_pnl_by_asset() actually resets):
+#   Ethereum: raw r=-0.0563 (t=-1.971), detrended r=-0.0546 (t=-1.911)
+#     -- same negative direction as originally, but below this file's
+#     |t|>=2.58 bar either way.
+#   Solana: raw r=+0.1330 (t=4.715, LOOKS reversed and significant) but
+#     detrended r=-0.1076 (t=-3.802, negative again, same direction as
+#     the original) -- a clean demonstration of exactly the confound
+#     the original build's own detrending step exists to catch: both
+#     variables carry their own time trend during a short window, and
+#     the raw correlation between them is mostly that shared trend, not
+#     a real relationship. Trusting the raw number here would have
+#     produced a false "reversed" verdict.
+# Both assets fail a temporal-half-stability check within the post-halt
+# window alone (Ethereum: first-half t=-2.598, second-half t=0.231;
+# Solana detrended-equivalent shows a similar first/second-half split
+# instability) -- but that window is only ~4.9 days total, so a ~2.45-
+# day half-split is a much harsher stability bar than the original's
+# presumably multi-week one, and instability here may just reflect too
+# little absolute time rather than a genuinely gone effect. Kept at the
+# original values rather than recalibrated on a borderline, unstable
+# signal or removed on inconclusive evidence -- revisit once more
+# post-halt time accumulates.
 BANKROLL_PNL_SIZE_MULTIPLIER = {
     "Ethereum": {-238.98: 1.1724, -17.38: 0.9851, 191.66: 0.9824, 416.47: 0.8601},
     "Solana": {-356.36: 1.2420, -262.25: 1.1362, -87.82: 0.8390, 54.75: 0.7830},
