@@ -1141,3 +1141,36 @@ deferred as lower-priority (GRADIENT_BIAS_PCT, FLOOR_LOT_PROBABILITY,
 (ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER, RESUMPTION_SIZE_MULTIPLIER) --
 none of these showed the severe, clear-cut staleness the six fixed
 items did.
+
+**FIXED (2026-09-13, /loop cycle 4)**: recalibrated `ABSOLUTE_PRICE_
+HEDGE_SIZE_MULTIPLIER` post-halt using the FULL original partial-
+correlation methodology (OLS of log(ratio) on adverse_move, then bucket
+the residual by raw hedge price) -- resolves the "inconclusive" status
+this table was left in during the full audit. The relation is real and
+stronger than before (partial corr r=0.335-0.454 vs the original
+r=0.103), but the SHAPE changed: this was U-shaped (extra sizing at
+both price extremes), now MONOTONICALLY INCREASING for all 3 assets.
+Also raised `_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER_CAP` 3.0->6.0 -- the
+new low end (0.2072) was below the old cap's own floor (1/3=0.333), an
+internal inconsistency a test caught immediately. Rewrote the whole
+test class since several tests asserted the now-false U-shape
+assumption. 535/535 passing.
+
+**ATTEMPTED BUT DEFERRED, same cycle**: `CROSS_MARKET_HEDGE_RATE_
+MULTIPLIER` -- fresh quartile derivation hit a degenerate-zero-mass
+problem (so many markets have prev_hedge_rate exactly 0.0 that a naive
+4-way quartile split produces a nonsensical P(hedged)=0.0 bucket). The
+ORIGINAL table's own asymmetric structure (Ethereum has only 3 points,
+not 4) suggests it handled this by isolating exact-zero as its own
+bucket rather than quartiling the whole distribution uniformly --
+correctly replicating that needs more care than a straight quartile
+split. Left unchanged rather than shipping a degenerate recalibration.
+`HEDGE_LIQUIDITY_MULTIPLIER` needs Gamma's liquidityNum, not present in
+trades.jsonl -- can't be recalibrated from the data source used this
+whole session. `CONVICTION_HEDGE_MULTIPLIER` not yet attempted.
+
+This closes item 17 from the full audit's checklist. Remaining
+unresolved: 3 hedge-trigger sub-multipliers (partially attempted/
+blocked as above), GRADIENT_BIAS_PCT and FLOOR_LOT_PROBABILITY
+(deliberately deprioritized, low impact), RESUMPTION_SIZE_MULTIPLIER
+(genuinely unverifiable, no new qualifying gap).

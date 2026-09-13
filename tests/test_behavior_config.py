@@ -518,10 +518,14 @@ class TestAbsolutePriceHedgeSizeMultiplier:
     controlling for adverse_move_size_multiplier's own driving variable,
     r_raw=0.749 collinearity between the two) finding: the hedge side's
     own absolute current price predicts size beyond the delta-from-entry
-    effect. Partial corr r=+0.103, t=+5.16, n=2,499 (first hedges only).
-    U-shaped across all three assets -- extra sizing at BOTH price
-    extremes, not just one -- median-neutral quartile-point calibration,
-    same discipline as ADVERSE_MOVE_SIZE_MULTIPLIER."""
+    effect. RECALIBRATED 2026-09-13 (post-halt, /loop cycle 4 -- see
+    full-behavioral-audit-tracker.md item 17): redone with the same
+    partial-correlation methodology on post-halt-only data. The relation
+    is real and, if anything, stronger than the original (partial corr
+    r=0.335-0.454 vs the original r=0.103) -- but the SHAPE has changed:
+    this used to be U-shaped (extra sizing at BOTH price extremes), and
+    is now MONOTONICALLY INCREASING with price instead for all three
+    assets. Kept as measured, not forced back into the old shape."""
 
     def test_neutral_for_assets_not_in_the_table(self):
         for asset in ("Dogecoin", "Hyperliquid", "BNB"):
@@ -537,30 +541,38 @@ class TestAbsolutePriceHedgeSizeMultiplier:
                 assert abs(got - expected) < 1e-9, f"{asset}@{price}: {got} != {expected}"
 
     def test_interpolates_between_points(self):
-        # Bitcoin: 0.39->0.6725, 0.70->0.6817 -- the midpoint price must
-        # interpolate to (roughly) the midpoint multiplier.
-        mid_price = (0.39 + 0.70) / 2
+        # Endpoints derived from the table itself -- the two calibrated
+        # points closest to the middle of Bitcoin's range must bound the
+        # midpoint's interpolated value, whatever they happen to be after
+        # a recalibration.
+        points = sorted(bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER["Bitcoin"].items())
+        lo_price, lo_val = points[1]
+        hi_price, hi_val = points[2]
+        mid_price = (lo_price + hi_price) / 2
         mid_val = bc.absolute_price_hedge_size_multiplier("Bitcoin", mid_price)
-        assert 0.6725 < mid_val < 0.6817
+        assert min(lo_val, hi_val) < mid_val < max(lo_val, hi_val)
 
     def test_flat_beyond_the_measured_range_no_extrapolation(self):
-        at_min = bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.11)
-        below_min = bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.01)
+        # Endpoints derived from the table itself -- robust to
+        # recalibration, since the exact min/max keys shift every time
+        # this table gets re-derived from fresh data.
+        keys = sorted(bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER["Bitcoin"])
+        at_min = bc.absolute_price_hedge_size_multiplier("Bitcoin", keys[0])
+        below_min = bc.absolute_price_hedge_size_multiplier("Bitcoin", keys[0] - 0.1)
         assert at_min == below_min
 
-        at_max = bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.94)
-        above_max = bc.absolute_price_hedge_size_multiplier("Bitcoin", 0.99)
+        at_max = bc.absolute_price_hedge_size_multiplier("Bitcoin", keys[-1])
+        above_max = bc.absolute_price_hedge_size_multiplier("Bitcoin", keys[-1] + 0.1)
         assert at_max == above_max
 
-    def test_both_extremes_score_above_the_middle_of_the_range(self):
-        # U-shaped, not monotonic: the two extreme quartile points must
-        # both score above the two middle ones, for every live asset.
+    def test_monotonically_increases_with_price_for_every_live_asset(self):
+        # Post-2026-09-13 recalibration: monotonically increasing, not
+        # U-shaped -- higher hedge price predicts a bigger hedge size,
+        # consistently across all three live assets.
         for asset, curve in bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER.items():
             points = sorted(curve.items())
-            lo_extreme, hi_extreme = points[0][1], points[-1][1]
-            middle_vals = [v for _, v in points[1:-1]]
-            assert lo_extreme > max(middle_vals), f"{asset}: low extreme not above the middle"
-            assert hi_extreme > max(middle_vals), f"{asset}: high extreme not above the middle"
+            values = [v for _, v in points]
+            assert values == sorted(values), f"{asset}: expected monotonically increasing, got {values}"
 
     def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
         for asset, curve in bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER.items():

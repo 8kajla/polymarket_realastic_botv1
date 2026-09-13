@@ -1280,13 +1280,32 @@ def adverse_move_size_multiplier(asset: str, adverse_move: Optional[float]) -> f
 # calibration, only redistributes it by price). Applied MULTIPLICATIVELY
 # on top of HEDGE_SIZE_RATIO * ADVERSE_MOVE_SIZE_MULTIPLIER, first hedge
 # only (hedge_count==0), same call site as both of those.
+# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 4 -- resolves the
+# "inconclusive" status this table was left in during the full audit,
+# see full-behavioral-audit-tracker.md item 17). Redone with the FULL
+# original partial-correlation methodology (OLS of log(ratio) on
+# adverse_move, then bucket the RESIDUAL by raw hedge price into
+# quartiles) on post-halt-only data, not a raw/uncontrolled bucketing --
+# the partial correlation is real and, if anything, stronger than the
+# original finding (r=0.335-0.454 vs the original r=0.103). But the
+# SHAPE has genuinely changed: this used to be a U (high at both price
+# extremes), and is now MONOTONICALLY INCREASING with price instead (low
+# at CHEAP, high at HIGH) for all three assets -- kept exactly as
+# measured, not forced back into the old U shape. Consistent with the
+# same broad post-halt behavioral shift found everywhere else in this
+# session's recalibration pass.
 ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER = {
-    "Bitcoin": {0.11: 1.3183, 0.39: 0.6725, 0.70: 0.6817, 0.94: 1.5730},
-    "Ethereum": {0.09: 1.2663, 0.41: 0.6629, 0.81: 0.7337, 0.97: 2.0510},
-    "Solana": {0.13: 1.1448, 0.44: 0.4986, 0.79: 0.8552, 0.95: 2.0437},
+    "Bitcoin": {0.11: 0.2175, 0.42: 0.6291, 0.71: 0.9564, 0.95: 2.1970},
+    "Ethereum": {0.08: 0.2072, 0.41: 0.3451, 0.77: 0.5614, 0.97: 2.8863},
+    "Solana": {0.14: 0.2366, 0.43: 0.4261, 0.78: 0.7508, 0.95: 2.5865},
 }
-_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER_CAP = 3.0  # measured range tops out
-# at ~2.05 (ETH/SOL q4); same cap convention as HEDGE_LIQUIDITY_MULTIPLIER.
+# Raised 2026-09-13 alongside the post-halt recalibration above: the
+# post-halt measured range is [0.2072, 2.8863] (Ethereum both ends) --
+# 3.0's own floor (1/3=0.333) would have clipped the new low end, an
+# internal inconsistency (a "calibrated exact point" the cap itself
+# makes unreachable). 6.0 clears both ends with real headroom, same
+# value already used by ADVERSE_MOVE_SIZE_MULTIPLIER for the same reason.
+_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER_CAP = 6.0
 
 
 def absolute_price_hedge_size_multiplier(asset: str, hedge_price: Optional[float]) -> float:
