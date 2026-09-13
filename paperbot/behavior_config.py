@@ -1628,6 +1628,37 @@ def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) ->
 # escalation -- kept as-measured rather than smoothed into a fake
 # continuous curve, same "never smoothed to look more uniform" rule this
 # whole file follows (see module docstring).
+#
+# ATTEMPTED POST-HALT RECHECK 2026-09-13 (/loop cycle 14) -- NOT
+# RECALIBRATED, result not trustworthy enough to act on. This table was
+# never independently re-checked earlier in the post-halt audit (a real
+# gap -- flagged only as "deferred, lower priority" pre-loop, never
+# revisited even after its 3 siblings -- ADVERSE_MOVE_SIZE_MULTIPLIER,
+# ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER, CROSS_MARKET_HEDGE_RATE_
+# MULTIPLIER -- were all fixed in cycles 3 and 5).
+#
+# The original's attempt_index/TTC-stratified hazard framework can't be
+# faithfully reproduced from raw trade data in one cycle (attempt_index
+# isn't a directly observable field -- it has to be inferred from the
+# sequence of same-side fills before any hedge exists). A simplified
+# proxy was tried: per market, walk primary-side fills strictly before
+# the first hedge fill (or all of them if never hedged), label only the
+# LAST such fill "hedged=1" (an event) and every earlier one "hedged=0"
+# (survived to the next attempt) -- a reasonable discrete-hazard
+# reduction in principle. Result was a clean U-shape for all 3 assets
+# (e.g. Bitcoin bucket-multipliers 1.19 -> 0.69 -> 0.82 -> 1.26), NOT
+# the clean monotonic rise the original found and rigorously confound-
+# checked. Suspected cause, not confirmed: this proxy's "last fill
+# before hedge" selection can attribute a hedge to a near-zero-adverse-
+# move fill whenever the real trigger was something else entirely
+# (e.g. the base hazard curve simply rising with real_fill_count) --
+# exactly the kind of artifact the original's attempt_index/TTC
+# stratification was built to rule out, and this simplified version
+# doesn't. Rather than ship a possibly-artifactual U-shape in place of
+# a well-validated monotonic one, LEFT UNCHANGED. Properly rechecking
+# this needs the original's full stratified framework, not a single
+# quick proxy pass -- flagged as the next candidate if a future cycle
+# has room for that heavier lift.
 ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER = {
     "Bitcoin": {0.0: 0.6123, 0.07: 0.7856, 0.15: 1.0786, 0.30: 1.5235},
     "Ethereum": {0.0: 0.7620, 0.07: 0.8913, 0.14: 0.8900, 0.26: 1.4567},
