@@ -7917,3 +7917,61 @@ closed, 5 methodology bugs found-and-corrected, 1 infra issue
 investigated-and-confirmed-safe, 1 genuine architectural limitation
 (now rigorously confirmed rather than merely suspected), and 1
 tested-and-rejected candidate fix, across 29 /loop cycles.**
+
+## 2026-09-13: paperbot-100 bankroll reset (run4) after discovering a 33+ hour drawdown spiral
+
+While checking `paperbot-100`'s safety controls against today's calibration
+changes, found the bot's equity had collapsed from a $402 peak (2026-09-12
+~04:00 UTC) to $0.02 (out of a $100 starting bankroll) by 2026-09-13
+~13:20 UTC — a 99.98% loss over roughly 33 hours, with the circuit breaker
+(`MAX_HOURLY_DRAWDOWN_PCT=0.15`) tripping ~30 times, each pausing new
+markets for 30 minutes before the bot resumed and lost more.
+
+**Diagnosis before acting**: broke the loss down by asset/hedge-vs-
+normal/time window. Bitcoin ordinary entries were profitable overall
+(+$791 lifetime) but Bitcoin HEDGES were a large, longstanding drag
+(-$110 historically, accelerating to -$215 in the final 24h alone at a
+26.8% win rate). Ethereum's ordinary entries were a separate, large,
+longstanding loss (-$395 lifetime). Checked an hour-by-hour timeline of
+Bitcoin hedge P&L back to 2026-09-08 and found the SAME volatile,
+mostly-negative pattern the entire time — this is a long-standing
+structural characteristic, not something introduced or worsened by
+today's specific fixes. Regime breakdown of Bitcoin hedges: CHEAP
+(60.6% of hedges, 12.6% win rate, -$120.62) and MID (30.6%, 41.7% win
+rate, -$250.03) are the loss concentration; CORE (80.6% win rate,
++$26.73) and HIGH (100% win rate, n=28, +$18.76) are actually
+profitable — consistent with this project's own earlier finding
+(full-behavioral-audit-tracker item #27) that hedging is genuinely
+beneficial in CHEAP/MID for the REAL trader but the bot's specific
+CHEAP/MID hedge calibration may not be capturing that same edge.
+
+**Action taken, per explicit user instruction** ("refill paperbot 100
+with 100 lets see what effect it will have after the new changes then
+continue working"): stopped `paperbot-100`, backed up the full 7.4MB
+ledger to `/opt/paperbot/data_100/paper_ledger_run4_wiped_20260913_
+135600.json` (following this bot's own established run1/run2/run3
+reset-backup convention from 2026-09-08), reset `paper_ledger.json` to
+`{"records": []}`, and restarted the service. Verified via `PNL_SUMMARY`
+log line: `realized_total=0.0000 settled_trades=0` immediately after
+restart -- confirms `current_equity() = BANKROLL_USD(100) +
+realized_pnl(0) = $100` exactly, a clean fresh start. Bot is placing
+new orders normally post-restart (`committed_capital=$13.35`, 5 open
+orders within the first ~15 seconds).
+
+**What this tests**: whether today's post-halt recalibrations (cycles
+1-26, especially the index-semantics fixes to ENTRY_SIZING_USD/
+REENTRY_FATIGUE/FLOOR_LOT_PROBABILITY and the freshly-corrected
+HEDGE_TRIGGER_PROBABILITY) produce meaningfully different, hopefully
+healthier, P&L behavior than the pre-fix calibration that ran through
+this drawdown. The historical run (runs 1-4's predecessor) is fully
+preserved for comparison -- nothing was lost, only reset going forward.
+
+**Not yet resolved**: WHY Bitcoin/CHEAP and Bitcoin/MID hedges
+specifically have been a persistent net drag for this bot even though
+hedging is established as genuinely beneficial for the real trader in
+those same regimes. This is a real, open question distinct from
+today's post-halt-freshness work -- worth a dedicated investigation
+(comparing the bot's OWN combined primary+hedge P&L by regime against
+the real trader's, the same methodology full-behavioral-audit-tracker
+item #27 already used) if the reset bankroll shows the same pattern
+recurring.
