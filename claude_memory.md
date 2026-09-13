@@ -1492,3 +1492,37 @@ actionable + 1 checked-with-insufficient-rigor across 16 /loop
 cycles.** See [[full-behavioral-audit-tracker]] for what's left: TTC's
 CORE/HIGH cells, items #25/#27 (lower priority, structural not sizing),
 and the TTC-composition architecture gap.
+
+## 2026-09-13 (loop cycle 17): TTC-composition data gap closed (architecture change)
+
+Took on the one remaining ARCHITECTURE gap from
+[[cheap-edge-gap-root-cause-persistence-miscalibration]]: SettlementRecord
+had no entry-placement timestamp, blocking the TTC-composition
+hypothesis (does the bot enter CHEAP markets at different window-timing
+than the real trader?) from ever being testable.
+
+Found SimulatedOrder.placed_at already exists but is deliberately
+mutated by _reprice() on every reprice ("time-to-fill measured from
+the latest resting price") -- using it directly would have silently
+recorded the LAST reprice's time, not the original decision. Added a
+second, never-mutated field original_placed_at (set once in
+__post_init__, survives every later reprice), sourced
+SettlementRecord.placed_at from that instead. Purely additive (defaults
+None), same pattern as the existing `fills` field.
+
+6 new tests, 537/537 passing, deployed to all 3 bots, and VERIFIED
+END-TO-END in live production data (not just unit tests) -- fresh
+settlement records now carry real placed_at values ~300-620s before
+their own settled_at.
+
+Why this matters: this doesn't fix a drift itself -- it's
+instrumentation. The TTC-composition hypothesis can only actually be
+analyzed once enough post-cycle-17 data accumulates with this field
+populated (nothing before 2026-09-13 ~11:06 UTC has it).
+
+**Running tally: 17 tables/gaps addressed across 17 /loop cycles** (16
+recalibrated/retired, 2 confirmed-not-actionable, 1 checked-with-
+insufficient-rigor, 1 architecture gap closed). See
+[[full-behavioral-audit-tracker]] -- the audit's own candidate list is
+now essentially exhausted; further cycles should watch for enough new
+data to run the TTC-composition check, or find genuinely new ground.

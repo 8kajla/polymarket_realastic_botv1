@@ -6885,3 +6885,92 @@ not sizing tables that directly drive bot behavior), and the still-open
 TTC-composition architecture gap (needs an actual `SettlementRecord`
 placement-timestamp field added, a real code change rather than a pure
 recalibration).
+
+## 2026-09-13: /loop cycle 17 — TTC-composition data gap closed (architecture change, not a recalibration)
+
+With the recalibration backlog down to low-value/high-effort remnants
+(TTC_SIZE_MULTIPLIER's thin CORE/HIGH cells need elapsed time, not more
+analysis; items #25/#27 are lower-priority structural checks), took on
+the one remaining ARCHITECTURE-level gap instead: project memory
+`cheap-edge-gap-root-cause-persistence-miscalibration` had flagged
+"Add a placement timestamp to SettlementRecord... to finally test the
+TTC-composition hypothesis" as a genuinely blocking data gap, open
+since earlier this session.
+
+**The hypothesis this unblocks**: does this bot enter CHEAP markets at
+different window-timing than the real trader does, at the same price?
+Previously untestable on the bot's own data — every timestamp already
+on a `SettlementRecord` (`settled_at`, each fill's own `ts`) answers
+"when did it resolve/fill", never "when did the bot DECIDE to place
+this order".
+
+**The subtlety that made this more than a one-line change**: found that
+`SimulatedOrder` already tracks a `placed_at` field in memory — but
+`_reprice()` deliberately OVERWRITES it on every reprice ("time-to-fill
+measured from the latest resting price", per its own existing comment).
+Wiring that field straight into `SettlementRecord` would have silently
+recorded the LAST reprice's timestamp rather than the original entry
+decision — exactly the wrong quantity for the TTC-composition question,
+and the kind of subtle, easy-to-miss bug this session has tried hard to
+catch before shipping (the same category of care as detecting the
+Solana raw/detrended confound in cycle 13).
+
+**Fix**: added a second, NEVER-mutated field,
+`SimulatedOrder.original_placed_at` — defaults to `placed_at`'s own
+construction-time value inside `__post_init__` (so both fields start
+identical), and is never touched by `_reprice()` afterward. Sourced the
+new `SettlementRecord.placed_at` from `order.original_placed_at`
+instead of the mutable field. Purely additive: `SettlementRecord.
+placed_at` defaults to `None`, so every existing `ledger.json` (saved
+before this change, with no `placed_at` key at all) still loads
+cleanly via `SettlementRecord(**raw)` — same backward-compatible
+pattern already established for the `fills` field.
+
+**Tests added** (6 new, matching the rigor of the existing `fills`
+field's own test class):
+- `test_ledger.py`'s `TestOriginalPlacementTimePersisted`: value is
+  recorded correctly on settlement; survives a direct mutation of
+  `order.placed_at` (simulating what `_reprice()` does) all the way
+  through to the settled record; an explicitly-passed
+  `original_placed_at` at construction isn't clobbered by
+  `__post_init__`; old records without the field load as `None` rather
+  than crashing or fabricating a value; round-trips through save/load.
+- `test_fill_simulation.py`'s `test_reprice_moves_placed_at_but_not_
+  original_placed_at`: exercises the REAL reprice path through
+  `FillSimulator.place_order()` + `manage_open_orders()` (not just a
+  unit-level field mutation), confirming `placed_at` still moves (no
+  regression to existing behavior) while `original_placed_at` stays
+  fixed at the original placement time.
+
+537/537 tests passing (531 existing + 6 new). Deployed to all 3 bots
+(paperbot/paperbot-100/coinbase-bot) and VERIFIED END-TO-END in live
+production data post-restart, not just unit tests: checked
+`/opt/paperbot/data/paper_ledger.json` on the server before and after
+the restart — records settled just before the restart (11:06:02 UTC,
+17 seconds before the 11:06:19 UTC restart) correctly still lack
+`placed_at` (old code), while records settled afterward (first checked
+~62 minutes later, at 12:07-12:08 UTC) correctly carry real `placed_at`
+values, each sensibly ~300-620 seconds before its own `settled_at` —
+matching the 5-minute market window plus typical queueing/fill delay.
+This is the first cycle this session where a fix was verified not just
+via unit tests and a healthy-process check, but by directly inspecting
+the actual persisted production data to confirm the new field's values
+make real-world sense.
+
+**This doesn't fix a behavioral drift itself** — unlike every other
+cycle this session, there was no stale calibration table to refresh
+here. It's pure instrumentation: a genuinely new capability that lets a
+FUTURE analysis (once enough post-cycle-17 data accumulates with this
+field populated — nothing settled before 2026-09-13 ~11:06 UTC has it)
+finally test the TTC-composition hypothesis that was blocking full
+closure of the standing CHEAP-edge-gap investigation.
+
+**Running tally: 17 tables/gaps addressed across 17 /loop cycles** — 16
+recalibrated or retired, 2 confirmed-not-yet-actionable, 1
+checked-with-insufficient-rigor, and now 1 architecture gap closed.
+With the fresh sweep's own candidate list essentially exhausted (the
+remaining items need either elapsed time or are lower-priority
+structural checks), further /loop cycles should watch for enough new
+placed_at-carrying data to actually run the TTC-composition analysis,
+or look for genuinely new ground beyond this entire audit's original
+scope.
