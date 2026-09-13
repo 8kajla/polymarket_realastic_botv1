@@ -1017,6 +1017,20 @@ def cross_market_size_momentum_multiplier(asset: str, prev_size_residual: Option
 # original values rather than recalibrated on a borderline, unstable
 # signal or removed on inconclusive evidence -- revisit once more
 # post-halt time accumulates.
+#
+# RE-VERIFIED 2026-09-13 (/loop cycle 18) with a corrected post-halt
+# boundary: this session's own scripts (including the cycle-13 check
+# above) used HALT_END=1788870060 (2026-09-08 12:21 UTC), but a direct
+# gap-scan of the full trade mirror confirms the real halt ended at
+# 1788704494 (2026-09-06 14:21:34 UTC) -- ~46 hours of valid post-halt
+# data was being silently excluded. Re-ran with the corrected boundary
+# and n=1646/1639 (up from 1223/1236): if anything, the instability is
+# MORE pronounced now, not less -- Ethereum's detrended correlation now
+# clears the trust bar (t=-3.620) but its own first/second-half split
+# FLIPS SIGN (first-half t=-3.898, second-half t=+3.110), and Solana's
+# detrended significance actually weakened and softened toward zero
+# (t=-3.802 -> t=1.864). This reinforces, not reverses, the "genuinely
+# unstable" verdict -- kept unchanged.
 BANKROLL_PNL_SIZE_MULTIPLIER = {
     "Ethereum": {-238.98: 1.1724, -17.38: 0.9851, 191.66: 0.9824, 416.47: 0.8601},
     "Solana": {-356.36: 1.2420, -262.25: 1.1362, -87.82: 0.8390, 54.75: 0.7830},
@@ -2420,6 +2434,27 @@ def reentry_fatigue_multiplier(asset: str, regime: str,
 # not a "vanished" one -- kept at the original TWAP-era values rather
 # than recalibrated on underpowered noise or blindly assumed unchanged.
 # Revisit once meaningfully more post-halt hedge activity accumulates.
+#
+# RE-VERIFIED 2026-09-13 (/loop cycle 18): found and fixed a real bug in
+# this session's OWN research methodology, not the trader's behavior --
+# every prior post-halt-only script this session (including the cycle-11
+# check above) used HALT_END=1788870060 (2026-09-08 12:21 UTC), but a
+# direct gap-scan of the full trade mirror (853,818 trades) confirms the
+# real halt actually ended at 1788704494 (2026-09-06 14:21:34 UTC) --
+# every "post-halt-only" filter this session was silently excluding the
+# first ~46 hours (~1.9 days) of genuinely valid post-halt data. Re-ran
+# this table's check with the corrected boundary: the extra ~2 days
+# modestly IMPROVED internal consistency in 2 of 4 cells (Ethereum/CHEAP
+# now z=2.156/z=2.189 for tier1/tier2, same direction and much closer
+# in magnitude than before; Solana/MID now z=1.122/z=4.449, both
+# positive) but Ethereum/MID and Solana/CHEAP remain internally
+# inconsistent (tier1/tier2 still disagree in sign or magnitude order).
+# Still not confidently actionable -- verdict UNCHANGED (kept at
+# original TWAP-era values) -- but the trend with more data is toward
+# a real signal, not toward noise, which is itself informative. See
+# full-behavioral-audit-tracker.md's cycle 18 entry for the full
+# writeup of this boundary-correction discovery and its impact (or lack
+# of one) on every other table fixed this session.
 HEDGE_COUNT_REINFORCEMENT_TIERS = {
     ("Ethereum", "CHEAP"): [(2, 1.5), (5, 1.8)],
     ("Ethereum", "MID"): [(2, 1.25), (5, 1.4)],
@@ -2582,6 +2617,17 @@ def hedge_ttc_size_multiplier(asset: str, regime: str, seconds_remaining: float)
 # discipline -- revisit once meaningfully more post-halt data
 # accumulates (both the flag's own >=20-loss-sample warmup and the
 # comparison itself need more history than ~5 days can provide).
+#
+# RE-VERIFIED 2026-09-13 (/loop cycle 18) with a corrected post-halt
+# boundary: this session's own research scripts (including the cycle-11
+# check above) used HALT_END=1788870060 (2026-09-08 12:21 UTC), but a
+# direct gap-scan of the full trade mirror confirms the real halt ended
+# at 1788704494 (2026-09-06 14:21:34 UTC) -- every prior "post-halt-
+# only" filter this session excluded the first ~46 hours of genuinely
+# valid data. Re-ran this check with the corrected boundary and the
+# null HOLDS UP just as cleanly: Ethereum ratio=1.062 (n=94, z=0.540),
+# Solana ratio=1.047 (n=90, z=0.482) -- still no detectable effect, now
+# on ~25-40% more data. Retirement verdict unchanged.
 HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER: dict = {}
 
 
