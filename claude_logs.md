@@ -5995,3 +5995,27 @@ growth reducing precision-seeking, or a switch to a simpler sizing
 rule), since fixing each table in isolation without understanding the
 common cause risks repeating exactly the mistake this whole audit was
 launched to catch.
+
+## 2026-09-13: /loop cycle 2 — SIDE_PERSISTENCE and WITHIN_BAND_SIZE_SLOPE fixed and deployed
+
+Recalibrated both post-halt-only (same methodology as cycle 1). Also
+corrected SIDE_PERSISTENCE's docstring, which had wrongly claimed a
+"non-confounded win-rate difference" -- the audit found that claim was
+itself confounded; the table replicates a real behavioral frequency, not
+a predictive edge, and now says so honestly. WITHIN_BAND_SIZE_SLOPE's
+post-halt shift turned out to be regime-specific, not uniform (CHEAP/MID
+dropped, CORE rose, HIGH dropped for all 3 assets) -- kept as measured.
+
+Fixed 1 test regression: a fixed price=0.5 used for every regime
+(including CORE/HIGH) in a reentry-fatigue test hit WITHIN_BAND's own
+extrapolation cap after CORE's slope rose, saturating COMBINED_SIZE_
+MULTIPLIER_CAP for both compared values and masking the effect under
+test. Switched to realistic per-regime prices matching production's own
+regime/price pairing discipline.
+
+535/535 passing, deployed to all 3 bots, verified healthy via
+journalctl (only the known pre-existing WS reconnect noise present).
+
+Tracker updated: cycle 2 fixes marked done. Remaining queued for cycle
+3: CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER, HEDGE_SIZE_RATIO (ETH/SOL),
+ADVERSE_MOVE_SIZE_MULTIPLIER, ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER.
