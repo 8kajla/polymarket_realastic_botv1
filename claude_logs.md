@@ -6105,3 +6105,28 @@ Remaining: GRADIENT_BIAS_PCT, FLOOR_LOT_PROBABILITY (low priority),
 RESUMPTION_SIZE_MULTIPLIER (unverifiable), HEDGE_LIQUIDITY_MULTIPLIER
 (blocked by data source -- needs Gamma liquidityNum snapshots, not in
 trades.jsonl).
+
+## 2026-09-13: /loop cycle 6 complete — HEDGE_LIQUIDITY_MULTIPLIER unblocked, tested, retired; all 4 hedge-trigger sub-multipliers now closed
+
+Found market_snapshots.jsonl on the server (a separate collector this
+session hadn't used before) has per-market liquidity data, unblocking
+this multiplier from its earlier "no data source" status. Joined it
+against post-halt trades and found the correlation has vanished for all
+3 assets (r=0.01-0.06) -- removed the table entirely rather than force
+a fake curve. Eighth multiplier this session showing the same pattern.
+
+Rewrote TestHedgeLiquidityMultiplier and fixed one test_strategy.py
+wiring test to mock the multiplier function directly instead of relying
+on Bitcoin's now-retired real curve -- a more robust pattern in general
+(decouples "wiring works" from "calibration data currently exists").
+
+532/532 passing, deployed to all 3 bots, verified healthy.
+
+**This closes all 4 hedge-trigger sub-multipliers flagged in the
+original full audit's checklist** (hedge_liquidity, cross_market_
+hedge_rate, conviction, and the earlier-fixed after_big_loss).
+
+Remaining: GRADIENT_BIAS_PCT, FLOOR_LOT_PROBABILITY (deliberately low
+priority, minimal behavioral impact), RESUMPTION_SIZE_MULTIPLIER
+(genuinely unverifiable -- no new qualifying gap exists in the data).
+Every item with a realistic path to a real fix has now been fixed.
