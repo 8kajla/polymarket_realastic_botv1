@@ -171,6 +171,84 @@ class TestPerRegimeQueueSafetyFactorOverride:
         assert order.queue_ahead_discounted == pytest.approx(25.0)
 
 
+class TestPerAssetQueueSafetyFactorOverride:
+    """queue_safety_factor_by_asset, added 2026-09-13 -- see
+    config.QUEUE_SAFETY_FACTOR_OVERRIDE_BY_ASSET's docstring: Solana's
+    ordinary-order fill rate is ~0.1% (vs Bitcoin's ~25%), uniform across
+    every regime (ruled out as a composition effect), traced to genuinely
+    thin real SELL-side trade-print volume (confirmed via TRADE_PRINT_
+    COUNTS diagnostic, not a feed bug). Composed MULTIPLICATIVELY with the
+    per-regime factor -- effective_factor = regime_factor * asset_mult."""
+
+    def test_no_override_behaves_identically_to_the_flat_factor(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            order = sim.place_order(make_intent(price=0.20, asset=asset), book, now=0.0)
+            assert order.queue_ahead_discounted == pytest.approx(25.0)
+
+    def test_override_applies_only_to_the_specified_assets(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
+        sim = FillSimulator(queue_safety_factor=0.25,
+                             queue_safety_factor_by_asset={"Ethereum": 0.6, "Solana": 0.25})
+        btc_order = sim.place_order(make_intent(price=0.20, asset="Bitcoin"), book, now=0.0)
+        eth_order = sim.place_order(make_intent(price=0.20, asset="Ethereum"), book, now=0.0)
+        sol_order = sim.place_order(make_intent(price=0.20, asset="Solana"), book, now=0.0)
+
+        assert btc_order.queue_ahead_discounted == pytest.approx(25.0)   # unaffected
+        assert eth_order.queue_ahead_discounted == pytest.approx(15.0)   # 100 * 0.25 * 0.6
+        assert sol_order.queue_ahead_discounted == pytest.approx(6.25)   # 100 * 0.25 * 0.25
+
+    def test_composes_multiplicatively_with_the_regime_override(self):
+        # Solana/CHEAP: regime factor 0.10 * asset multiplier 0.25 = 0.025
+        # -- the real, deployed combination this feature was built for.
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
+        sim = FillSimulator(queue_safety_factor=0.25,
+                             queue_safety_factor_by_regime={"CHEAP": 0.10},
+                             queue_safety_factor_by_asset={"Solana": 0.25})
+        order = sim.place_order(make_intent(price=0.20, asset="Solana", regime="CHEAP"), book, now=0.0)
+        assert order.queue_ahead_discounted == pytest.approx(2.5)  # 100 * 0.10 * 0.25
+
+    def test_override_lowers_effective_queue_ahead_raising_fill_likelihood(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
+        sim_flat = FillSimulator(queue_safety_factor=0.25)
+        sim_override = FillSimulator(queue_safety_factor=0.25,
+                                      queue_safety_factor_by_asset={"Solana": 0.25})
+        order_flat = sim_flat.place_order(make_intent(price=0.20, asset="Solana"), book, now=0.0)
+        order_override = sim_override.place_order(make_intent(price=0.20, asset="Solana"), book, now=0.0)
+        assert order_override.queue_ahead_discounted < order_flat.queue_ahead_discounted
+
+    def test_reprice_uses_the_same_per_asset_factor(self):
+        book = make_book(best_bid=0.90, bid_depth_at_best=100.0, best_ask=0.92, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=0.25,
+                             queue_safety_factor_by_asset={"Solana": 0.25})
+        order = sim.place_order(make_intent(price=0.90, asset="Solana", regime="HIGH"), book, now=0.0)
+        assert order.queue_ahead_discounted == pytest.approx(6.25)  # 100 * 0.25 * 0.25
+
+        book.apply_snapshot(bids=[(0.95, 200.0)], asks=[(0.97, 100.0)])
+        seconds_remaining = {"cond-1": 1000}
+        sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=1.0)
+
+        assert order.price == pytest.approx(0.95)
+        assert order.queue_ahead_discounted == pytest.approx(12.5)  # 200 * 0.25 * 0.25, not 200 * 0.25
+
+    def test_empty_override_dict_is_also_a_full_noop(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
+        sim = FillSimulator(queue_safety_factor=0.25, queue_safety_factor_by_asset={})
+        order = sim.place_order(make_intent(price=0.20, asset="Solana"), book, now=0.0)
+        assert order.queue_ahead_discounted == pytest.approx(25.0)
+
+    def test_untracked_asset_defaults_to_a_1x_multiplier(self):
+        # An asset with no entry in the override dict (e.g. Dogecoin,
+        # Hyperliquid, BNB -- never diagnosed with this puzzle) must be
+        # unaffected, not KeyError or silently zeroed.
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
+        sim = FillSimulator(queue_safety_factor=0.25,
+                             queue_safety_factor_by_asset={"Solana": 0.25})
+        order = sim.place_order(make_intent(price=0.20, asset="Dogecoin"), book, now=0.0)
+        assert order.queue_ahead_discounted == pytest.approx(25.0)
+
+
 class TestTradePrintSideFiltering:
     """Code-review fix (2026-09-10): on_trade_print used to have no
     trade.side check at all -- only trade.price <= o.price. This bot only

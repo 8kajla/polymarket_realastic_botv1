@@ -164,7 +164,8 @@ class FillSimulator:
     """
 
     def __init__(self, queue_safety_factor: float = config.QUEUE_SAFETY_FACTOR,
-                 queue_safety_factor_by_regime: Optional[dict] = None):
+                 queue_safety_factor_by_regime: Optional[dict] = None,
+                 queue_safety_factor_by_asset: Optional[dict] = None):
         self.queue_safety_factor = queue_safety_factor
         # ADDED 2026-09-11: optional per-regime override -- see
         # config.QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME's docstring.
@@ -172,17 +173,25 @@ class FillSimulator:
         # PaperBot() construction before tonight -- keeps behaving exactly
         # as before: one flat factor for every regime).
         self.queue_safety_factor_by_regime = queue_safety_factor_by_regime or {}
+        # ADDED 2026-09-13: optional per-asset multiplier, composed
+        # multiplicatively with the regime factor above -- see
+        # config.QUEUE_SAFETY_FACTOR_OVERRIDE_BY_ASSET's docstring for the
+        # Solana near-zero-fill-rate puzzle this closes. Defaults to None
+        # (every existing call site keeps behaving exactly as before).
+        self.queue_safety_factor_by_asset = queue_safety_factor_by_asset or {}
         self.orders: dict[int, SimulatedOrder] = {}
 
-    def _queue_safety_factor_for(self, regime: str) -> float:
-        return self.queue_safety_factor_by_regime.get(regime, self.queue_safety_factor)
+    def _queue_safety_factor_for(self, regime: str, asset: Optional[str] = None) -> float:
+        regime_factor = self.queue_safety_factor_by_regime.get(regime, self.queue_safety_factor)
+        asset_multiplier = self.queue_safety_factor_by_asset.get(asset, 1.0) if asset is not None else 1.0
+        return regime_factor * asset_multiplier
 
     # -- placement -------------------------------------------------------
 
     def place_order(self, intent: OrderIntent, book: BookState,
                      now: Optional[float] = None) -> SimulatedOrder:
         now = now if now is not None else time.time()
-        factor = self._queue_safety_factor_for(intent.regime)
+        factor = self._queue_safety_factor_for(intent.regime, intent.asset)
         raw_queue = book.depth_shares_at_or_better("bid", intent.price)
         discounted_queue = raw_queue * factor
 
@@ -427,7 +436,7 @@ class FillSimulator:
         new_raw_queue = book.depth_shares_at_or_better("bid", book.best_bid)
         order.price = book.best_bid
         order.queue_ahead_raw = new_raw_queue
-        order.queue_ahead_discounted = new_raw_queue * self._queue_safety_factor_for(order.regime)
+        order.queue_ahead_discounted = new_raw_queue * self._queue_safety_factor_for(order.regime, order.asset)
         order.reprice_count += 1
         order.placed_at = now  # time-to-fill measured from the latest resting price
         order.first_fill_at = None

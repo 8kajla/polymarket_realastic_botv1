@@ -114,8 +114,14 @@ class PaperBot:
         # same pattern as every other multiplier shipped tonight.
         regime_override = (config.QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME
                             if config.ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE else None)
+        # ADDED 2026-09-13: per-asset QUEUE_SAFETY_FACTOR multiplier -- see
+        # its docstring in config.py for the Solana near-zero-fill-rate
+        # puzzle this closes. Same opt-out pattern as the regime override.
+        asset_override = (config.QUEUE_SAFETY_FACTOR_OVERRIDE_BY_ASSET
+                           if config.ENABLE_ASSET_QUEUE_SAFETY_OVERRIDE else None)
         self.fill_sim = FillSimulator(queue_safety_factor=queue_safety_factor,
-                                       queue_safety_factor_by_regime=regime_override)
+                                       queue_safety_factor_by_regime=regime_override,
+                                       queue_safety_factor_by_asset=asset_override)
         self.ledger = Ledger.load()
         # Seed order_id past every id this ledger has ever settled --
         # otherwise a fresh restart's own order_id range (which always

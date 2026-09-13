@@ -239,6 +239,47 @@ ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE = os.environ.get(
     "ENABLE_REGIME_QUEUE_SAFETY_OVERRIDE", "true"
 ).strip().lower() not in ("false", "0", "no")
 
+# ---------------------------------------------------------------------------
+# Per-ASSET queue-safety multiplier, composed multiplicatively with the
+# per-regime override above (effective factor = regime_factor *
+# asset_multiplier). Added 2026-09-13, found via a real, confirmed-live
+# puzzle: Solana's ordinary-order fill rate is ~0.1% (vs Bitcoin's ~25%),
+# uniform across every regime band (ruled out as a composition effect --
+# checked jointly), and survives even CHEAP's already-aggressive 0.10
+# regime override.
+#
+# Root cause traced to FillSimulator.on_trade_print: fills only happen via
+# a real SELL-side trade print consuming queue at our resting price. Added
+# TRADE_PRINT_COUNTS diagnostic logging (bot.py) to settle whether this was
+# a feed bug (near-zero prints arriving) or genuinely thin real liquidity
+# (prints arriving, just few of them) -- confirmed the latter, stable
+# across 2 independent 5-min heartbeats: Bitcoin's SELL-print rate is
+# roughly 10-13% of total prints, Ethereum's roughly 6-8%, Solana's
+# roughly 1-3% -- Solana gets 8-70x fewer real SELL prints than Bitcoin in
+# the same window, the same order of magnitude as the fill-rate gap. Book
+# depth (checked directly via live CLOB) and reprice frequency were both
+# ruled out as insufficient alone (only ~2x and ~1.3x different
+# respectively, nowhere near enough).
+#
+# HONEST CAVEAT, same category as QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME
+# above: no directly-measurable target exists (his own trade log only
+# contains fills, not his real queue-position experience), so these are a
+# REASONED ENGINEERING ESTIMATE derived from the observed relative
+# SELL-print volume ratios, not a value fit to his data. Bitcoin stays at
+# 1.0 (no change -- its own fill rate already looks reasonable). Ethereum
+# and Solana get a multiplier roughly proportional to their print-volume
+# shortfall vs Bitcoin. Treat as a monitored change: re-run the same
+# TRADE_PRINT_COUNTS + fill-rate-by-asset breakdown after this has been
+# live a while, and adjust (or revert) if Solana's fill rate hasn't moved
+# meaningfully off its near-zero baseline.
+QUEUE_SAFETY_FACTOR_OVERRIDE_BY_ASSET = {
+    "Ethereum": 0.6,
+    "Solana": 0.25,
+}
+ENABLE_ASSET_QUEUE_SAFETY_OVERRIDE = os.environ.get(
+    "ENABLE_ASSET_QUEUE_SAFETY_OVERRIDE", "true"
+).strip().lower() not in ("false", "0", "no")
+
 # If the best bid drifts more than this many ticks away from our resting
 # order's price (while remaining in the same regime band), cancel and
 # re-place at the new price rather than leaving a stale order unmanaged.
