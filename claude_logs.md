@@ -6712,3 +6712,122 @@ miscalibration (needs a SettlementRecord placement-timestamp field
 added, an actual code-architecture change rather than a pure
 recalibration) — or a fresh line-by-line sweep of behavior_config.py
 for any remaining table this session hasn't touched at all yet.
+
+## 2026-09-13: /loop cycles 14-15 — fresh full sweep of behavior_config.py finds 2 more gaps (ADVERSE_MOVE_HEDGE_TRIGGER checked, TTC_SIZE_MULTIPLIER recalibrated)
+
+With the post-cycle-10 candidate list fully closed after cycle 13, did
+a line-by-line sweep of every top-level table constant in
+behavior_config.py, cross-referencing against this session's own
+running log of what's actually been checked, to find anything still
+slipping through.
+
+### Cycle 14 — ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER (checked, not actionable)
+
+Found a real gap: this table was mentioned exactly once all session,
+in the pre-loop full-pass summary's "Deferred, lower priority" list
+alongside `hedge_liquidity_multiplier`, `cross_market_hedge_rate_
+multiplier`, and `conviction_hedge_multiplier` — all three of the
+others were fixed in cycles 5-6, but this one was never revisited.
+
+**Why it's hard**: unlike every other table this session, this one is
+keyed by `attempt_index` (the confound-check language in its own
+docstring: "fixing attempt_index==1 EXACTLY"), which traces back to
+`activity.real_fill_count` in the live bot — a genuinely discrete,
+per-decision index, not something directly present in a raw trade
+record. The original build also TTC-stratified its confound checks.
+Neither is trivial to reconstruct from `trades.jsonl` alone.
+
+**Attempted anyway, with a simplified proxy**: per market, walk
+primary-side (same-side-as-first-entry) fills strictly before the
+first hedge fill (or all of them, if the market never got hedged).
+Label only the LAST such fill "hedged=1" (the event fired here) and
+every earlier one "hedged=0" (survived to the next attempt) — a
+reasonable discrete-time hazard reduction in principle, using
+`adverse_move = first_entry_price - this_fill's_own_price` as the
+per-attempt covariate.
+
+**Result**: a clean U-shape for all 3 assets (e.g. Bitcoin bucket
+multipliers 1.19 -> 0.69 -> 0.82 -> 1.26), NOT the original's clean,
+rigorously confound-checked monotonic rise. Suspected but unconfirmed
+cause: the "last fill before hedge" selection can attribute a hedge to
+a near-zero-adverse-move fill whenever the REAL trigger was something
+else entirely (e.g. the base hazard curve simply rising with
+real_fill_count, independent of price movement) — exactly the kind of
+confound the original's attempt_index/TTC stratification exists to
+rule out, and this simplified proxy doesn't.
+
+**Verdict**: rather than ship a possibly-artifactual U-shape in place
+of a well-validated monotonic curve, LEFT UNCHANGED. Documented the
+attempt, the exact proxy methodology, the suspected flaw, and what a
+proper recheck would need, directly in the table's own docstring. This
+is a fourth distinct verdict category this session has now produced
+(alongside recalibrated/vanished, underpowered, and weakened-but-
+unstable): "checked with an insufficiently rigorous method, result not
+actionable, needs a heavier lift than one cycle allows." No value
+changes, so no test changes; 531/531 still passing at this point.
+
+### Cycle 15 — TTC_SIZE_MULTIPLIER CHEAP/MID (recalibrated)
+
+Found a second gap by re-examining the ORIGINAL audit's own item #11
+verdict ("CONFIRMED, holds up well") more skeptically: it was based on
+"5d and 14d" windows queried close to the halt's own resumption date —
+both windows substantially straddle the halt (today is ~7 days post-
+halt-end, so even a 5-day window reaches back into pre-halt territory
+depending on exactly when it was run, and 14 days certainly does).
+This is the exact same blind-window issue later diagnosed and fixed
+for SCOUT_PROBABILITY in cycle 7 — item #11 was simply never revisited
+with that lesson applied.
+
+**Methodology**: reconstructed TTC-at-entry from each fill's own
+timestamp and its market's window-start (parsed from the slug's
+trailing unix-timestamp segment, ttc = window_start + 300 - fill_ts),
+bucketed into the same 4 midpoints (270/210/150/90) the live table
+uses, computed median usdc per bucket per (asset, regime), weighted-
+mean-normalized. Post-halt-only (ts>=HALT_END).
+
+**Result for CHEAP/MID (6 cells, all with healthy post-halt n=490-
+4433/bucket)**: the SAME SHAPE is preserved in every single cell —
+CHEAP still declines toward close, MID still rises toward close,
+exactly the original finding. Bitcoin's magnitudes barely moved at all;
+Ethereum and Solana's got noticeably MORE EXTREME (a wider spread) than
+before:
+  Bitcoin/CHEAP:  {270:1.15,210:1.06,150:1.00,90:0.86} -> {270:1.14,210:1.05,150:0.97,90:0.91}
+  Bitcoin/MID:    {270:0.92,210:0.99,150:1.05,90:1.09} -> {270:0.92,210:0.98,150:1.06,90:1.06}
+  Ethereum/CHEAP: {270:1.12,210:1.08,150:0.96,90:0.85} -> {270:1.47,210:1.22,150:0.96,90:0.65}
+  Ethereum/MID:   {270:0.77,210:0.94,150:1.05,90:1.26} -> {270:0.82,210:0.95,150:1.02,90:1.14}
+  Solana/CHEAP:   {270:1.13,210:0.99,150:1.04,90:0.84} -> {270:1.26,210:1.03,150:1.14,90:0.53}
+  Solana/MID:     {270:0.78,210:0.91,150:1.17,90:1.54} -> {270:0.57,210:0.75,150:1.44,90:1.73}
+
+**CORE/HIGH show the same shape/direction on a first look but were NOT
+recalibrated**: the 270-midpoint bucket (longest time remaining, the
+edge of the window with naturally the least fill volume) is too thin
+post-halt to trust a full refresh (Bitcoin n=101, Ethereum n=25, Solana
+n=31) — especially costly in HIGH, where the whole documented finding
+IS specifically that 270-bucket's unusually low value. Left at the
+existing (pre-halt-inclusive) numbers rather than reshape a thinly-
+supported point on noisy data; flagged for revisit once more post-halt
+HIGH/CORE volume accumulates.
+
+**Tests**: every existing TTC_SIZE_MULTIPLIER test either derives from
+the table dynamically (`test_exact_at_each_calibrated_midpoint`
+iterates `bc.TTC_SIZE_MULTIPLIER.items()`) or checks only the SHAPE
+(`test_high_regime_grows_toward_close_for_every_live_asset`:
+late>early; `test_cheap_regime_shrinks_toward_close_for_every_live_
+asset`: late<early) — both shapes are preserved by the new values, so
+no test changes were needed at all, a clean payoff of this session's
+repeated "derive from the table, don't hardcode" fixes.
+
+531/531 tests passing, deployed to all 3 bots
+(paperbot/paperbot-100/coinbase-bot), verified healthy via journalctl
+(no errors/tracebacks on any of the 3 services).
+
+**Running tally: 15 tables recalibrated or retired, plus 2 confirmed-
+not-yet-actionable and 1 checked-with-insufficient-rigor, across 15
+/loop cycles.** Remaining candidates surfaced by this sweep: TTC_SIZE_
+MULTIPLIER's own CORE/HIGH cells (needs more post-halt volume); items
+#18 (HEDGE_CONTINUATION_SIZE_RATIO, a 10-day window that also
+straddles the halt), #25 and #27 (30-day windows, but both are
+structural/foundational confirmations rather than sizing tables, lower
+priority to redo); and the still-open TTC-composition architecture gap
+(needs an actual `SettlementRecord` placement-timestamp field added —
+a real code change, not a pure recalibration).

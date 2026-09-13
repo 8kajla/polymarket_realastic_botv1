@@ -1445,3 +1445,32 @@ tables recalibrated/retired + 2 checked-and-confirmed-not-actionable
 across 13 /loop cycles. See [[full-behavioral-audit-tracker]] for what
 comes next (TTC-composition gap needs a SettlementRecord timestamp
 addition; otherwise a fresh full sweep of behavior_config.py).
+
+## 2026-09-13 (loop cycles 14-15): fresh sweep found 2 more gaps -- ADVERSE_MOVE_HEDGE_TRIGGER checked (not actionable), TTC_SIZE_MULTIPLIER CHEAP/MID recalibrated
+
+After the post-cycle-10 list closed, did a line-by-line sweep of every
+top-level table in behavior_config.py against what's actually been
+checked this session. Found 2 more real gaps:
+
+- ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER: never independently rechecked
+  (only "deferred, lower priority" pre-loop, unlike its 3 siblings all
+  fixed in cycles 3/5). Tried a simplified proxy since the original's
+  attempt_index/TTC-stratified framework can't be rebuilt in one cycle
+  -- got a U-shape, not the original's clean monotonic rise. Suspected
+  proxy artifact (last-fill selection bias), not a confirmed finding --
+  left unchanged, documented honestly rather than ship an unreliable
+  result.
+- TTC_SIZE_MULTIPLIER: item #11's original check used a 5d/14d window
+  that substantially straddles the halt (same blind-window issue as
+  SCOUT_PROBABILITY). CHEAP/MID cells (6, healthy n) recalibrated --
+  same shape held, Ethereum/Solana got more extreme. CORE/HIGH shape
+  holds too but not recalibrated (270-bucket too thin, n=25-136).
+
+531/531 tests passing, deployed to all 3 bots, verified healthy.
+
+**Running tally: 15 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor across 15 /loop cycles.**
+See [[full-behavioral-audit-tracker]] for what's left: TTC_SIZE_
+MULTIPLIER's CORE/HIGH cells, items #18/#25/#27's own halt-straddling
+windows, and the TTC-composition architecture gap (needs a
+SettlementRecord timestamp field -- an actual code change).
