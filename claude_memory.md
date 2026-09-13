@@ -1174,3 +1174,26 @@ unresolved: 3 hedge-trigger sub-multipliers (partially attempted/
 blocked as above), GRADIENT_BIAS_PCT and FLOOR_LOT_PROBABILITY
 (deliberately deprioritized, low impact), RESUMPTION_SIZE_MULTIPLIER
 (genuinely unverifiable, no new qualifying gap).
+
+**FIXED (2026-09-13, /loop cycle 5)**: recalibrated `CROSS_MARKET_
+HEDGE_RATE_MULTIPLIER` (properly this time -- isolated prev_hedge_rate
+==0.0 as its own dedicated bucket instead of naively quartiling the
+whole distribution, which fixed the degenerate-zero-mass problem cycle
+4 hit) and `CONVICTION_HEDGE_MULTIPLIER` (checked the underlying
+point-biserial correlation per cell rather than trusting quartile shape
+alone -- found the effect has genuinely weakened to near-zero almost
+everywhere post-halt: 8 of 9 (asset, regime) cells now show |r|<0.2,
+most under 0.1. REMOVED all of Bitcoin/Ethereum and Solana's CORE/HIGH;
+kept only Solana/MID, the one cell with both a meaningful correlation
+(r=-0.202) and a well-powered sample (n=488)). This is the SEVENTH
+distinct multiplier this session to show the same "genuinely weakened
+or vanished post-halt" pattern, not just a level shift -- reinforces
+that whatever changed at the halt affected a very broad swath of his
+calibrated behavior, hedging decisions included, not just sizing.
+
+535/535 tests passing, deployed to all 3 bots.
+
+Remaining from the 28-item checklist: GRADIENT_BIAS_PCT, FLOOR_LOT_
+PROBABILITY (deliberately low priority), RESUMPTION_SIZE_MULTIPLIER
+(genuinely unverifiable), HEDGE_LIQUIDITY_MULTIPLIER (blocked -- needs
+Gamma liquidityNum data not present in trades.jsonl).

@@ -1616,10 +1616,22 @@ def adverse_move_hedge_trigger_multiplier(asset: str, adverse_move: Optional[flo
 # market. Ethereum has only 3 points (its first two empirical quartiles
 # both landed at prev_rate=0.0 -- merged into one point using each
 # quartile's own n as weight) instead of 4.
+# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 5 -- see full-
+# behavioral-audit-tracker.md's hedge-trigger sub-multipliers note): the
+# first attempt at this (/loop cycle 4) hit a degenerate-zero-mass
+# problem -- so many markets have a previous hedge rate of exactly 0.0
+# that naively quartiling the WHOLE distribution produced a nonsensical
+# bucket. Fixed by isolating prev_hedge_rate==0.0 as its own dedicated
+# point (matching this table's own pre-existing convention -- every
+# asset's lowest key was already exactly 0.0) and only tertile-splitting
+# the REMAINING (>0) markets into the other 3 points. Ethereum now has 4
+# points instead of its previous 3 -- the post-halt sample supports it
+# cleanly. Same real, increasing shape as before (more likely to hedge
+# after a market that itself hedged a lot).
 CROSS_MARKET_HEDGE_RATE_MULTIPLIER = {
-    "Bitcoin": {0.0: 0.7761, 0.0843: 1.0300, 0.3638: 1.1056, 0.6138: 1.0883},
-    "Ethereum": {0.0: 0.8023, 0.2353: 1.1693, 0.5663: 1.2258},
-    "Solana": {0.0: 0.7585, 0.0882: 1.0570, 0.3419: 1.0927, 0.5972: 1.0917},
+    "Bitcoin": {0.0: 0.7746, 0.1667: 1.0911, 0.3333: 1.0106, 0.5: 1.1237},
+    "Ethereum": {0.0: 0.8037, 0.2: 1.0122, 0.3333: 1.1400, 0.5: 1.0441},
+    "Solana": {0.0: 0.7523, 0.2222: 1.0001, 0.375: 1.0683, 0.5: 1.1792},
 }
 _CROSS_MARKET_HEDGE_RATE_MULTIPLIER_CAP = 3.0  # same cap tier as HEDGE_LIQUIDITY_MULTIPLIER
 
@@ -1677,21 +1689,25 @@ def cross_market_hedge_rate_multiplier(asset: str, prev_hedge_rate: Optional[flo
 # hedge_attempt_hazard's output for THIS SAME market (not cross-market --
 # uses activity.first_entry_price/notional already recorded for the
 # CURRENT market, available the moment a hedge decision is evaluated).
+# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 5 -- see full-
+# behavioral-audit-tracker.md's hedge-trigger sub-multipliers note):
+# re-checked the underlying conviction-vs-hedged point-biserial
+# correlation post-halt, per (asset, regime) cell rather than trusting
+# the quartile shape alone (which looked noisy/non-monotonic almost
+# everywhere -- correlation is the more reliable diagnostic at these
+# sample sizes). Result: the effect has genuinely weakened to
+# near-zero almost everywhere post-halt -- Bitcoin MID r=-0.015 (n=720),
+# CORE r=-0.028, HIGH r=+0.134 (n=71, thin); Ethereum MID r=-0.053, CORE
+# r=-0.075, HIGH r=-0.196 (n=79, thin); Solana CORE r=-0.037, HIGH
+# r=-0.116 (n=82, thin). ALL REMOVED except one: Solana MID is the one
+# cell with both a meaningful correlation (r=-0.202) and a well-powered
+# sample (n=488) -- kept, refreshed with its post-halt quartile shape.
+# Consistent with the same broad post-halt flattening found throughout
+# this session's recalibration pass -- this conviction effect looks like
+# another casualty of it, not a measurement fluke.
 CONVICTION_HEDGE_MULTIPLIER = {
-    "Bitcoin": {
-        "MID": {-1.2847: 1.1663, -0.2979: 1.0246, 0.3362: 0.9836, 1.1762: 0.8256},
-        "CORE": {-1.2467: 1.2145, -0.2764: 1.0425, 0.2869: 0.9565, 1.0314: 0.7868},
-        "HIGH": {-1.4306: 1.1379, -0.2219: 1.0862, 0.2480: 0.9310, 0.9495: 0.8448},
-    },
-    "Ethereum": {
-        "MID": {-1.7387: 1.0774, -0.3069: 1.0851, 0.3249: 0.9659, 1.2327: 0.8715},
-        "CORE": {-1.7015: 1.1179, -0.3338: 1.0792, 0.2698: 0.9817, 1.0705: 0.8216},
-        "HIGH": {-2.0675: 1.1027, -0.4785: 0.9398, 0.3429: 1.2335, 1.3050: 0.7245},
-    },
     "Solana": {
-        "MID": {-2.9161: 1.0375, -0.2787: 1.0097, 0.2772: 0.9953, 1.1344: 0.9575},
-        "CORE": {-2.2315: 1.1244, -0.2211: 1.0358, 0.2642: 0.9608, 1.0403: 0.8790},
-        "HIGH": {-1.7171: 1.2411, -0.2722: 1.1757, 0.3308: 1.0669, 1.1614: 0.5193},
+        "MID": {-5.0398: 1.2384, -0.6648: 0.9659, 0.4301: 0.8916, 0.7586: 0.9040},
     },
 }
 _CONVICTION_HEDGE_MULTIPLIER_CAP = 3.0
