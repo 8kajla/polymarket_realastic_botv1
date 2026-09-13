@@ -1074,8 +1074,11 @@ class TestDecideHedge:
         assert bc.hedge_continuation_probability(10) == bc._DEFAULT_HEDGE_CONTINUATION_PROBABILITY
 
     def test_hedge_continuation_size_ratio_decays_and_defaults_for_deep_indices(self):
-        assert bc.hedge_continuation_size_ratio(2) == pytest.approx(0.186)
-        assert bc.hedge_continuation_size_ratio(3) == pytest.approx(0.133)
+        # RECALIBRATED 2026-09-13 (post-halt, /loop cycle 16) -- derive
+        # expected values from the table itself rather than hardcoding,
+        # since the exact numbers have since changed.
+        assert bc.hedge_continuation_size_ratio(2) == pytest.approx(bc.HEDGE_CONTINUATION_SIZE_RATIO[2])
+        assert bc.hedge_continuation_size_ratio(3) == pytest.approx(bc.HEDGE_CONTINUATION_SIZE_RATIO[3])
         assert bc.hedge_continuation_size_ratio(10) == bc._DEFAULT_HEDGE_CONTINUATION_SIZE_RATIO
         # decaying, not flat: each successive calibrated index is smaller
         assert bc.hedge_continuation_size_ratio(2) > bc.hedge_continuation_size_ratio(3) \

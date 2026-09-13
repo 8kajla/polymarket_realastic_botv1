@@ -1928,11 +1928,25 @@ HEDGE_CONTINUATION_PROBABILITY = {
 }
 _DEFAULT_HEDGE_CONTINUATION_PROBABILITY = 0.505  # hedge_count >= 4
 
+# RECALIBRATED 2026-09-13 (post-halt audit, /loop cycle 16). Item #18's
+# original "CONFIRMED, holds up" verdict used a 10-day pooled window
+# that substantially straddles the halt (same blind-window issue found
+# and fixed for SCOUT_PROBABILITY/TTC_SIZE_MULTIPLIER in cycles 7/15).
+# Redone strictly post-halt-only (ts>=HALT_END), same decision-collapsed
+# methodology, same "ratio to dominant side's running cost at that
+# moment" definition, healthy n=496-914/index: a consistent ~19-23%
+# decline across all 3 indices, same direction and similar relative
+# magnitude at every index -- not a shape change, a level shift, and
+# it matches this session's broader finding that hedge SIZING overall
+# has softened post-halt (see HEDGE_SIZE_RATIO, ADVERSE_MOVE_SIZE_
+# MULTIPLIER, and the standalone hedge-rate-secular-decline memory).
+#   hedge#2: 0.186->0.1517 (n=733)   hedge#3: 0.133->0.1026 (n=496)
+#   hedge#4+: 0.106->0.0837 (n=914)
 HEDGE_CONTINUATION_SIZE_RATIO = {
-    2: 0.186,
-    3: 0.133,
+    2: 0.1517,
+    3: 0.1026,
 }
-_DEFAULT_HEDGE_CONTINUATION_SIZE_RATIO = 0.106  # hedge index >= 4
+_DEFAULT_HEDGE_CONTINUATION_SIZE_RATIO = 0.0837  # hedge index >= 4
 
 
 def hedge_continuation_probability(hedge_count: int) -> float:
