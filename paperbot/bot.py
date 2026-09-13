@@ -543,6 +543,23 @@ class PaperBot:
         -- see _update_drawdown_tracking's docstring."""
         return self._drawdown_pause_until is not None
 
+    def _forced_first_entry_side(self, market: Market, up_book: BookState, down_book: BookState,
+                                  now: float) -> Optional[str]:
+        """Extension point (added 2026-09-13): a subclass can override
+        this to force the market's FIRST entry side, bypassing
+        decide_side, while every other step of build_order_intent (regime
+        classification, the full calibrated sizing/hedge multiplier
+        stack, scout/floor-lot/exchange-minimum handling) still runs
+        exactly as normal. PaperBot's own behavior (this base
+        implementation) is a strict no-op -- paperbot/paperbot-100 are
+        completely unaffected by this hook's existence. See
+        CoinbaseMomentumBot._forced_first_entry_side in coinbase_bot.py
+        for the one real override: live Coinbase-spot-momentum-driven
+        side selection for CHEAP/MID first entries, falling back to None
+        (ordinary decide_side/cross-market persistence) outside that
+        scope."""
+        return None
+
     async def strategy_tick(self, now: float | None = None) -> None:
         now = now if now is not None else time.time()
         self._update_drawdown_tracking(now)
@@ -606,6 +623,21 @@ class PaperBot:
             if equity is not None:
                 max_notional_usd = max(0.0, equity) * config.MAX_ORDER_PCT_OF_EQUITY
 
+        # Extension point for a subclass to override the market's FIRST
+        # entry side, bypassing decide_side entirely, while every other
+        # step of build_order_intent (regime, the full sizing/hedge
+        # multiplier stack, scout/floor-lot handling) proceeds unchanged.
+        # PaperBot's own default is a no-op (None) -- see
+        # _forced_first_entry_side's docstring. Only computed on a first
+        # entry: matches forced_first_entry_side's own scoping in
+        # build_order_intent, and avoids the hook running (network calls,
+        # in CoinbaseMomentumBot's case none -- it reads an already-polled
+        # local feed -- but the discipline generalizes) on every single
+        # tick for markets already past their first entry.
+        forced_first_entry_side = (
+            self._forced_first_entry_side(market, up_book, down_book, now) if is_first_entry else None
+        )
+
         intent = build_order_intent(
             market, up_book, down_book, activity, self.rng,
             recent_price_delta=delta, now=now,
@@ -613,6 +645,7 @@ class PaperBot:
             previous_market_first_side=self.last_first_entry_side_by_asset.get(market.asset),
             previous_market_won=self.last_first_entry_won_by_asset.get(market.asset),
             prev_hedge_rate=self.last_hedge_rate_by_asset.get(market.asset),
+            forced_first_entry_side=forced_first_entry_side,
             size_momentum_residual=self.ewma_size_residual_by_asset.get(market.asset),
             rolling_accuracy=self._rolling_accuracy(market.asset),
             max_notional_usd=max_notional_usd,

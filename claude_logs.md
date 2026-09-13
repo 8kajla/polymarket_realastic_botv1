@@ -5419,3 +5419,43 @@ now done: (1) hedge TTC sizing, (2) hedge-count reinforcement tier 2,
 (3) hedge-propensity-after-big-loss, (4) cross-asset entry trigger
 [tested and rejected — already over-satisfied], (5) full interaction
 audit [1 real gap found and fixed], (6) the standalone coinbase bot.
+
+## 2026-09-13: Coinbase bot upgraded to inherit the FULL trader-replica pipeline
+
+Explicit follow-up instruction: give the Coinbase bot everything else
+paperbot/paperbot-100 have -- hedging, the full calibrated sizing
+multiplier stack, cross-market persistence, resolution feedback,
+drawdown safety -- with momentum-driven side selection as the ONLY
+remaining difference, not a wholly separate simplified strategy.
+
+**Architecture**: added one new extension point to PaperBot itself
+(bot.py): `_forced_first_entry_side(market, up_book, down_book, now)`,
+called from `_evaluate_one_market` only on a genuine first entry, result
+threaded through to a new `forced_first_entry_side` parameter on
+strategy.build_order_intent. Base PaperBot implementation returns None
+(strict no-op -- paperbot/paperbot-100 completely unaffected, confirmed
+by the full local suite passing unchanged). When set, build_order_intent
+uses it directly instead of calling decide_side for that one entry --
+every downstream step (regime from that side's own book, decide_size's
+full multiplier stack, hedge logic for all LATER entries, scout/floor-
+lot/exchange-minimum handling) proceeds completely unmodified.
+
+CoinbaseMomentumBot now overrides ONLY two things: strategy_tick (polls
+the Coinbase feed first) and _forced_first_entry_side (computes the
+momentum-implied side via the new coinbase_strategy.momentum_forced_side,
+returning None -- falling back to ordinary decide_side/cross-market
+persistence -- whenever the implied side's own regime is outside
+CHEAP/MID or the move is inside the deadband). Removed the old one-shot/
+flat-sized/no-hedge coinbase_strategy.build_momentum_order_intent
+entirely; removed the now-unused MOMENTUM_ORDER_NOTIONAL_USD config
+constant. This bot is now IS paperbot's exact pipeline (hedging,
+ENTRY_SIZING_USD, TTC/within-band/bankroll/resumption/reentry-fatigue/
+hedge-count-reinforcement sizing, CROSS_MARKET_SIDE_PERSISTENCE, the
+resolution-feedback loop, all of it) with one side-selection override.
+
+Tests: rewrote test_coinbase_strategy.py (momentum_forced_side) and
+test_coinbase_bot.py (hook wiring + full-pipeline placement + confirmed
+hedging is reachable + confirmed the override never fires past the
+first entry); added forced_first_entry_side coverage to test_strategy.py
+(6 tests) and test_bot.py (3 tests, including "PaperBot's own hook is a
+strict no-op"). Full suite: 535/535 passing.

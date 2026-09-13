@@ -390,6 +390,57 @@ class TestAfterBigLossTracking:
         assert captured["after_big_loss"] is True
 
 
+class TestForcedFirstEntrySideHook:
+    """PaperBot._forced_first_entry_side, added 2026-09-13 -- the one
+    extension point CoinbaseMomentumBot needs to override the first-entry
+    side while inheriting the rest of _evaluate_one_market/
+    build_order_intent unchanged. PaperBot's own default must be a strict
+    no-op."""
+
+    def test_base_class_hook_always_returns_none(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        up = wire_market(bot, market)
+        down = bot.book_states[market.token_id_down]
+        assert bot._forced_first_entry_side(market, up, down, now=1000.0) is None
+
+    def test_evaluate_one_market_passes_the_hooks_result_through_to_build_order_intent(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market)
+        monkeypatch.setattr(bot, "_forced_first_entry_side", lambda *a, **kw: "Down")
+
+        captured = {}
+
+        def spy_build_order_intent(*args, **kwargs):
+            captured["forced_first_entry_side"] = kwargs.get("forced_first_entry_side")
+            return None
+
+        monkeypatch.setattr(botmod, "build_order_intent", spy_build_order_intent)
+        bot._evaluate_one_market(market, now=1000.0)
+
+        assert captured["forced_first_entry_side"] == "Down"
+
+    def test_hook_is_not_consulted_past_the_first_entry(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market)
+        activity = bot.activity[market.condition_id]
+        activity.record_entry("Up", notional_usd=5.0, regime="MID", price=0.50)
+        activity.record_real_fill(is_hedge=False)
+
+        called = []
+        monkeypatch.setattr(bot, "_forced_first_entry_side",
+                             lambda *a, **kw: called.append(True) or "Down")
+        monkeypatch.setattr(stratmod, "decide_hedge",
+                             lambda asset, activity, rng, liquidity=None, is_weekend=None,
+                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: None)
+
+        bot._evaluate_one_market(market, now=1000.0)
+
+        assert called == []
+
+
 class TestHedgeLegEndToEnd:
     """Full-pipeline test: a market's second entry becomes a deliberately-
     sized hedge leg on the opposite side, wired through decide_hedge ->

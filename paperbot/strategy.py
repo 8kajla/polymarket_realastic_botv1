@@ -605,7 +605,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                         rolling_accuracy: Optional[float] = None,
                         max_notional_usd: Optional[float] = None,
                         bankroll_pnl_residual: Optional[float] = None,
-                        after_big_loss: Optional[bool] = None) -> Optional[OrderIntent]:
+                        after_big_loss: Optional[bool] = None,
+                        forced_first_entry_side: Optional[str] = None) -> Optional[OrderIntent]:
     """
     Runs the full per-market pipeline (steps 1-6 of Part 5) and returns an
     OrderIntent, or None if this market isn't tradeable right now. Does NOT
@@ -636,6 +637,28 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     (default None -> no-op for every one of them) so every existing call
     site/test keeps working unchanged. See decide_side/decide_hedge/
     decide_size's own docstrings for what each one feeds.
+
+    `forced_first_entry_side` (added 2026-09-13, Coinbase-momentum bot):
+    when set AND this is the market's first entry (activity.entry_count
+    == 0) AND decide_hedge didn't already fire (it structurally never
+    does on a first entry -- see its own entry_count < 1 guard, so this
+    never actually competes with a hedge), this side is used DIRECTLY
+    instead of calling decide_side -- every downstream step (regime
+    classification from that side's own book, decide_size's full
+    calibrated multiplier stack, scout/floor-lot/exchange-minimum
+    handling) proceeds completely unchanged. This is the ONE integration
+    point between the trader-replica pipeline and coinbase_bot.py's live
+    Coinbase-momentum side selection: paperbot/paperbot-100 never pass
+    this (default None -> no-op, decide_side runs exactly as before);
+    CoinbaseMomentumBot computes it from real spot momentum for CHEAP/MID
+    first entries specifically and leaves it None otherwise (out-of-scope
+    regime, no data yet, or too flat a move), falling back to this same
+    trader-replica decide_side/cross-market-persistence logic in that
+    case -- see coinbase_strategy.momentum_forced_side's docstring.
+    Never applied to subsequent (non-first) entries in the same market --
+    those keep using decide_side's normal held-side persistence, since
+    the validated spot-momentum finding was measured on first entries
+    specifically.
 
     `max_notional_usd` (added 2026-09-11, $100-bankroll safety work): a
     hard per-order cap in dollars, computed by bot.py as a fraction of
@@ -686,6 +709,12 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     is_hedge = hedge_side is not None
     if is_hedge:
         side = hedge_side
+    elif forced_first_entry_side is not None and activity.entry_count == 0:
+        # See forced_first_entry_side's own docstring above -- bypasses
+        # decide_side entirely for this one case, everything else below
+        # (regime, sizing, scout, floor-lot, exchange-minimum) is
+        # identical to the ordinary path.
+        side = forced_first_entry_side
     else:
         # Regime-dependent persistence needs the CURRENTLY-HELD side's
         # live price, not a stale one -- both books are already available

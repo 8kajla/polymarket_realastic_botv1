@@ -1913,6 +1913,116 @@ class TestBuildOrderIntentHedge:
                             after_big_loss=False)
         assert captured["after_big_loss"] is False
 
+    def test_forced_first_entry_side_bypasses_decide_side_on_a_first_entry(self, monkeypatch):
+        """forced_first_entry_side (added 2026-09-13, Coinbase-momentum
+        bot integration point) must be used directly instead of calling
+        decide_side, on a genuine first entry."""
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.80, token_id="down")
+        activity = MarketActivityState()  # no entries yet
+
+        def spy_decide_side(*args, **kwargs):
+            raise AssertionError("decide_side must not be called when forced_first_entry_side is set")
+
+        monkeypatch.setattr(stratmod, "decide_side", spy_decide_side)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0,
+                                     forced_first_entry_side="Down")
+
+        assert intent is not None
+        assert intent.side == "Down"
+        assert intent.price == 0.80
+
+    def test_forced_first_entry_side_is_ignored_past_the_first_entry(self, monkeypatch):
+        """Only ever applies to the market's FIRST entry -- a 2nd,
+        ordinary entry must fall through to decide_side's normal held-
+        side persistence, exactly as if forced_first_entry_side were
+        never passed."""
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.80, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CHEAP", price=0.20)
+        monkeypatch.setattr(stratmod, "decide_hedge",
+                             lambda asset, activity, rng, liquidity=None, is_weekend=None,
+                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: None)
+
+        captured = {}
+
+        def spy_decide_side(asset, activity, rng, held_side_price=None, previous_market_first_side=None,
+                             previous_market_won=None):
+            captured["called"] = True
+            return "Up"
+
+        monkeypatch.setattr(stratmod, "decide_side", spy_decide_side)
+
+        build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0,
+                            forced_first_entry_side="Down")
+
+        assert captured.get("called") is True
+
+    def test_forced_first_entry_side_never_overrides_a_real_hedge_decision(self, monkeypatch):
+        """Defensive/documentation test: even though decide_hedge
+        structurally never fires on a first entry (its own entry_count<1
+        guard), the is_hedge branch must still take precedence in code if
+        that were ever to change."""
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.80, token_id="down")
+        activity = MarketActivityState()
+        # Not a real entry_count==0 scenario (decide_hedge's own guard
+        # means this could never happen for real) -- gives the forced
+        # hedge a real dominant cost to size off, so a non-zero intent
+        # actually confirms which branch won rather than both paths
+        # coincidentally producing a zero-size None.
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE", price=0.80)
+
+        monkeypatch.setattr(stratmod, "decide_hedge",
+                             lambda asset, activity, rng, liquidity=None, is_weekend=None,
+                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0,
+                                     forced_first_entry_side="Up")
+
+        assert intent is not None
+        assert intent.is_hedge is True
+        assert intent.side == "Down"  # the hedge decision, not the forced side
+
+    def test_forced_first_entry_side_defaults_to_a_noop(self):
+        """Every existing call site/test that never passes
+        forced_first_entry_side must be completely unaffected -- default
+        None means decide_side runs exactly as before."""
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.80, token_id="down")
+        activity_a = MarketActivityState()
+        activity_b = MarketActivityState()
+
+        intent_a = build_order_intent(market, up_book, down_book, activity_a, random.Random(7), now=0.0)
+        intent_b = build_order_intent(market, up_book, down_book, activity_b, random.Random(7),
+                                       now=0.0, forced_first_entry_side=None)
+
+        assert intent_a is not None and intent_b is not None
+        assert intent_a.side == intent_b.side
+
+    def test_forced_first_entry_sides_regime_comes_from_its_own_book(self):
+        """Same price-asymmetry discipline as everywhere else in this
+        function -- regime/price must come from the FORCED side's own
+        book, not a fixed reference side."""
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.85, token_id="up")    # CORE
+        down_book = make_liquid_book(price=0.10, token_id="down")  # CHEAP
+        activity = MarketActivityState()
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0,
+                                     forced_first_entry_side="Down")
+
+        assert intent is not None
+        assert intent.side == "Down"
+        assert intent.regime == "CHEAP"
+        assert intent.price == 0.10
+
     def test_computes_dominant_current_price_from_the_dominant_sides_own_book_and_passes_it_to_decide_hedge(self, monkeypatch):
         """build_order_intent must read the DOMINANT side's own book price
         (not the eventual hedge side's) and pass it through to
