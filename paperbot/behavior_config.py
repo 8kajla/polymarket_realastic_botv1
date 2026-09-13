@@ -196,40 +196,55 @@ ENTRY_SIZING_USD = {
     # trusted recalibration; revisit once more post-halt volume
     # accumulates. Re-derive again if a comparably large gap ever recurs.
     #
-    # "first" TIER RE-SPOT-CHECKED 2026-09-13 (/loop cycle 19), following
-    # cycle 18's discovery that this session's HALT_END boundary had been
-    # ~46h too late (see cycle 18's tracker entry) -- combined with more
-    # calendar time simply having passed since this table was last
-    # touched, re-ran the exact same standalone-only (single-sided
-    # market, first decision) median methodology. Updated only the cells
-    # that clear this table's own n>=200 trust bar (n=225-462): Bitcoin
-    # MID 2.356->2.279 (n=260), Ethereum CHEAP 1.300->1.079 (n=462),
-    # Ethereum MID 2.051->1.976 (n=277), Solana CHEAP 1.370->1.350
-    # (n=350), Solana MID 1.891->1.840 (n=225) -- all modest further
-    # declines (1-17%), consistent with continued softening in the same
-    # direction as this table's original post-halt fix, not a reversal.
-    # CHEAP/CORE/HIGH cells NOT already listed above stay UNCHANGED --
-    # their fresh samples (n=57-161) don't clear the trust bar either
-    # (some showing much larger apparent swings, e.g. Bitcoin HIGH -33%
-    # at n=57 -- exactly the kind of thin-sample noise this bar exists
-    # to guard against, not shipped on that basis).
+    # "first" TIER RE-SPOT-CHECKED 2026-09-13 (/loop cycle 19), then
+    # SUPERSEDED THE SAME DAY (/loop cycle 20) once a methodology flaw in
+    # cycle 19's own check was found -- see cycle 20's note below, which
+    # replaced every number cycle 19 touched. Kept here only as a record
+    # of what happened, not as the source of the values below.
+    #
+    # FULL RE-DERIVATION 2026-09-13 (/loop cycle 20): re-reading this
+    # table's own 2026-09-08 methodology note (above) more carefully
+    # after cycle 19 shipped, found cycle 19's "first" tier check had
+    # used the WRONG population -- it required the entire market to be
+    # single-sided (no hedge EVER), which is a strict subset of what
+    # this table was actually built on ("STANDALONE-ONLY (dominant-side
+    # trades only)" -- i.e. every DECISION on the dominant side, at its
+    # own index, regardless of whether the market later got hedged).
+    # That mismatch understated sample sizes badly (Bitcoin CHEAP
+    # n=128 vs the correct n=253) and produced at least one value
+    # (Bitcoin MID 2.279) that overshot where the correctly-defined
+    # population actually sits (2.391). Redone properly for ALL THREE
+    # tiers (first/2nd_3rd/4th_plus), correcting BOTH cycle 18's
+    # boundary bug AND cycle 19's population-definition bug at once:
+    # for each market, decision-collapse, find the dominant side by
+    # total cost, take ONLY that side's own decisions in order (index
+    # 0="first", 1-2="2nd_3rd", 3+="4th_plus"), regime from each
+    # decision's own price. 11 of 12 cells now clear n>=200 (only
+    # Solana CORE/4th_plus remains thin, n=158, kept unchanged) --
+    # dramatically more complete coverage than either cycle 1's
+    # original pass or cycle 19's flawed one. Every cell below reflects
+    # this corrected re-derivation; most sit within a few percent of
+    # what was already deployed (confirming cycle 18's broader "no
+    # qualitative reversal" claim), with Bitcoin HIGH/first the one
+    # cell showing a real, well-powered further decline (21.620->19.000,
+    # n=305, -12.1%).
     "Bitcoin": {
-        "CHEAP": {"first": 1.584, "2nd_3rd": 1.449, "4th_plus": 1.380},
-        "MID":   {"first": 2.279, "2nd_3rd": 2.332, "4th_plus": 2.385},
+        "CHEAP": {"first": 1.596, "2nd_3rd": 1.463, "4th_plus": 1.380},
+        "MID":   {"first": 2.391, "2nd_3rd": 2.385, "4th_plus": 2.444},
         "CORE":  {"first": 5.621, "2nd_3rd": 5.928, "4th_plus": 5.928},
-        "HIGH":  {"first": 21.620, "2nd_3rd": 18.600, "4th_plus": 18.600},
+        "HIGH":  {"first": 19.000, "2nd_3rd": 18.600, "4th_plus": 18.600},
     },
     "Ethereum": {
-        "CHEAP": {"first": 1.079, "2nd_3rd": 1.050, "4th_plus": 0.677},
-        "MID":   {"first": 1.976, "2nd_3rd": 2.072, "4th_plus": 2.010},
-        "CORE":  {"first": 5.396, "2nd_3rd": 5.079, "4th_plus": 4.818},  # first/4th_plus THIN (n=191/183, still thin at n=113 on 2026-09-13 recheck)
-        "HIGH":  {"first": 16.284, "2nd_3rd": 14.469, "4th_plus": 14.469},  # 4th_plus THIN (n=183, still thin at n=84 on 2026-09-13 recheck)
+        "CHEAP": {"first": 1.150, "2nd_3rd": 1.040, "4th_plus": 0.650},
+        "MID":   {"first": 2.016, "2nd_3rd": 1.995, "4th_plus": 2.016},
+        "CORE":  {"first": 5.613, "2nd_3rd": 4.860, "4th_plus": 4.594},
+        "HIGH":  {"first": 16.160, "2nd_3rd": 14.469, "4th_plus": 14.469},
     },
     "Solana": {
-        "CHEAP": {"first": 1.350, "2nd_3rd": 1.050, "4th_plus": 0.583},
-        "MID":   {"first": 1.840, "2nd_3rd": 1.891, "4th_plus": 1.769},
-        "CORE":  {"first": 5.032, "2nd_3rd": 4.608, "4th_plus": 4.818},  # 4th_plus THIN (n=129)
-        "HIGH":  {"first": 14.469, "2nd_3rd": 14.469, "4th_plus": 14.469},  # 4th_plus THIN (n=161)
+        "CHEAP": {"first": 1.346, "2nd_3rd": 0.955, "4th_plus": 0.543},
+        "MID":   {"first": 1.891, "2nd_3rd": 1.891, "4th_plus": 1.770},
+        "CORE":  {"first": 5.175, "2nd_3rd": 5.032, "4th_plus": 4.818},  # 4th_plus THIN (n=158)
+        "HIGH":  {"first": 14.469, "2nd_3rd": 14.250, "4th_plus": 14.472},
     },
     "Dogecoin": {
         "CHEAP": {"first": 0.671, "2nd_3rd": 0.495, "4th_plus": 0.276},
