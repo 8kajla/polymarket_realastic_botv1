@@ -138,7 +138,7 @@ class TestCrossMarketSideTracking:
         monkeypatch.setattr(stratmod, "decide_side", spy_decide_side)
         monkeypatch.setattr(stratmod, "decide_hedge",
                              lambda asset, activity, rng, liquidity=None, is_weekend=None,
-                             dominant_current_price=None, prev_hedge_rate=None: None)
+                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: None)
 
         market2 = make_market_for_asset("Bitcoin", condition_id="cond-2", end_time=3000.0)
         wire_market(bot, market2, bid=0.30, ask=0.31, depth=200.0)
@@ -270,6 +270,126 @@ class TestCrossMarketFeedbackTracking:
         assert bot.ewma_size_residual_by_asset["Bitcoin"] == state_after_first
 
 
+class TestIsTopDecileLoss:
+    """_is_top_decile_loss, added 2026-09-13 -- a pure-Python rolling
+    90th-percentile check over the last LOSS_ROLLING_WINDOW losing
+    markets' magnitudes, feeding after_big_loss_by_asset. Deliberately
+    requires _MIN_LOSS_SAMPLES_FOR_PERCENTILE samples before it will ever
+    return True, since an early, thin window has no meaningful notion of
+    "top decile" yet."""
+
+    def test_returns_false_below_the_minimum_sample_count(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        for _ in range(botmod.PaperBot._MIN_LOSS_SAMPLES_FOR_PERCENTILE - 1):
+            assert bot._is_top_decile_loss("Bitcoin", 1000.0) is False
+
+    def test_returns_true_for_a_genuinely_top_decile_loss_once_enough_samples_exist(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        for magnitude in range(1, 31):  # varied losses 1..30, not degenerate/uniform
+            bot._is_top_decile_loss("Bitcoin", float(magnitude))
+        assert bot._is_top_decile_loss("Bitcoin", 1000.0) is True
+
+    def test_returns_false_for_an_ordinary_loss_once_enough_samples_exist(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        for magnitude in range(1, 31):
+            bot._is_top_decile_loss("Bitcoin", float(magnitude))
+        assert bot._is_top_decile_loss("Bitcoin", 1.0) is False
+
+    def test_tracks_each_asset_independently(self):
+        bot = PaperBot(assets=["Bitcoin", "Ethereum"], seed=1)
+        for _ in range(30):
+            bot._is_top_decile_loss("Bitcoin", 1000.0)  # Bitcoin's window is all huge losses
+        # A loss that's enormous for a fresh Ethereum window still needs
+        # its OWN 20 samples before it can ever return True.
+        assert bot._is_top_decile_loss("Ethereum", 1000.0) is False
+
+
+class TestAfterBigLossTracking:
+    """resolution_tick's after_big_loss_by_asset wiring, added
+    2026-09-13 -- see HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER's docstring
+    in behavior_config.py. Feeds decide_hedge via build_order_intent's
+    after_big_loss kwarg on the NEXT market for the same asset."""
+
+    def test_defaults_to_false_before_enough_loss_samples_exist(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        bot._retired_activity_snapshot[cid] = {
+            "asset": "Bitcoin", "first_entry_side": "Up", "dominant_side": "Up",
+        }
+        order = make_filled_order(cid, order_id=1, price=0.9, size=100.0)
+        bot.fill_sim.orders[order.order_id] = order  # Up buyer, loses hugely below
+
+        def fake_fetch(slug, session=None, timeout=10.0):
+            return {"closed": True, "outcomes": '["Up", "Down"]', "outcomePrices": '["0", "1"]'}
+
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", fake_fetch)
+        asyncio.run(bot.resolution_tick(now=1000.0))
+
+        # A huge loss, but the FIRST one ever seen for this asset -- not
+        # enough samples yet for "top decile" to mean anything.
+        assert bot.after_big_loss_by_asset["Bitcoin"] is False
+
+    def test_flips_true_on_a_top_decile_loss_once_enough_samples_exist(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        for _ in range(30):
+            bot._is_top_decile_loss("Bitcoin", 1.0)  # prime the window with small losses
+
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        bot._retired_activity_snapshot[cid] = {
+            "asset": "Bitcoin", "first_entry_side": "Up", "dominant_side": "Up",
+        }
+        order = make_filled_order(cid, order_id=1, price=0.9, size=100.0)
+        bot.fill_sim.orders[order.order_id] = order  # Up buyer, loses -90 -- huge vs. the primed window
+
+        def fake_fetch(slug, session=None, timeout=10.0):
+            return {"closed": True, "outcomes": '["Up", "Down"]', "outcomePrices": '["0", "1"]'}
+
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", fake_fetch)
+        asyncio.run(bot.resolution_tick(now=1000.0))
+
+        assert bot.after_big_loss_by_asset["Bitcoin"] is True
+
+    def test_resets_to_false_after_a_win(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.after_big_loss_by_asset["Bitcoin"] = True  # simulate the prior market having flipped it on
+
+        cid, market = make_pending_market(0)
+        bot.pending_resolution[cid] = market
+        bot._retired_activity_snapshot[cid] = {
+            "asset": "Bitcoin", "first_entry_side": "Up", "dominant_side": "Up",
+        }
+        order = make_filled_order(cid, order_id=1, price=0.4, side="Up", size=5.0)
+        bot.fill_sim.orders[order.order_id] = order  # Up buyer, Up wins -- a real win, not a loss
+
+        def fake_fetch(slug, session=None, timeout=10.0):
+            return {"closed": True, "outcomes": '["Up", "Down"]', "outcomePrices": '["1", "0"]'}
+
+        monkeypatch.setattr(botmod, "fetch_market_for_resolution", fake_fetch)
+        asyncio.run(bot.resolution_tick(now=1000.0))
+
+        assert bot.after_big_loss_by_asset["Bitcoin"] is False, \
+            "after_big_loss reflects only the immediately preceding market, not a longer-lived state"
+
+    def test_evaluate_one_market_passes_after_big_loss_through_to_build_order_intent(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.after_big_loss_by_asset["Bitcoin"] = True
+        market = make_bitcoin_market()
+        wire_market(bot, market)
+
+        captured = {}
+
+        def spy_build_order_intent(*args, **kwargs):
+            captured["after_big_loss"] = kwargs.get("after_big_loss")
+            return None
+
+        monkeypatch.setattr(botmod, "build_order_intent", spy_build_order_intent)
+        bot._evaluate_one_market(market, now=1000.0)
+
+        assert captured["after_big_loss"] is True
+
+
 class TestHedgeLegEndToEnd:
     """Full-pipeline test: a market's second entry becomes a deliberately-
     sized hedge leg on the opposite side, wired through decide_hedge ->
@@ -300,7 +420,7 @@ class TestHedgeLegEndToEnd:
         monkeypatch.setattr(
             stratmod, "decide_hedge",
             lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None,
-            prev_hedge_rate=None: "Down" if activity.dominant_side() == "Up" else "Up")
+            prev_hedge_rate=None, after_big_loss=None: "Down" if activity.dominant_side() == "Up" else "Up")
 
         asyncio.run(bot.strategy_tick(now=1001.0))
 

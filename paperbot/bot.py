@@ -72,6 +72,16 @@ SIZE_MOMENTUM_EWMA_ALPHA = 0.03
 # ACCURACY_SCOUT_MULTIPLIER's own calibration window (behavior_config.py).
 ACCURACY_ROLLING_WINDOW = 10
 
+# ADDED 2026-09-13: how many of the most recent LOSING markets' magnitudes
+# feed recent_losses_by_asset (see its docstring in PaperBot.__init__),
+# used to compute a rolling "was this a top-decile loss" threshold live.
+# The real finding (HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER) was measured
+# against a global p90 over thousands of real losses -- a live bot can't
+# wait that long, so this uses a more generous window than
+# ACCURACY_ROLLING_WINDOW (which only needs a simple win/loss fraction)
+# to keep the rolling 90th-percentile estimate reasonably stable.
+LOSS_ROLLING_WINDOW = 50
+
 
 def _make_session() -> requests.Session:
     session = requests.Session()
@@ -174,6 +184,24 @@ class PaperBot:
         # state. Populated inside resolution_tick via
         # _retired_activity_snapshot below.
         self.rolling_accuracy_by_asset: dict[str, deque] = {}
+        # recent_losses_by_asset: a per-asset deque of the last
+        # LOSS_ROLLING_WINDOW LOSING markets' loss magnitudes (this
+        # market's own total realized pnl, when negative) -- feeds
+        # after_big_loss_by_asset below. A live analogue of the offline
+        # research's global p90 threshold: can't wait for thousands of
+        # real losses, so this estimates a rolling 90th percentile from
+        # whatever loss history this bot instance has accumulated so far.
+        # Populated inside resolution_tick, same place/pattern as
+        # rolling_accuracy_by_asset above.
+        self.recent_losses_by_asset: dict[str, deque] = {}
+        # after_big_loss_by_asset: whether the MOST RECENT resolved
+        # market for this asset was itself a top-decile loss (by this
+        # bot's own recent_losses_by_asset history) -- feeds decide_hedge's
+        # HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER. Defaults to False (not
+        # just missing) until recent_losses_by_asset has enough samples to
+        # estimate a percentile from, same "no false trigger on thin data"
+        # caution as everywhere else rolling state gates a live decision.
+        self.after_big_loss_by_asset: dict[str, bool] = {}
         # _retired_activity_snapshot: bridges _retire_market (where
         # MarketActivityState is popped, since strategy_tick will never
         # evaluate that market again) to resolution_tick (where the real
@@ -421,6 +449,33 @@ class PaperBot:
             return None
         return sum(1 for correct in window if correct) / len(window)
 
+    _MIN_LOSS_SAMPLES_FOR_PERCENTILE = 20
+
+    def _is_top_decile_loss(self, asset: str, loss_amount: float) -> bool:
+        """True if `loss_amount` (already known positive -- the caller
+        only calls this for an actual loss) is at or above the rolling
+        90th percentile of recent_losses_by_asset's window for this
+        asset, AFTER appending it. Requires at least
+        _MIN_LOSS_SAMPLES_FOR_PERCENTILE samples before ever returning
+        True -- same "don't trust a thin estimate" caution as every other
+        rolling-window signal in this file (e.g. TTC_SIZE_MULTIPLIER's
+        own thin-bucket clamping), so a bot instance can't flag its very
+        first few losses as "top-decile" against no real history. Pure
+        Python (no numpy on the server) -- linear interpolation between
+        the two nearest ranks, the same percentile convention used by the
+        offline research this was calibrated from."""
+        window = self.recent_losses_by_asset.setdefault(asset, deque(maxlen=LOSS_ROLLING_WINDOW))
+        window.append(loss_amount)
+        if len(window) < self._MIN_LOSS_SAMPLES_FOR_PERCENTILE:
+            return False
+        sorted_losses = sorted(window)
+        n = len(sorted_losses)
+        rank = 0.90 * (n - 1)
+        lo, hi = int(rank), min(int(rank) + 1, n - 1)
+        frac = rank - lo
+        p90 = sorted_losses[lo] + frac * (sorted_losses[hi] - sorted_losses[lo])
+        return loss_amount >= p90
+
     def _record_global_trade(self, now: float) -> None:
         """Called AFTER a trade actually places this tick (never before --
         a trade's own sizing must be based on state as it stood BEFORE
@@ -561,7 +616,8 @@ class PaperBot:
             size_momentum_residual=self.ewma_size_residual_by_asset.get(market.asset),
             rolling_accuracy=self._rolling_accuracy(market.asset),
             max_notional_usd=max_notional_usd,
-            bankroll_pnl_residual=self.ledger.realized_pnl_by_asset().get(market.asset))
+            bankroll_pnl_residual=self.ledger.realized_pnl_by_asset().get(market.asset),
+            after_big_loss=self.after_big_loss_by_asset.get(market.asset))
         if intent is None:
             return
 
@@ -1048,6 +1104,19 @@ class PaperBot:
                     window = self.rolling_accuracy_by_asset.setdefault(
                         asset, deque(maxlen=ACCURACY_ROLLING_WINDOW))
                     window.append(dominant_side == winning_side)
+                # ADDED 2026-09-13: feeds decide_hedge's
+                # HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER on the NEXT
+                # market for this asset. market_pnl is THIS market's own
+                # total realized pnl (directional, no rebate -- matching
+                # what the offline research measured), summed across every
+                # settled order in it. Reset to False on anything that
+                # wasn't itself a top-decile loss (including a win) --
+                # this reflects only the IMMEDIATELY PRECEDING market's
+                # outcome, not a longer-lived state.
+                market_pnl = sum(r.pnl for r in settled)
+                self.after_big_loss_by_asset[asset] = (
+                    market_pnl < 0 and self._is_top_decile_loss(asset, -market_pnl)
+                )
             del self.pending_resolution[cid]
             self._forget_resolution_tracking(cid)
             self.fill_sim.remove_orders_for_condition(cid)

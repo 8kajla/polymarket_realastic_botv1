@@ -238,7 +238,8 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
                   liquidity: Optional[float] = None,
                   is_weekend: Optional[bool] = None,
                   dominant_current_price: Optional[float] = None,
-                  prev_hedge_rate: Optional[float] = None) -> Optional[str]:
+                  prev_hedge_rate: Optional[float] = None,
+                  after_big_loss: Optional[bool] = None) -> Optional[str]:
     """
     Returns the hedge side ("Up"/"Down") if THIS entry should be a
     deliberate insurance leg on the opposite side from the first entry,
@@ -330,6 +331,16 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
     carries everything needed (first_entry_notional, first_entry_regime)
     -- unlike prev_hedge_rate above, which is genuinely cross-market
     state this function has no other way to see.
+
+    RECENT-BIG-LOSS-conditioned (2026-09-13): `after_big_loss` (whether
+    the PREVIOUS resolved market for this asset was a top-decile loss,
+    by this bot's own rolling loss history) scales the FIRST-hedge
+    probability only, via bc.hedge_trigger_after_big_loss_multiplier --
+    real loss-aversion reaction confirmed via Mantel-Haenszel stratified
+    odds ratio (Ethereum/Solana only, Bitcoin null; confirmed NOT
+    symmetric for a big win). Optional (default None -> no-op) for the
+    same reason as every other optional param here; bot.py maintains the
+    rolling per-asset loss history and passes in the flag.
     """
     if activity.entry_count < 1 or activity.first_entry_regime is None:
         return None
@@ -375,6 +386,9 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
                 conviction_mult = bc.conviction_hedge_multiplier(
                     asset, activity.first_entry_regime, conviction_log_ratio)
                 p = max(0.0, min(1.0, p * conviction_mult))
+        if config.ENABLE_HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER:
+            loss_mult = bc.hedge_trigger_after_big_loss_multiplier(asset, after_big_loss)
+            p = max(0.0, min(1.0, p * loss_mult))
     else:
         p = bc.hedge_continuation_probability(activity.real_hedge_fill_count)
     if p > 0 and rng.random() < p:
@@ -590,7 +604,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                         size_momentum_residual: Optional[float] = None,
                         rolling_accuracy: Optional[float] = None,
                         max_notional_usd: Optional[float] = None,
-                        bankroll_pnl_residual: Optional[float] = None) -> Optional[OrderIntent]:
+                        bankroll_pnl_residual: Optional[float] = None,
+                        after_big_loss: Optional[bool] = None) -> Optional[OrderIntent]:
     """
     Runs the full per-market pipeline (steps 1-6 of Part 5) and returns an
     OrderIntent, or None if this market isn't tradeable right now. Does NOT
@@ -614,13 +629,13 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     should have been a normal small CHEAP-band size.
 
     `previous_market_won`, `prev_hedge_rate`, `size_momentum_residual`,
-    `rolling_accuracy` (all added 2026-09-11), and `bankroll_pnl_residual`
-    (added 2026-09-12) are per-asset
-    cross-market state that only bot.py can maintain (this module has no
-    memory across markets of its own) -- all Optional (default None ->
-    no-op for every one of them) so every existing call site/test keeps
-    working unchanged. See decide_side/decide_hedge/decide_size's own
-    docstrings for what each one feeds.
+    `rolling_accuracy` (all added 2026-09-11), `bankroll_pnl_residual`
+    (added 2026-09-12), and `after_big_loss` (added 2026-09-13) are
+    per-asset cross-market state that only bot.py can maintain (this
+    module has no memory across markets of its own) -- all Optional
+    (default None -> no-op for every one of them) so every existing call
+    site/test keeps working unchanged. See decide_side/decide_hedge/
+    decide_size's own docstrings for what each one feeds.
 
     `max_notional_usd` (added 2026-09-11, $100-bankroll safety work): a
     hard per-order cap in dollars, computed by bot.py as a fraction of
@@ -667,7 +682,7 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     hedge_side = decide_hedge(
         market.asset, activity, rng, liquidity=market.liquidity,
         is_weekend=is_weekend, dominant_current_price=dominant_current_price,
-        prev_hedge_rate=prev_hedge_rate)
+        prev_hedge_rate=prev_hedge_rate, after_big_loss=after_big_loss)
     is_hedge = hedge_side is not None
     if is_hedge:
         side = hedge_side

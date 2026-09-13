@@ -2149,3 +2149,48 @@ def hedge_ttc_size_multiplier(asset: str, regime: str, seconds_remaining: float)
             frac = (ttc - lo_mid) / (hi_mid - lo_mid)
             return lo_val + frac * (hi_val - lo_val)
     return curve[_TTC_MULTIPLIER_MIDPOINTS[0] if ttc >= 270 else _TTC_MULTIPLIER_MIDPOINTS[-1]]
+
+
+# ---------------------------------------------------------------------------
+# HEDGE TRIGGER, conditioned on a recent big loss. Added 2026-09-13: real
+# loss-aversion-style reaction -- a top-decile single-market loss raises
+# hedge propensity in the very next market for that asset, confirmed via
+# Mantel-Haenszel stratified odds ratio (controlling for the separately-
+# discovered secular hedge-rate decline over the TWAP era, which a crude
+# before/after split couldn't distinguish from a real reactive effect):
+#   Ethereum: raw pooled OR=1.859 -> MH-controlled OR=1.613
+#   Solana:   raw pooled OR=2.606 -> MH-controlled OR=1.569
+# Bitcoin null throughout (same recurring pattern as several other
+# findings this session). Confirmed ASYMMETRIC: the mirror-image "after a
+# big WIN" version mostly evaporates under the same MH control (Bitcoin
+# 0.972, Ethereum 1.208, Solana 0.925 -- Solana actually reverses from its
+# own raw pooled 1.563) -- this is genuine loss-aversion, not generic
+# reactivity to any big outcome, so deliberately NOT mirrored for wins.
+#
+# Multiplier values use the MH-controlled odds ratios directly as
+# probability multipliers (same convention as every other HEDGE_TRIGGER-
+# scaling multiplier in this file, e.g. cross_market_hedge_rate_multiplier
+# -- an approximation, not a rigorous odds-to-probability transform, but
+# consistent with how every other hedge-trigger finding here has been
+# implemented, and decide_hedge already clamps the combined probability to
+# [0, 1] regardless).
+HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER = {
+    "Ethereum": 1.613,
+    "Solana": 1.569,
+}
+
+
+def hedge_trigger_after_big_loss_multiplier(asset: str, after_big_loss: Optional[bool]) -> float:
+    """1.0 (no-op) for Bitcoin/dormant assets (not in
+    HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER -- deliberately excluded, not
+    just uncalibrated, see the module comment above), or when
+    after_big_loss is None/False (no recent-big-loss signal, the caller
+    has no rolling-loss history yet for this asset, or this market's
+    outcome wasn't itself a top-decile loss). Only meaningful for the
+    FIRST hedge decision (real_hedge_fill_count == 0) -- the underlying
+    finding was measured against whether a market gets hedged at all, the
+    same scope as every other hedge_attempt_hazard-scaling multiplier in
+    this file."""
+    if not after_big_loss:
+        return 1.0
+    return HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER.get(asset, 1.0)

@@ -985,6 +985,35 @@ class TestHedgeCountReinforcementMultiplier:
                 assert mult <= 2.0, f"{key}@{threshold}: {mult} exceeds the intended modest damped range"
 
 
+class TestHedgeTriggerAfterBigLossMultiplier:
+    """Hedge propensity after a big loss, added 2026-09-13 -- a market's
+    own asset having just taken a top-decile-sized rolling loss (bot.py's
+    _is_top_decile_loss, min 20 samples before ever triggering) predicts
+    the NEXT market's first hedge trigger fires more readily, for
+    Ethereum/Solana. Bitcoin and the "not after a big loss" case are both
+    deliberately no-ops -- this only ever pushes probability UP, never
+    down, mirroring HEDGE_COUNT_REINFORCEMENT's boost-only design."""
+
+    def test_noop_for_uncalibrated_asset(self):
+        assert bc.hedge_trigger_after_big_loss_multiplier("Bitcoin", True) == 1.0
+
+    def test_noop_when_not_after_a_big_loss(self):
+        for asset in bc.HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER:
+            assert bc.hedge_trigger_after_big_loss_multiplier(asset, False) == 1.0
+
+    def test_noop_when_after_big_loss_is_none(self):
+        for asset in bc.HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER:
+            assert bc.hedge_trigger_after_big_loss_multiplier(asset, None) == 1.0
+
+    def test_boosts_calibrated_assets_after_a_big_loss(self):
+        for asset, mult in bc.HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER.items():
+            assert bc.hedge_trigger_after_big_loss_multiplier(asset, True) == mult
+
+    def test_multiplier_is_a_real_boost_not_a_dampener(self):
+        for asset, mult in bc.HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER.items():
+            assert mult > 1.0, f"{asset}: expected a boost (>1.0), got {mult}"
+
+
 class TestAccuracyScoutMultiplier:
     """Accuracy-conditioned scout rate, added 2026-09-11 -- real, cross-
     asset-POOLED (only the pooled version was circularity-checked), so

@@ -757,6 +757,18 @@ ENABLE_HEDGE_COUNT_REINFORCEMENT = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER (see its
+# docstring in behavior_config.py). Added 2026-09-13 -- real loss-aversion
+# reaction: a top-decile single-market loss raises hedge propensity in the
+# very next market, confirmed via Mantel-Haenszel stratified odds ratio
+# (Ethereum/Solana only, Bitcoin null). Confirmed asymmetric -- the mirror
+# "after a big win" version mostly evaporates under the same control, so
+# deliberately not built as a symmetric reaction. Default TRUE everywhere.
+ENABLE_HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER = os.environ.get(
+    "ENABLE_HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Hard cap on hedge_count. Added 2026-09-09, hours after
 # HEDGE_CONTINUATION_PROBABILITY shipped (behavior_config.py) let
 # decide_hedge fire more than once per market -- CONFIRMED LIVE this

@@ -323,15 +323,15 @@ literature but WAY too early to trust — no temporal split, no regime
 breakdown, no trend confound check possible yet. Revisit properly once
 days (not hours) of data are banked.
 
-**Ladder-instrumentation gap CLOSED IN CODE, not yet deployed (2026-09-13,
-/loop iter 12, commit 6b01f0c pushed).** `SettlementRecord` now persists
-per-fill (size, price, ts) from `order.fills` (already tracked in
-memory, just never saved) — purely additive, default `[]`, 439/439
-tests passing. **Deliberately not deployed** — needs a bot restart,
-which would reset the in-progress PnL-tracking window. Flagged for the
-user to decide when to deploy (next natural restart) rather than forcing
-it. Once live + a few hours of fresh settlements, re-run
-`scratch_ladder_check.py`'s methodology against the bot's own ledger —
+**Ladder-instrumentation gap CLOSED IN CODE AND NOW DEPLOYED (2026-09-13,
+/loop iter 12, commit 6b01f0c; deployed iter 130 piggybacking on the
+MID-reentry-fatigue restart below — no separate restart needed).**
+`SettlementRecord` now persists per-fill (size, price, ts) from
+`order.fills` (already tracked in memory, just never saved) — purely
+additive, default `[]`, 439/439 tests passing at the time. Live on both
+bots as of 2026-09-13 ~01:05 UTC. Once a few hours of fresh settlements
+have accumulated, re-run `scratch_ladder_check.py`'s methodology against
+the bot's own ledger —
 closes the laddering thread for real.
 
 **Refines "divided attention" finding (2026-09-13, /loop iter 13):**
@@ -880,3 +880,40 @@ real "tapering" behavior — just market-chattiness composition wearing a
 disguise. **New confound to always check for within-market-sequence
 dimensions going forward: total-trades-in-market**, alongside the
 established regime/era/asset-composition checks.
+
+**Update (2026-09-13, /loop iter 130 extended): re-entry fatigue dampener
+GENERALIZED from MID-only to 6 cells across MID/CORE/CHEAP, same session.**
+CORE (BTC/ETH, cliff at idx9+) and CHEAP (ETH/SOL, cliff at idx9+) both
+show the same live-position-index win-rate cliff MID showed, confound-
+checked against each band's own price-gradient (this is what excluded
+SOL/CORE — pure price-composition artifact there) and temporally stable.
+BTC/CHEAP excluded on SHAPE grounds (non-monotonic, not just weak).
+Renamed MID_REENTRY_FATIGUE_* -> REENTRY_FATIGUE_*, keyed by (asset,
+regime), before the narrower name could settle in anywhere (commit
+a865ba0 -> 60a85ba, same day, ~10 min apart). Full details in memory file
+`mid-reentry-fatigue-dampener.md` (filename kept for continuity, content
+updated). Both bots restarted and verified healthy after each deploy.
+
+**IMPORTANT, ACTIVE ISSUE (2026-09-13, /loop iters 150/151/159): our
+bots' CHEAP-band first-entry edge is real and negative, unlike the real
+trader's.** Initially looked like a crisis (iter 150: 9% win rate, -44%
+ROI), corrected to a modest-looking gap after fixing a hedge-counting
+methodology bug (iter 151: 40-43% win rate, close to his 41%, ROI still
+-12%/-16% vs his +5%), then WRONGLY waved off as "normal variance"
+without quantifying what normal actually looks like. **Iter 159 corrected
+that too**: his own real day-to-day CHEAP ROI over 22 real days has mean
++1.48%, std dev 4.48% (worst single day: -10.62%) — our bots' -12.4%/
+-16.5% window is 3.1-4.0 standard deviations below that, worse than his
+worst day in over 3 weeks. Real, not noise. Ruled out size-weighting
+mismatch and price-level composition (both actually look fine/favorable
+for our bot) — **the actual mechanism is a negative first-entry edge**
+(won-price): real trader +0.049, our bots -0.012/-0.050, same 24h window.
+The overall dominant-side win rate looks similar only because later
+hedges/adds partially correct a miscalibrated first pick by the time a
+market resolves. **NOT YET ROOT-CAUSED further** — next step is checking
+whether CHEAP-band `ENTRY_SIZING_USD`/side-selection calibration in
+`behavior_config.py` has drifted stale, or whether this reflects a
+recent, unmeasured shift in the real trader's own CHEAP calibration.
+Flagging as a genuine, real, standing issue for continued investigation
+-- do not dismiss as noise again without re-quantifying against a real
+baseline first.

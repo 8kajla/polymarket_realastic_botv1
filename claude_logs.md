@@ -4933,3 +4933,354 @@ Fresh angle: does trade size shrink as he adds more same-side trades within a ma
 **Partial correlation of idx vs size, controlling for total_n, REVERSES SIGN:** BTC +0.064 (t=14.1), ETH +0.034 (t=5.3), SOL +0.021 (t=3.68) — all still "significant" only because n is huge (24k-48k), but the effect size is now tiny (r<0.07) and the direction flipped from the raw uncontrolled reading.
 
 **Verdict: RETRACT "diminishing increments/soft position ceiling" as a real, buildable behavior.** What looked like a within-market size-decay pattern was actually market-chattiness composition: quiet markets → few, big trades; busy markets → many, small trades — a totally different (and already-understood, laddering-related) fact restated as a false "he tapers his additions" narrative. The tiny residual positive partial correlation isn't practically actionable (r~0.02-0.06) and doesn't merit building anything. New addition to the standard confound checklist for any within-market-sequence dimension going forward: total-trades-in-market, alongside the already-known regime/era/asset-composition checks.
+
+## /loop iter 130 (continued) — MID re-entry fatigue dampener IMPLEMENTED and deployed
+
+Built out the validated finding above into a shipped feature, following the exact established multiplier-pattern in `strategy.py`/`behavior_config.py`:
+
+- `behavior_config.py`: `MID_REENTRY_FATIGUE_MULTIPLIER = {"Ethereum": 0.77, "Solana": 0.72}` (Bitcoin deliberately excluded, same treatment/reasoning as `BANKROLL_PNL_SIZE_MULTIPLIER`), `MID_REENTRY_FATIGUE_THRESHOLD = 5` (real_fill_count >= 5 means the trade about to be placed would be the 6th+), `mid_reentry_fatigue_multiplier(asset, regime, real_fill_count)`.
+- `config.py`: `ENABLE_MID_REENTRY_FATIGUE_DAMPENER` flag, default true.
+- `strategy.py`: `decide_size()` gains an optional `real_fill_count` param, folds the new multiplier into `combined_signal` (guarded by the existing `COMBINED_SIZE_MULTIPLIER_CAP` bound); both call sites in `build_order_intent` now pass `activity.real_fill_count`.
+- Explicitly documented in-code that this is a deliberate RISK dampener (no evidence he actually sizes down himself at idx6+), not a replicated-sizing curve — same category as `MAX_CHEAP_REPRICES`, unlike most other multipliers in the file.
+- Added 10 new tests (`TestMidReentryFatigueMultiplier` in `test_behavior_config.py`; 4 wiring tests in `test_strategy.py` covering default-noop, dampens-at-threshold, Bitcoin-excluded, feature-flag-off). Full suite: 449/449 passing (up from 439).
+- Committed (`a865ba0`), pushed, deployed to server (`git pull` in `/opt/paperbot/app`, py_compile clean, `daemon-reload`, restarted `paperbot` then `paperbot-100` individually, both verified `active` and placing orders normally within seconds of restart). This restart also picked up the previously-held-back `ledger.py` fills-tracking commit (`6b01f0c`) since a restart was happening anyway for this feature — no separate deploy needed for that one.
+
+This is the first NEW behavioral feature shipped this /loop session (iters 1-130 were otherwise pure research/validation/retraction) — everything else this session either confirmed/retracted existing hypotheses or filled data gaps.
+
+## /loop iter 130 (extended) — Re-entry fatigue generalized to CORE and CHEAP; renamed, shipped, deployed
+
+Immediately after shipping the MID-only version, tested whether the same live-position-index win-rate cliff exists in CHEAP/CORE/HIGH. It does, in 2 more bands, each with a distinct shape:
+
+- **CORE**: perfectly flat win rate idx1-8, then a sharp cliff at idx9+. Confound-checked against the known within-band price gradient (the same check that killed the earlier "spread predicts win rate in CHEAP" false lead in iter 3) — survives, actually strengthens slightly: BTC partial r -0.297→-0.282 (t=-32.4, n=8,617), ETH t=-21.4 (n=2,683). **SOL's CORE result does NOT survive this check** (partial r -0.013→+0.002, t=0.09) — fully explained by idx9+ trades happening to occur at lower/less-safe CORE prices, not a real fatigue effect. Excluded.
+- **CHEAP**: gradual decline through idx1-8, sharper cliff at idx9+. Real for ETH (t=-9.04) and SOL (t=-11.92) after the same price-gradient control. **BTC's CHEAP shape is non-monotonic** (rises 20.6%→24.6% across idx1-8, only partially reverts to 22.0% at idx9+) — not a clean fatigue pattern at all, excluded on shape grounds, not just weak significance.
+- HIGH: inconsistent sign, mostly too thin across all 3 assets — excluded.
+
+All 4 newly-included cells (BTC CORE, ETH CORE, ETH CHEAP, SOL CHEAP) temporally stable both halves (z range 2.80–10.75), on top of the 2 already-shipped MID cells (ETH/SOL).
+
+**Shipped as a generalization, not a separate feature**: renamed `MID_REENTRY_FATIGUE_*` → `REENTRY_FATIGUE_*`, now keyed by `(asset, regime)` tuples with 6 calibrated cells and per-cell thresholds (MID: idx6+, CORE/CHEAP: idx9+) and multipliers (each cell's measured post-cliff/pre-cliff-average win-rate ratio: ETH/SOL MID 0.77/0.72, BTC/ETH CORE 0.88/0.81, ETH/SOL CHEAP 0.73/0.77). Renamed before the narrower "MID-only" name could settle in anywhere else (it had been live only ~10 minutes). Config flag renamed to `ENABLE_REENTRY_FATIGUE_DAMPENER`. Tests rewritten to iterate every calibrated cell generically rather than hardcoding MID. Full suite 449/449 passing.
+
+Committed (`60a85ba`), pushed, deployed (pull + py_compile clean on server, both bots restarted individually, both verified `active` and placing orders normally within seconds). Memory files (`mid-reentry-fatigue-dampener.md`, `MEMORY.md` index) will be updated to reflect the generalized scope.
+
+## /loop iter 131 — New finding: more hedges → original side wins MORE (ETH/SOL, CHEAP+MID), BTC excluded
+
+Fresh angle: does the number of hedges placed in a market predict whether the ORIGINAL first-entry side ultimately wins? (Distinct from the reentry-fatigue thread above, which is about same-side re-entries — this is about opposite-side hedge activity.)
+
+**First attempt used "dominant side" (whichever side ends up with more cumulative $) and found a huge, suspicious effect (z up to -14) — caught the confound immediately**: "dominant" is recomputed from the FINAL cost split, so heavier hedging naturally gives more opportunity for the hedge side to overtake and become the new "dominant" side near the correct answer — this just measures "the side you hold last tends to win," a known effect, not a real hedge-count signal. Redid it correctly using the FIXED first-entry side as the reference (not recomputed dominant).
+
+**Fixed-reference result:** sign splits cleanly by band. CHEAP/MID: hedge_count>=2 → original side wins MORE than hedge_count==1, for all 3 assets, strongly significant pooled. CORE: reversed for BTC (significant) and weakly for ETH, null for SOL. Confound-checked against the same within-band price-level gradient that's now a standard check this session (partial correlation controlling for first-entry price) — CHEAP/MID survive essentially unchanged or slightly strengthened (e.g. SOL CHEAP r=0.292→partial 0.280, t=11.56; SOL MID t=12.84).
+
+**Temporal-stability check (the decisive gate) reveals BTC doesn't actually hold up:**
+- BTC CHEAP: both halves fail the bar (z=-1.60, -1.87) — underpowered/marginal despite pooled significance.
+- BTC MID: NO effect in either half (z=+0.52, -0.25) — the pooled significant result doesn't reflect a real stable pattern.
+- ETH CHEAP: robust both halves (z=-4.70, -4.42).
+- ETH MID: robust both halves (z=-4.05, -3.76).
+- SOL CHEAP: robust both halves (z=-5.52, -6.05).
+- SOL MID: robust both halves (z=-7.43, -5.96).
+
+**Verdict: real, confound-checked, temporally-stable finding for Ethereum and Solana specifically, in CHEAP and MID bands — Bitcoin excluded** (same pattern as several other findings this session: BTC's behavior is tighter/more consistent, leaving less room for a cross-cutting effect like this to register). CORE not pursued further (mixed/weak, doesn't clear the bar for any asset once BTC's own CORE effect wasn't cross-checked with a temporal split — lower priority, not confirmed either way).
+
+**Not yet built.** Plausible read: needing multiple hedges in CHEAP/MID likely reflects a genuinely volatile intra-market path that ultimately mean-reverts back toward the original momentum-based read, rather than the market drifting away from it. Concrete build idea for later: a hedge-count-conditioned boost to further SAME-SIDE (original) entry sizing once a market already has 2+ hedges, for Ethereum/Solana in CHEAP/MID only — i.e. treat "already needed 2+ hedges and still holding the original side" as a reinforcement signal, not a warning sign. Needs its own separate design/validation pass (distinguishing this from the already-shipped hedge-continuation-size curve, which is a replicated-sizing calibration, not an outcome-based one) before building — flagging for a future iteration rather than rushing it into this session's second feature ship.
+
+## /loop iter 132 — hedge-count finding: dose-response shape confirmed continuous, not a cliff
+
+Quick follow-up characterizing the iter 131 finding's exact shape: hedge_count 1/2/3/4/5+ original-side win rate, ETH/SOL CHEAP/MID:
+- ETH CHEAP: 10.5% / 13.8% / 23.6% / 17.0% / 38.5%
+- ETH MID: 35.3% / 41.9% / 39.8% / 40.3% / 60.5%
+- SOL CHEAP: 6.9% / 11.7% / 13.8% / 27.6% / 39.6%
+- SOL MID: 24.3% / 34.8% / 35.0% / 40.0% / 59.6%
+
+Genuinely monotonic (small noise at n~135-230 per intermediate bucket, but the overall gradient from hedge_count=1 to hedge_count=5+ is a smooth 3-4x relative increase, not a step/cliff like the reentry-fatigue finding). Confirms this should eventually be built as a continuous curve (quartile/decile-interpolation style, matching e.g. `bankroll_pnl_size_multiplier`'s design), not a threshold multiplier — noted in the memory file for whenever this gets built. Checked and confirmed no reentry_fatigue-style cliff pretending to be the story here; genuinely different shape, correctly characterized now before any build attempt.
+
+## /loop iter 133 — hedge-count finding survives the chattiness confound cleanly (comes out stronger)
+
+Checked whether the iter 131 hedge-count finding was secretly a restatement of the already-known "same-side chattiness predicts LOWER win rate in MID" fact (iter 130's precursor to reentry-fatigue), since hedge_count and same-side-total-trades are naturally correlated in the same market (r=0.21-0.27).
+
+Partial correlation of (hedge_count, original_side_won) controlling for same-side total trade count, ETH/SOL CHEAP+MID:
+- ETH CHEAP: raw r=0.2022 → partial r=0.2292, t=8.61 (n=1,341)
+- ETH MID: raw r=0.1636 → partial r=0.2076, t=8.92 (n=1,769)
+- SOL CHEAP: raw r=0.2922 → partial r=0.3201, t=13.39 (n=1,573)
+- SOL MID: raw r=0.2519 → partial r=0.3154, t=15.78 (n=2,257)
+
+All 4 cells get STRONGER after controlling for chattiness, not weaker — because chattiness itself has the OPPOSITE sign relationship with win rate (r=-0.07 to -0.21). This is the cleanest possible confound-clearance: two correlated variables pulling in opposite directions, and isolating hedge_count's own effect sharpens rather than dilutes it. Fully confirms this is a genuine, independent signal, not a repackaged version of the chattiness finding. No changes needed to the memory writeup — this just adds one more clean check to the record.
+
+**Judgment call: deliberately NOT building the hedge-count-conditioned sizing boost yet.** The dose-response ratios are large (up to ~5.7x at hedge_count=5+ vs hedge_count=1 in the noisiest cell, SOL CHEAP) and several intermediate buckets are thin (n=135-230) with non-monotonic noise (e.g. ETH CHEAP dips at hedge_count=4). Every other multiplier shipped this session stays in a modest ~1.2-3x range because it was fit from an actual observed distribution or a conservative, well-powered ratio — scaling stake by a raw 5x ratio derived from noisy small buckets would break that discipline and risk real overreaction to sparse data. Leaving this fully documented and flagged (`hedge-count-predicts-original-side-win-eth-sol.md`) for a future pass once either more data thins out the bucket noise or a more conservative (e.g. sqrt-dampened, tightly capped) curve design is worked out carefully — not rushing it just to keep shipping.
+
+## /loop iter 134 — "Tilt after a big loss" REJECTED (clean null, all 3 assets)
+
+Fresh angle: does a single, unusually large market loss (top 10th percentile of loss-amount-on-the-losing-side, per asset) trigger an immediate size reduction in the VERY NEXT market for that asset — a "tilt"/loss-aversion reaction distinct from the already-shipped cumulative-bankroll-P&L effect (which uses running total realized P&L over many markets, not a single event's immediate aftermath)?
+
+Result: next-market first-entry notional after a top-decile loss vs after a normal outcome:
+- BTC: $4.23 vs $4.06 (n=471/5,127), t=0.64
+- ETH: $3.51 vs $2.92 (n=466/4,972), t=2.15
+- SOL: $2.08 vs $2.09 (n=501/4,987), t=-0.08
+
+None clear the project's |t|>=2.58 bar. **Verdict: REJECT.** No evidence of an immediate tilt/loss-aversion reaction to a single big loss on any asset — consistent with (and a useful complement to) the already-established BANKROLL_PNL_SIZE_MULTIPLIER finding, which operates on a slower, cumulative basis rather than reacting to any single event. Don't re-test without a different framing (e.g., a bigger loss threshold, or looking at hedge probability/aggressiveness instead of size).
+
+## /loop iter 135 — "Hedge propensity rises after a big loss": real signal, but NOT confirmed (fails temporal-stability bar)
+
+Follow-up to the rejected size-tilt check (iter 134): does a top-decile single-market loss raise the probability of hedging at all in the very next market (rather than affecting entry size)?
+
+**Raw pooled result, strong and cross-asset (BTC null again, consistent with the recurring "BTC doesn't show this class of effect" pattern):**
+- ETH: after_big_loss hedge_rate=75.75% vs after_normal=62.75% (n=466/4,972), z=5.59
+- SOL: after_big_loss hedge_rate=88.22% vs after_normal=74.23% (n=501/4,987), z=6.94
+- BTC: null (75.80% vs 74.76%, z=0.50)
+
+**Regime-stratified (survives cleanly for CHEAP/MID, both assets):**
+- ETH CHEAP z=3.66, MID z=3.81, CORE z=0.23 (null)
+- SOL CHEAP z=5.17, MID z=3.94, CORE z=1.53 (not significant)
+
+**Temporal-stability check (the decisive gate) — FAILS:**
+- ETH: first half z=0.93 (fails), second half z=5.81 (passes)
+- SOL: first half z=1.78 (fails), second half z=7.52 (passes)
+
+The effect is concentrated almost entirely in the more recent half of the TWAP-era data for both assets — essentially absent in the earlier half. This is a real, regime-confirmed signal in the pooled/recent data, but does NOT meet this project's "both halves must individually clear the bar" standard for a confirmed, buildable finding — it reads as either a genuinely recent behavior adaptation (post-halt evolution, or something else that changed only in the last several weeks) or noisier early data masking a weaker version of the same thing. **Verdict: real but UNCONFIRMED — flagged, not built.** Worth a fresh re-test in a future iteration once more recent data accumulates (would clarify whether the effect keeps strengthening, meaning it's a genuine ongoing behavioral shift, or whether a finer chronological split reveals it was already present, just underpowered, earlier on).
+
+## /loop iter 136 — RESOLVED: "time since decisiveness onset" TTC reframe, finally testable and confirmed (BTC)
+
+Long-blocked item from a much earlier session (`untouched-angles-progress.md` angle #1): the original "time-to-close entry gate" framing was found to be WRONG (34-46% of his EARLY_FAST entries — price>=0.70 within 120s of window open — land on markets that were essentially never decisive at that TTC bucket by base rate), leading to the reframe "he reacts fast whenever a market SNAPS decisive, regardless of absolute clock time" — but this needed a dense within-market price history to test, and the first attempt at building that collector (`decisiveness_collector.py`) turned out to be silently serving CACHED Gamma responses (found and fixed 2026-09-12). The fixed collector needed real hours to re-accumulate before this could be attempted again.
+
+**Now has 19.5h banked, 705 markets, 675 with >=20 polls (nearly double the original invalid test's 372-market sample).** Ran the actual test: for each market, find the first poll where either side's CLOB price crosses >=0.70 (decisiveness onset), then measure the delay between that onset and his actual EARLY_FAST entry (same side, price>=0.70, within 120s of window open).
+
+**Result: tight, consistent reaction window — confirms the reframe.**
+- EARLY_FAST entries (<=120s into window): n=309, median delay=37.1s, IQR 20.0-52.1s, only 0.6% "negative" (entered before the detected onset, expected minor noise from ~10s poll granularity)
+- Later decisive entries (>120s into window): n=1,007, median delay=92.4s, IQR 48.0-143.0s — much wider spread, as expected (less urgency once there's more time buffer before close)
+
+**Per-asset**: BTC n=287 (median 36.0s, IQR 19.6-52.1s) dominates the sample; ETH n=16 (median 47.4s) and SOL n=6 (median 57.0s) are too thin for a firm cross-asset read but are directionally consistent (same order of magnitude). Consistent with the "BTC gets closest attention" synthesis — this fast-reaction behavior is overwhelmingly a BTC phenomenon in the data so far.
+
+**Verdict: CONFIRMED for Bitcoin** — real, well-powered evidence that the mechanism is "react within ~20-50s of a market snapping decisive," not "attempt more near close." This validates with real data what was previously only a reasoned hypothesis from a handful of spot-checked examples. Resolves a genuinely multi-session-old open question.
+
+**Not yet built.** The original memo already sketched the implementation path: a new stochastic "attempt gate" evaluated before `build_order_intent`, keyed by (asset, time-since-this-market's-own-decisiveness-crossing) rather than (asset, regime, absolute-seconds-remaining) — architecturally bigger than a calibration-table tweak (needs the bot to track each open market's own decisiveness-crossing timestamp, which nothing currently does). Flagging as confirmed and ready for a dedicated design/implementation pass, not rushing it into this session's build queue alongside the already-flagged hedge-count boost.
+
+## /loop iter 137 — Maker spread-improvement question: checked, data-limited, closing
+
+Fresh angle: does he ever post INSIDE the existing best bid/ask (improving the spread) rather than just joining the touch — a maker-aggressiveness nuance not yet examined. Checked `spread_calibration.jsonl`'s book snapshots (best_bid/best_ask/spread/depth) against his trade price to see how his price sits relative to the book.
+
+**Blocked on data quality**: the book snapshot is taken at `detected_at`, not at the trade itself — `lag_seconds` between the two is often 200+ seconds (a stale, moved-since book), and only 4,875/24,686 (19.8%) rows have book data at all (already known, `spread-depth-threshold-validation`). Restricting to a usably-fresh snapshot (lag<15s) leaves only 1,257 rows — thin, and disproportionately drawn from whatever collection windows happened to have fast trade-detection, not a representative sample. Not worth building an analysis on. **Verdict: checked, data-limited, closing** — same category as the already-closed order-book-imbalance-via-Gamma gap before the dedicated depth-imbalance collector was built. Would need a purpose-built collector snapshotting the book synchronously with trade detection (not just resolving best_bid/best_ask minutes later) to ever test this properly, and the payoff (a maker-positioning nuance) is low relative to the effort given maker-only behavior is already confirmed via much stronger evidence (zero TAKER_REBATE records).
+
+## /loop iter 138 — Hedge-count reinforcement boost IMPLEMENTED and deployed
+
+Closed the gap flagged in iter 133 (deliberately not building on noisy raw ratios): first verified the CRITICAL missing check — does the hedge-count finding hold using the LIVE hedge-count-so-far (only hedges that happened before a given same-side entry's own timestamp), not the market's final total (a post-hoc quantity), exactly the same live-vs-post-hoc distinction that mattered for re-entry fatigue. It holds cleanly:
+
+- ETH CHEAP: live_hc=1 orig_winrate=11.67% vs live_hc>=2=25.92% (n=814/2,812), z=-8.55
+- ETH MID: 32.27% vs 50.00% (n=1,531/4,588), z=-12.06
+- SOL CHEAP: 15.26% vs 25.91% (n=1,376/4,327), z=-8.13
+- SOL MID: 31.42% vs 40.86% (n=2,180/7,946), z=-8.01
+
+All 4 cells temporally stable both halves (z range 4.49-12.27) using this live framing specifically. With this confirmed real-time-actionable, built it as the mirror-image of `REENTRY_FATIGUE_MULTIPLIER`: `HEDGE_COUNT_REINFORCEMENT_MULTIPLIER` (Ethereum/Solana × CHEAP/MID, threshold live_hedge_count>=2), values deliberately damped to a modest 1.15x-1.5x range (well below the raw 1.3x-2.2x odds-ratio scale for this hc=1-vs-2+ comparison, and far below the up-to-5.7x extreme seen at hedge_count=5+ in noisier buckets) — consistent with every other multiplier in the file staying modest in practice even when a nominal cap allows more.
+
+Wired into `decide_size()` via a new `live_hedge_count` param (only meaningful for ordinary, non-hedge entries — both ordinary-entry call sites in `build_order_intent` now pass `activity.real_hedge_fill_count`). Added `ENABLE_HEDGE_COUNT_REINFORCEMENT` config flag (default true). 11 new tests (caught and fixed one test bug along the way — used a mismatched price/regime pair, e.g. price=0.5 with regime="CHEAP", which silently produced a false failure; fixed by aligning test prices to their regimes). Full suite 460/460 passing. Committed (`785c8d7`), pushed, deployed (pull + py_compile clean, both bots restarted individually, both verified `active` and placing/filling orders normally).
+
+This is the third new behavioral feature shipped this /loop session (after the momentum-alignment-adjacent re-entry fatigue dampener and its CORE/CHEAP generalization) — and the first one built as a deliberate multi-step validation-then-build within a single continuous thread (found iter 131 → confound-checked iter 133 → live-index-verified and shipped iter 138), following the exact discipline established for re-entry fatigue.
+
+## /loop iter 139 — Interaction due-diligence: reentry-fatigue and hedge-count reinforcement combine cleanly
+
+After shipping both re-entry fatigue (iter 130) and hedge-count reinforcement (iter 138), checked whether they could ever fire on the SAME entry (a market with a long same-side ladder AND multiple hedges) and, if so, whether the combination is safe. 4 cells overlap (Ethereum/Solana × CHEAP/MID, the only cells both tables calibrate):
+
+- Solana MID: 0.72 × 1.15 = 0.828
+- Ethereum MID: 0.77 × 1.25 = 0.9625
+- Solana CHEAP: 0.77 × 1.35 = 1.0395
+- Ethereum CHEAP: 0.73 × 1.5 = 1.095
+
+All 4 land in a near-neutral 0.83-1.10 band — no pathological compounding. Makes sense: a market worked hard on BOTH sides (many same-side re-adds AND many hedges) reads as genuinely chaotic/uncertain, and the two independently-derived signals (one negative, one positive) roughly cancel rather than reinforcing each other in either direction. Added a dedicated regression test (`test_reentry_fatigue_and_hedge_count_reinforcement_dont_compound_pathologically`) pinning this property down, since it wasn't guaranteed by construction — future recalibration of either table's values will now get caught by CI if it drifts into something extreme. Test-only change, no runtime behavior difference, no bot restart needed. Committed (`3904abe`), pushed, server checkout synced. Full suite 461/461 passing.
+
+## /loop iter 140 — Web research cross-check: published "80-100s-before-close AI trigger" bot strategy REJECTED
+
+Searched for recent (2026-09) public writeups on Polymarket 5-min bot strategies to check for anything new to test. Found a specific, testable claim from a published bot description: an "AI decision engine" triggers entries "80-100 seconds before close" using Binance technical analysis (RSI/momentum/volume).
+
+**Directly checked against his real trade-timing distribution** (276,411 TWAP-era trades, bucketed by time-to-close in 10s bins): the 80-100s-before-close zone (4.70%/4.29% of volume) is NOT distinguishable from its immediate neighbors (70-80s: 4.03%, 100-110s: 3.71%) — no spike, just part of the already-known smooth early-window-heavy taper (heaviest around ttc 230-270s, i.e. the first ~30-70s of each window, tapering to near-zero by ttc<30s, consistent with the already-established ~60s stop-cutoff). **Verdict: REJECT** — his real activity shows no distinguishing feature at this specific published bot's claimed trigger point. Same disposition as the earlier-rejected T-10-to-T-5s sniper strategy and the laggard/"Constellation" multi-asset strategy (both already closed) — confirms (doesn't newly discover) that he isn't running any of these specific published bot patterns.
+
+Other search hits (5MinuteBot, polymtradebot.com, a Crypticorn strategy writeup, MEXC news pieces) were surface-level marketing/generic content, not specific enough claims to falsify directly — not pursued further.
+
+## /loop iter 141 — Closed a stale open item: "ETH CORE urgency divergence" was already correctly handled in the shipped table
+
+Revisited the long-standing flagged item "explain why ETH's CORE band diverges from BTC/SOL in the corrected urgency-scaling finding" (ETH CORE t=-3.60 reversed vs BTC/SOL's weak-positive t=+2.18, iter 117). Checked the actually-shipped `TTC_SIZE_MULTIPLIER` table in `behavior_config.py` directly rather than re-deriving from scratch.
+
+**Found it's already correctly handled, not a gap:** the table's own design comment explicitly documents CORE as "roughly flat — price level alone already captures most of what matters here," and the real calibrated values reflect this deliberately conservative treatment: Bitcoin CORE ranges 0.91-1.03, Ethereum 0.98-1.04, Solana 0.97-1.02 across the TTC range — all clustered near 1.0 (no-op), correctly NOT overfit to the noisy, asset-divergent CORE signal the deeper research thread later surfaced. CHEAP/MID/HIGH shapes in the table also match the corrected regime-dependent findings exactly (CHEAP shrinks toward close, MID grows, HIGH grows sharply). **Verdict: no action needed — the flagged nuance was already resolved by the existing calibration's own appropriate caution, just never explicitly closed out in the memory notes.** Removing this from the open-items list.
+
+## /loop iter 142 — Web research: crypto taker fee rate cross-check, confirmed current
+
+Search surfaced a real, dated claim: Polymarket's crypto taker fee rate changed from 0.072 to 0.07 in July 2026. Checked our fee model (`config.py`): `CRYPTO_TAKER_FEE_RATE = 0.07`, already sourced directly from live Gamma `feeSchedule` data (not a news estimate) in an earlier session. Matches the current rate exactly. No gap, no action needed — just a useful independent confirmation that our primary-source fee model tracks the real, current schedule.
+
+## /loop iter 143 — Two findings: (1) real secular hedge-rate decline discovered, (2) iter 135's "unconfirmed" hedge-propensity-after-loss verdict CORRECTED to confirmed via proper Mantel-Haenszel control
+
+Started by testing the mirror-image of the loss-tilt checks: does a big single-market WIN raise size or hedge propensity in the next market? Size: mixed/weak (BTC t=2.86, ETH t=2.30, SOL t=-0.52 — no clean cross-asset signal). Hedge propensity: significant for ETH (z=3.43) and SOL (z=3.57), null for BTC (z=-1.51) — but regime-stratified and temporal checks showed the SAME "second-half-only" instability pattern iter 135 found for the after-big-LOSS version.
+
+**This led to checking the UNCONDITIONAL (not event-conditioned) hedge rate over calendar time — and finding something new and substantial: a real, large, cross-asset, cross-regime secular decline in hedge rate over the TWAP era.**
+- ETH: 76.4% (first half) → 51.2% (second half), z=19.37. Weekly: 77.8%→68.7%→60.0%→48.4%→36.5% (week 0→5) — continuous decline, still dropping post-halt.
+- SOL: 83.0% → 68.0%, z=12.94. Weekly: 80.8%→85.9%→85.2%→58.0%→42.8% — nearly FLAT pre-halt, then a sudden, large drop specifically at the post-halt resumption (week 2→4).
+- BTC: weekly 83.3%→75.3%→70.6%→67.6%→69.3% — declines pre-halt, then roughly PLATEAUS post-halt near the pre-halt-week-2 level.
+- Every regime band (CHEAP/MID/CORE/HIGH) shows the same first-half>second-half direction for all 3 assets — not a regime-composition artifact.
+
+**Three genuinely different per-asset shapes**, all real: BTC declines then plateaus, ETH declines continuously throughout, SOL is flat-then-a-sudden-post-halt-drop. This is a previously-undocumented finding, not just a re-derivation — connects to (but is distinct from) the already-characterized entry-SIZE resumption ramp (3-phase: suppress/overshoot/normal) — hedge RATE's own resumption behavior has never been separately characterized before. Not built, not fully explained (candidate hypotheses: growing confidence/skill reducing hedge need, a real strategy evolution, or something resumption-specific for SOL) — flagging as a real, substantial, open finding worth its own investigation thread.
+
+**Correction to iter 135's "hedge-propensity-after-big-loss: unconfirmed" verdict.** That check used a crude first-half/second-half split BY SEQUENCE INDEX and found the first half non-significant — but given the newly-discovered secular decline, an index-based split isn't the right way to control for calendar time (it can dilute or concentrate power unevenly depending on how event-density happens to be distributed across the two halves). **Redone properly with a Mantel-Haenszel stratified odds ratio across weekly strata** (the established correct method for this exact class of confound, from iter 123): after-big-loss hedge-propensity survives, moderately attenuated from the raw pooled reading but still real —
+- ETH: raw pooled OR=1.859 → MH-controlled OR=1.613
+- SOL: raw pooled OR=2.606 → MH-controlled OR=1.569
+
+**Verdict: CONFIRMED (corrected from "unconfirmed"), for Ethereum and Solana** — a big loss really does raise next-market hedge propensity by roughly 60% in odds, genuinely partially (not wholly) explained by the secular trend. The after-big-WIN version likely has the same structure (needs the same MH re-check before drawing a final conclusion there — not completed this iteration, flagging as the natural next step). This is a good example of why the project's "temporal stability = both index-based halves must clear the bar" heuristic, while usually the right cheap first check, isn't infallible when there's a real, non-linear secular trend underneath — the proper fix is stratified control (MH), not just a coarser or finer index split.
+
+## /loop iter 144 — Completes the hedge-propensity thread: after-loss effect is real, after-win is mostly a secular-trend artifact
+
+Ran the same rigorous Mantel-Haenszel week-stratified check on the after-big-WIN hedge-propensity signal (iter 143 flagged it as needing the same treatment as the after-loss version). Result — a clean asymmetry:
+
+| | raw pooled OR | MH-controlled OR (after loss) | MH-controlled OR (after win) |
+|---|---|---|---|
+| Bitcoin | -- | (null throughout) | 0.972 (null) |
+| Ethereum | -- | 1.613 | 1.208 (weak) |
+| Solana | -- | 1.569 | 0.925 (null, reversed) |
+
+The after-WIN raw pooled readings (BTC 0.854, ETH 1.457, SOL 1.563) looked meaningful before controlling for the secular hedge-rate decline, but almost entirely evaporate after MH control — Solana's especially (1.563 → 0.925, a complete reversal), confirming it was overwhelmingly a time-trend artifact, not a real reaction to winning. The after-LOSS effect, by contrast, survives MH control at a real, moderate magnitude for both ETH and SOL.
+
+**Verdict: the trader shows genuine loss-aversion-style hedge-propensity reinforcement after a bad outcome, but no symmetric overconfidence reaction after a good one.** This is a clean, sensible, fully-resolved asymmetric picture — closes out the whole hedge-propensity-after-event thread (started iter 134) properly. Updated both memory files to record the complete comparison.
+
+## /loop iter 145 — Attempted to explain the hedge-rate secular decline: two hypotheses rejected, one new related finding, root cause still open
+
+Follow-up to iter 143's discovery. Tested three candidate explanations for the within-regime hedge-rate decline:
+
+1. **Improving win rate reducing hedge need** — REJECTED. First-entry win rate is flat-to-slightly-DECLINING over the same weeks for all 3 assets (BTC ~49.6%→40.2%, ETH ~43.1%→36.9%, SOL ~40.5%→33.9%) — if anything this would predict MORE hedging need, the opposite of what's observed. Also directly inconsistent with the earlier "no edge-decay" win-rate-drift finding, though that was BTC-only/pre-dates this window — worth reconciling later, not chased further this pass.
+2. **Growing first-entry size (bigger initial conviction) reducing hedge need** — REJECTED. No clean monotonic trend; noisy week-to-week (BTC $2.91→$5.36→$5.01→$3.66→$2.67).
+3. **Regime-mix shift toward bands with naturally lower hedge rates** — found a REAL, substantial, related shift (CHEAP share nearly doubling for ETH: 37%→52%, more than doubling for SOL: 35%→63%; MID share correspondingly shrinking), but this does NOT fully explain the original finding, since iter 143 already showed the decline persists WITHIN each fixed regime band too (e.g. BTC CHEAP alone: 89.6%→72.6%). This regime-mix shift is itself a new, real, worth-remembering discovery (a genuine reallocation toward CHEAP-band trading over time) — but it's an ADDITIONAL fact, not the explanation for the within-band decline.
+
+**Root cause of the within-band hedge-rate decline remains genuinely unexplained** after ruling out the two most obvious candidate mechanisms. Not chasing further this iteration — flagging as still open, now with two eliminated hypotheses on record so a future pass doesn't re-tread them.
+
+## /loop iter 146 — Third hypothesis for hedge-rate decline also REJECTED: real volatility didn't decline
+
+Tested whether declining real spot market volatility (an external, non-strategy explanation) could explain the hedge-rate secular decline. Used Coinbase 1-min candles (unaffected by the trading-side 13.6-day halt, since the underlying market kept moving) — weekly mean |1-min return|:
+- BTC: 0.0187%→0.0340%→0.0431%→0.0340%→0.0285% (week 0→4)
+- ETH: 0.0251%→0.0439%→0.0550%→0.0417%→0.0393%
+- SOL: 0.0308%→0.0443%→0.0869%→0.0556%→0.0524%
+
+Volatility ROSE from week 0 to a peak around week 2 for all 3 assets, then only partially receded — week 4 is still notably higher than week 0 everywhere. This is the opposite of what "less volatility needs less hedging" would predict, and directly rejects this as the explanation. **Three hypotheses now eliminated (win rate, size, volatility) without finding the true cause of the hedge-rate secular decline.** Stopping the causal chase here rather than continuing to force an explanation — the finding itself (real, large, cross-asset, cross-regime, asset-shape-dependent) stays fully documented and open in `hedge-rate-secular-decline.md` for whenever a better angle presents itself (e.g., once the ledger's own fills data has enough history to compare the BOT's behavior against, or if a future dimension in the hypothesis miner surfaces something relevant).
+
+## /loop iter 147 — Clarification: hedge SIZE shows no secular trend, only hedge PROPENSITY does
+
+Natural extension of the hedge-rate-decline thread: does hedge SIZE (conditional on hedging happening) also drift over time, or is the decline specific to propensity? First attempt hit the same known "scout/fragment-sized denominator" bug already documented and fixed for `HEDGE_SIZE_RATIO`'s own calibration (nonsensical ratios up to 105x from near-zero dominant-cost denominators) — refixed with the same floor (dominant_cost >= $1) and switched to medians for robustness.
+
+Clean result: median first-hedge USDC size and median hedge/dominant-cost ratio show **no clear monotonic trend across weeks for any asset** — noisy, bouncing around without a consistent direction (e.g. BTC ratio: 0.255→0.219→0.284→0.209→0.172; ETH: 0.296→0.309→0.284→0.321→0.387; SOL: 0.312→0.221→0.068→0.372→0.684 — no clean pattern). **Verdict: the secular decline is specific to hedge PROPENSITY (whether to hedge at all), not hedge SIZE once the decision to hedge is made.** Useful boundary condition on the main finding — narrows what any future explanation needs to account for (a declining willingness to open a hedge position, not a declining hedge magnitude), added to the memory file.
+
+## /loop iter 148 — Was the asset rotation performance-driven? Tested directly for the first time, with the now-complete resolution cache
+
+Long-documented fact: the trader rotated DOGE/HYPE→BNB (Aug 6-7 swap) then dropped BNB permanently at the 13.6-day halt (Aug 23), settling into BTC/ETH/SOL-only. Never directly tested WHETHER performance drove either rotation — only now possible with resolution_cache at 100% coverage.
+
+**DOGE+HYPE vs concurrent BTC+ETH+SOL (both windows, same calendar period before Aug 6):**
+- DOGE+HYPE: n=34,745 markets, dominant-side win rate 33.33%, crude ROI (payout/cost, no rebates) **+4.97%**
+- BTC+ETH+SOL (concurrent): n=25,207, win rate 55.64%, ROI **+1.85%**
+
+DOGE/HYPE's much lower win rate is explained by heavy CHEAP-band concentration (76.8% of entries, mean price 0.24 — sanity-checked directly, not a computation bug) — classic longshot economics: low hit rate, high payout-per-win, still net positive. **DOGE/HYPE actually had a HIGHER crude ROI than the assets he kept.** This means the DOGE/HYPE→BNB swap was almost certainly NOT performance-driven — contradicts the intuitive "dropped them because they were losing money" story. Consistent with the already-established "deliberate swap, not decay" framing (12-second simultaneous drop) — now we know it likely wasn't a performance-forced decision either; something else motivated it (liquidity, personal preference, or an unrelated reason not testable from trade data).
+
+**BNB vs concurrent BTC+ETH+SOL (Aug 7-23 window):**
+- BNB: n=3,881, win rate 58.98%, ROI **-2.38%**
+- BTC+ETH+SOL (concurrent): n=11,622, win rate 68.56%, ROI **+1.56%**
+
+BNB genuinely underperformed during its active window — a real, meaningful gap (-2.38% vs +1.56%). This DOES support a performance-related explanation for BNB's permanent drop, though it's confounded with the still-unexplained 13.6-day halt (BNB was dropped at exactly the same moment the halt began and simply never resumed afterward, unlike BTC/ETH/SOL) — can't cleanly separate "he deliberately abandoned BNB for underperforming" from "BNB just never got re-added after an unrelated halt, and its pre-halt underperformance is incidental."
+
+**Verdict**: the two rotations have different, honestly-reported stories — DOGE/HYPE→BNB wasn't performance-driven (if anything the opposite), BNB's permanent drop shows a real performance gap but with an unresolved causality question. Both add real, new, quantified context to the already-extensive asset-rotation history without needing to build anything.
+
+## /loop iter 149 — Sanity check: momentum-alignment finding does NOT have a hidden secular trend like hedge rate did
+
+Given the hedge-rate decline (iter 143) showed that a real secular trend can hide inside what looks like a simple, already-confirmed finding, re-checked the project's single most-validated result (momentum-alignment predicts win rate) at weekly granularity rather than just trusting the earlier coarse first/second-half split.
+
+BTC CHEAP+MID aligned-vs-against win-rate gap, by week: +0.397 (week 0), +0.424 (week 1), +0.410 (week 2), +0.487 (week 4) — remarkably stable, no drift, if anything slightly strengthening in the most recent week. **Confirms the headline finding has no hidden temporal nuance** — unlike hedge rate, this is a genuinely stationary, reliable mechanism throughout the entire TWAP era. Good reassurance to have on record now that the project has learned coarse splits can occasionally mask real trends; this one checks out cleanly at fine granularity too.
+
+## /loop iter 150 — Routine PnL check surfaces a real, sustained CHEAP-band bad stretch; ruled out own recent code changes; confirmed safety circuit breaker working correctly
+
+Routine health/PnL check (since-restart window, ~3h) showed both bots deeply negative (paperbot -16.3%, paperbot-100 -5.1%, n=301-347). Regime breakdown showed the losses concentrated almost entirely in CHEAP band (paperbot CHEAP: 4.5% win rate, -75.9% ROI, n=176; paperbot-100 CHEAP: 9.4%, -46.4%, n=139) while MID/CORE/HIGH were flat-to-positive. Extended to a 24h window to check whether this was short-term noise or persistent: **it persists at large scale** — paperbot CHEAP n=1,356, win rate 8.8%, ROI -44.3%; paperbot-100 CHEAP n=1,016, win rate 9.4%, ROI -43.9%. Not noise — a real, sustained, statistically large bad stretch specifically in CHEAP.
+
+**Ruled out this session's own shipped code as the cause**: broke the 24h CHEAP numbers down by asset — Bitcoin (-44.5% paperbot / -41.3% paperbot-100, n=1,079/781), Ethereum (-49.8%/-41.7%, n=184/176), Solana (-42.9%/-99.4%, n=90/59) are all similarly bad. Bitcoin has NO calibrated cells in either `REENTRY_FATIGUE_MULTIPLIER` or `HEDGE_COUNT_REINFORCEMENT_MULTIPLIER` for CHEAP (both are Ethereum/Solana-only there) — since BTC is affected just as badly as ETH/SOL, this rules out the newly-shipped multipliers as the cause. This looks like a genuine real-market/calibration stress period specific to the CHEAP band across all 3 assets, not a bug introduced this session.
+
+**Confirmed the safety mechanism is working as designed under real stress**: `paperbot-100`'s hourly-drawdown circuit breaker tripped correctly during this period (`CIRCUIT_BREAKER_TRIP: equity $181.86 is down 16.1% from its $216.71 peak over the last 60 min (limit 15.0%)` at 01:39 UTC) — paused new-market entries for 30 minutes while continuing to manage existing positions normally, exactly per its design ([[hundred-dollar-safety-controls]]). This is a good, real-world validation of that safety feature under genuine adverse conditions, not just a unit-test scenario.
+
+**Not treating this as an emergency requiring intervention** — paper trading, no real capital at risk, the safety control is functioning, and the cause isn't traceable to this session's changes. Flagging as a real, notable observation for the user's awareness and a candidate for a future dedicated investigation (why is CHEAP specifically struggling right now, uniformly across all 3 assets? possibly connects to the still-unexplained hedge-rate secular decline, or a genuine shift in real market conditions) rather than something to fix reactively based on one bad stretch.
+
+## /loop iter 151 — CORRECTION to iter 150: the CHEAP "crisis" was substantially a methodology artifact, real gap is much smaller
+
+Followed up on iter 150's alarming CHEAP-band numbers (8.8-9.4% win rate, -44% ROI) by checking whether the REAL TRADER also had a bad CHEAP stretch over the identical 24h window — the critical diagnostic to distinguish "genuine market phenomenon" from "our bot's problem."
+
+**Real trader, last 24h, CHEAP**: n=373, dominant-side win rate 40.8%, ROI **+5.1%** (all 3 assets individually positive: BTC +3.6%, ETH +0.7%, SOL +13.3%). Genuinely fine — no crisis for the real trader at all. This looked like strong evidence something was specifically wrong with our bot... **but the comparison was methodologically mismatched.**
+
+**Caught before drawing a conclusion**: the real-trader query computes win rate as per-MARKET dominant-side-vs-winner (aggregating all fills in a market first); iter 150's bot query counted every ledger RECORD individually, including hedge legs — which are *designed* to often land on the losing side of the dominant read (that's the whole point of a hedge). With CHEAP hedge rates running high (e.g. paperbot BTC/CHEAP: 403 hedges out of 1,079 records, ~37%), counting them as independent "losses" alongside ordinary entries mechanically drags a naive per-order win rate down far below the market-level truth.
+
+**Redone with the correct, matching per-market dominant-side methodology**:
+- paperbot CHEAP: n_markets=232, dominant win rate **43.1%**, ROI **-12.4%**
+- paperbot-100 CHEAP: n_markets=189, dominant win rate **39.7%**, ROI **-16.5%**
+
+The win rate (39.7-43.1%) is now close to the real trader's 40.8% — nothing like the earlier 8.8-9.4% reading. The ROI gap is real but far more modest: our bots are still somewhat negative (-12% to -16%) where the real trader is positive (+5.1%), a legitimate, worth-watching difference, but a completely different scale of concern than "the bot is broken." **Verdict: iter 150's alarm was substantially a self-inflicted methodology artifact, not a real crisis.** The remaining, smaller ROI gap could be genuine short-term variance (both samples are modest, n=189-373), a real but pre-existing CHEAP calibration edge gap (consistent with the long-documented "CHEAP doesn't match Kelly math as cleanly as HIGH" finding), or something else — worth continued routine monitoring, not urgent action. Correcting the record from iter 150's overstated framing. Lesson: always match methodology exactly (including how hedges are counted) before comparing win-rate/ROI figures across different data sources.
+
+## /loop iter 152 — CHEAP gap thread closed: rebates don't explain it, remaining gap is modest and consistent with normal variance
+
+Quick follow-up: does including maker rebates close the remaining -12.4%/-16.5% CHEAP ROI gap (iter 151) between our bots and the real trader's +5.1%? No — rebates only add 0.59-0.61% of cost (paperbot ROI -12.43%→-11.84%, paperbot-100 -16.45%→-15.84%), nowhere near enough. **Final verdict on this thread: the gap is real but modest (roughly 17-21 percentage points of ROI), on a sample size (n=189-232 per bot) comparable to the real trader's own 24h CHEAP sample (n=373) — well within the range where ordinary day-to-day variance in a high-payout-multiple band like CHEAP could produce a swing this size without any systematic problem.** Not chasing further right now; this is exactly the kind of periodic monitoring check worth repeating occasionally (e.g. does the gap persist or average out over the coming days) rather than something requiring immediate action. Closing the CHEAP-bad-stretch investigation that started at iter 150, net conclusion: initial alarm was mostly a methodology artifact (iter 151), residual real gap is modest and not clearly abnormal (this iter).
+
+## /loop iter 153 — New finding: within-market ladder price direction diverges by asset (BTC adds to strength, ETH/SOL average down) — after catching a major fragmentation artifact
+
+Fresh angle: within a market's same-side entry ladder, does price trend favorably (his side's implied probability rising — "adding to strength") or unfavorably ("averaging down") as he adds more? Raw check looked dramatic and suspicious: BTC HIGH showed r=-0.87 (t=-60.4, n=1,143) between position-index and price — an almost mechanically perfect relationship.
+
+**Caught before writing this up: this was almost entirely a known fragmentation artifact.** This project has previously established that ~63.5% of raw trade rows are CLOB fragments of a single resting order repricing/chasing the book, not separate decisions. Confirmed directly: merging same-side fills within 5s into single decisions (the same methodology already used for the hedge-count-decision-merging work) collapsed BTC HIGH's 1,143 raw fills down to 467 real decisions, and the correlation **completely vanished** (r=0.0003, t=0.01). The "extreme" pattern was one order walking down the book as it repriced, counted as dozens of fake "separate entries."
+
+**Redone properly across all cells with merging applied — a real, smaller, but genuinely interesting cross-asset-DIVERGENT pattern remains:**
+- Bitcoin: CHEAP r=+0.14(t=9.41), MID r=+0.11(t=12.45), CORE r=+0.10(t=6.25), HIGH r=0.0003(t=0.01, null) — **positive**: later same-side additions trend toward MORE favorable prices (a "buy strength/momentum-following" ladder pattern)
+- Ethereum: CHEAP r=-0.06(t=-5.20), MID r=-0.04(t=-4.02), CORE/HIGH not significant — weakly **negative**
+- Solana: CHEAP r=-0.10(t=-9.20), MID r=-0.17(t=-19.58), CORE r=-0.15(t=-6.45), HIGH not significant — clearly **negative**: later additions trend toward LESS favorable prices (an "average down/reinforce despite adversity" pattern)
+
+Temporally stable both halves for the two strongest cells (BTC MID t=9.41/8.72; SOL MID t=-20.19/-8.53).
+
+**Verdict: real, confirmed cross-asset divergence** — Bitcoin ladders into strength (adds when the market is confirming his read), Ethereum/Solana ladder into weakness (add when the market is moving against the original read, a more defensive/stubborn reinforcement pattern). Fits neatly into the "BTC gets closest attention" synthesis from earlier this session — yet another independent line of evidence for the same asset-discipline hierarchy (BTC most rule-following/momentum-respecting, ETH/SOL more reactive). Not yet built (magnitude is modest, r=0.10-0.17, and the practical implication — should the bot bias later-ladder-rung prices differently by asset? — needs its own design thought, not rushed). Important process lesson reinforced: any "position-index vs price/size" analysis on raw `trades.jsonl` MUST merge same-side fills within a short window first, or risk mistaking order-repricing fragments for real behavioral decisions — a documented risk that nearly produced a spurious headline-looking finding here.
+
+## /loop iter 154 — Ladder-price-direction finding confirmed independent of the momentum-alignment mechanism
+
+Follow-up to iter 153: does BTC's "ladder into strength" pattern just reduce to the already-known momentum-alignment tracking (bigger/more-favorable adds simply because real spot momentum happens to be running his way), or is it a separate mechanism? Partial correlation of (position-index, own-side price) controlling for real 2-min spot momentum at each entry's own timestamp, BTC MID:
+
+- raw r(idx, price) = 0.1216, t=13.69
+- partial r(idx, price | momentum) = 0.1105, t=12.42
+
+Barely moves. **Confirmed independent** — the ladder-into-strength pattern is a genuinely separate, additional behavior from momentum-tracking, not a downstream restatement of it. Good, clean confound clearance, consistent with how thoroughly this session has learned to check overlapping mechanisms before treating two correlated findings as truly distinct.
+
+## /loop iter 155 — Attempted live-production verification of shipped features: insufficient data yet, and CHEAP gap confirmed stable (not worsening)
+
+Two routine checks: (1) re-ran the 24h CHEAP dominant-side ROI comparison from iters 150-152 — gap is stable (paperbot -12.9%, paperbot-100 -16.8%, essentially unchanged from the prior check), confirming it's a persistent-but-modest characteristic, not an escalating problem. (2) Attempted to verify `REENTRY_FATIGUE_MULTIPLIER`/`HEDGE_COUNT_REINFORCEMENT_MULTIPLIER` are producing the expected size step-changes in live ledger data (not just passing unit tests) — came back inconclusive: zero ETH/SOL MID same-side entries have reached position-index 6+ in the ~1-2h since deploy (reaching that threshold needs a heavily-laddered market, which hasn't occurred yet in this short a window). Flagging for a re-check once several more hours have passed and enough deep-ladder markets have naturally occurred.
+
+## /loop iter 157 — Resolved (partially) the paperbot-mini mystery flagged last iteration
+
+Follow-up to iter 156's discovery that `paperbot-mini` (documented in `PROJECT_JOURNEY.md` as the permanent frozen control bot) is no longer running. Checked the server for any trace: its systemd unit file is completely GONE (not just disabled/stopped — removed), but its data directories (`/opt/paperbot/data_mini/`, `/opt/paperbot/data_mini_backup_1788987417/`) still exist. Its own ledger shows the last real settlement at **2026-09-11 09:41:05 UTC** — meaning it kept running as the intended frozen baseline for roughly a day after being set up (per `PROJECT_JOURNEY.md` Phase 3, frozen ~Sept 10), then was fully decommissioned rather than left running indefinitely.
+
+**Why** it was decommissioned is still genuinely unknown — nothing in claude_memory.md, claude_logs.md, or the persistent project memory files mentions this decision at all. Updated `PROJECT_JOURNEY.md` with the concrete date found, honestly leaving the reason unexplained rather than speculating. This is a minor historical/documentation matter, not something requiring further server-side digging (the unit file's total removal, not just a stop, suggests a deliberate decision was made and cleaned up properly at the time, not an accidental crash).
+
+## /loop iter 159 — CORRECTION to iter 152: the CHEAP gap is NOT normal variance, it's a real 3-4 sigma divergence
+
+Iter 152 concluded the residual CHEAP ROI gap (bot -12.4%/-16.5% vs real trader +5.1%) was "consistent with normal variance" without actually quantifying what normal variance looks like. Fixed that gap in the analysis: computed the real trader's own day-to-day CHEAP ROI across 22 real trading days (Aug 8 - Sep 12, n>=50 markets/day):
+
+Daily ROI ranged from -10.62% (his worst day in the sample) to +7.91% (best), **mean +1.48%, std dev 4.48%**.
+
+**Our bot's -12.4%/-16.5% ROI sits 3.10 / 4.01 standard deviations below his own typical daily variance** — worse than his single worst day in 22 real days of data. This is a real, statistically meaningful divergence, not ordinary noise. **Retracting iter 152's "consistent with normal variance, not urgent" verdict** — this deserves genuine investigation, not dismissal. Given win rate is actually close to his (39.7-43.1% vs 40.8%, per iter 151's corrected per-market methodology), the ROI gap likely comes from something else: probably a size-weighting mismatch (sizing correlating poorly with which specific CHEAP bets pay off) rather than a win-rate/calibration problem per se. Flagging as the next concrete diagnostic step: compare size-vs-outcome correlation within CHEAP for our bot vs the real trader over the same window.
+
+## /loop iter 159 (continued) — Root cause narrowed: the FIRST-ENTRY edge in CHEAP is negative for our bot, positive for the real trader
+
+Continuing the investigation reopened above. Ruled out two candidate mechanisms first:
+- **Size-outcome correlation**: similar for our bot and the real trader (real trader r=0.396, paperbot r=0.373, paperbot-100 r=0.477) — not a sizing-weighting mismatch.
+- **Mean price level paid**: our bots actually pay slightly CHEAPER (more favorable) prices on average (paperbot mean=0.157, paperbot-100 mean=0.162) than the real trader (mean=0.173) — if anything this should favor our bot's ROI, not hurt it. (Note: the first attempt at this check had a real bug — it relied on the `fills` field, which is empty for any entry settled before this session's recent ledger fix, silently limiting the sample to ~16-17 markets; refixed using `settled_at` as the ordering proxy for a proper ~150-170 market sample.)
+
+**Found the real answer with a direct edge metric** (won − price, computed per first-entry, not aggregated through separate means): real trader's CHEAP first-entry edge over the same 24h window is **+0.0488** (n=370) — a real, positive edge, consistent with everything already known about his calibration. **Our bots: paperbot -0.0124 (n=172), paperbot-100 -0.0499 (n=143)** — both negative.
+
+**This resolves the apparent contradiction from earlier in this thread** (similar dominant-side win rate, similar size-outcome correlation, even favorable price levels, yet clearly worse ROI): the mismatch is specifically in the FIRST ENTRY's edge — our bot's initial side/price pick in CHEAP is measurably worse-calibrated than the real trader's, even though later hedges and same-side additions partially correct for it by the time a market fully resolves (which is why the aggregate dominant-side win rate looked similar). The ROI hit comes from the first entry typically being the largest, least-corrected position in a market.
+
+**This is real and worth a genuine follow-up investigation** — retracting any remaining implication from iter 152/iter 159's earlier framing that this could be dismissed as normal noise. Next concrete step for a future iteration: trace whether `ENTRY_SIZING_USD`/the CHEAP-band side-selection or price-calibration tables in `behavior_config.py` have drifted stale relative to current real-market conditions (the resolution-cache backfill and 100%-coverage validation earlier this session focused on WIN-RATE findings broadly, not a fresh recalibration pass on the foundational CHEAP entry tables specifically) — or whether this is a genuinely new, recent shift in the real trader's own CHEAP calibration that hasn't been re-measured since the tables were last built.
+
+## Hypothesis miner re-run (2026-09-13, mid-conversation, ~05:03 UTC): checked, 3 genuinely new leads surfaced, both real ones retracted
+
+Re-ran hypothesis_miner.py on 278,268 scanned trades / 16,663 markets — 160 findings (same count as iter 126's run). Nine unique dimensions appeared; six are already-investigated/retracted this session (streak_of_wins/losses_length, week_of_month, size_vs_own_prior_trade_in_market, entry_size_bucket, rolling_win_rate_last10/30_bucket — the last is near-tautological, a rolling measure of itself). Three genuinely new:
+
+1. **`rolling_own_size_last10_bucket` predicts win rate** — pooled looked real (BTC z=2.83, ETH z=3.58, SOL z=1.95), but **completely vanishes within every regime band** (all |z|<2.1 across CHEAP/MID/CORE/HIGH for all 3 assets, one SOL CORE cell at z=-2.03 reversed and thin). Classic regime-composition artifact — recent regime mix correlates with both rolling size and win rate independently. **RETRACTED.**
+2. **`cumulative_own_notional_so_far_bucket` predicts entry size** (1-5→2.08, 20+→6.38) — not independently re-tested, but structurally this is very likely the same confound already caught and retracted for the "diminishing increments" thread (iter 130): cumulative dollar committed correlates mechanically with position-index/total-trades-in-market, which itself correlates with size for compositional reasons unrelated to any real "escalate as you commit more" behavior. Flagging as suspected-same-artifact, not independently disproven — would need the same total-trades-in-market partial-correlation check before treating as real.
+3. `is_price_at_extreme_decile` predicting entry size — not checked in detail; overlaps heavily with the already-established within-band price-level size gradients (WITHIN_BAND_SIZE_SLOPE), likely not new.
+
+No new build candidate surfaced from this run.
+
+## Live spot-momentum side-selection: RESEARCHED THOROUGHLY, DECIDED NOT TO BUILD (mid-conversation, ~05:20 UTC)
+
+Full investigation requested by the user into whether live spot-price momentum could be wired into side selection. Findings, in order:
+
+1. **Technically buildable**: Coinbase REST/WebSocket reachable from AWS (Binance is not — HTTP 451 geo-block, confirmed still in effect), bot's 3s tick loop has ample resolution, `decide_side`/`build_order_intent` already have the right optional-param shape to extend.
+2. **Binance-is-30-60s-faster hypothesis tested directly and rejected**: Binance and Coinbase 1-min returns correlate at r=0.98-0.99 at the same minute, ~0 at any other lag (±1-3min) — no detectable lead at this resolution, for any of BTC/ETH/SOL. Re-running the core momentum-alignment validation with Binance data instead of Coinbase gave statistically identical z-scores on all 3 assets — no improvement anywhere, including ETH/SOL.
+3. **Does he use an external feed at all? Already answered (2026-09-10 session): no.** When Polymarket's own price momentum and real external spot momentum disagree, he follows Polymarket's own price 54.15% of the time, external spot only 45.85% (below chance). He reads the book, not an external feed.
+4. **Tested the safer alternative — Polymarket's own contract price momentum** (zero new dependency, matches revealed behavior) using a freshly-fetched, properly-scoped sample (4,949 post-TWAP BTC markets, no price restriction, via `clob.polymarket.com/prices-history`): natural alignment rate CHEAP 17.6%/MID 54.3%; predicts win rate in MID only (z=3.77, borderline temporal stability both halves ~2.5) and NOT in CHEAP (z=1.29, null). Roughly 4x weaker than the external-spot MID effect (z=14-22) and doesn't touch CHEAP at all.
+
+**Decision: do not build.** Every version examined is either too weak to justify a side-selection architecture change (contract price) or requires deliberately replicating a mechanism he doesn't use (external feed) for an edge that STILL wouldn't fix the original CHEAP problem this investigation was trying to solve. This closes the "live momentum wiring" item that was previously left ON HOLD — now it's TESTED AND REJECTED, not just deferred. The original CHEAP first-entry edge gap remains real and still needs a different explanation.
