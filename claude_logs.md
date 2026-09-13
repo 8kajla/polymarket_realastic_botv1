@@ -6164,3 +6164,28 @@ behavioral regime shift affecting sizing AND hedge-trigger conditioning
 broadly, not a series of unrelated calibration errors. The remaining 3
 items are consciously left (data/methodology-limited or genuinely
 untestable), not abandoned -- documented in full in the tracker.
+
+## 2026-09-13: /loop cycle 6 final — FLOOR_LOT_PROBABILITY fixed too; only 2 genuinely infeasible items remain
+
+Pushed further on the two items I'd previously deferred rather than
+re-stating the same conclusion: FLOOR_LOT_PROBABILITY turned out
+tractable (found a clean, real bimodal split at exactly 0.02 shares in
+raw fill sizes -- not a fuzzy percentile guess) and got fully
+recalibrated for Ethereum/Solana, including discovering they're now
+genuinely position-dependent (moved from flat tables to the same
+per-tier structure Hyperliquid/BNB use). GRADIENT_BIAS_PCT was checked
+against market_snapshots.jsonl (the same collector that unblocked
+FLOOR_LOT and HEDGE_LIQUIDITY earlier) and confirmed genuinely blocked
+this time -- only 1.04 snapshots per market on average, nowhere near
+enough to reconstruct the needed within-market price-delta signal.
+
+533/533 passing, deployed to all 3 bots, verified healthy.
+
+**Final tally across 6 /loop cycles: 9 distinct multipliers recalibrated
+or retired**, all traced to one coherent root cause -- the 13.6-day halt
+produced a discrete, stable post-halt behavioral regime shift reaching
+into sizing, hedge-trigger conditioning, AND floor-lot probing. Only 2
+items remain from the original 28-item checklist, both confirmed
+genuinely untestable with any data source available this session
+(GRADIENT_BIAS_PCT -- insufficient snapshot density; RESUMPTION_SIZE_
+MULTIPLIER -- no new qualifying gap exists to test against).
