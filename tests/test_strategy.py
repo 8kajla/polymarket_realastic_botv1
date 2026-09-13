@@ -820,6 +820,67 @@ class TestBuildOrderIntent:
         assert early is not None and late is not None
         assert early != late, "seconds_remaining must actually reach decide_size, not be dropped"
 
+    def test_decisiveness_fraction_is_computed_from_activitys_crossing_and_threaded_through(self, monkeypatch):
+        """End-to-end: build_order_intent must compute decisiveness_fraction
+        from activity.up_decisive_crossed_at/market.end_time/now itself
+        (strategy.py has no other way to learn a crossing happened) and
+        pass it into decide_size, actually moving the resulting notional --
+        not just that the multiplier function works in isolation (already
+        covered in TestDecisivenessOnsetMultiplier). decide_side is forced
+        to "Up" -- an unforced first entry isn't deterministic (see
+        test_regime_price_and_sizing_come_from_the_chosen_sides_book's own
+        use of the same pattern), and which side gets traded is not what
+        this test is checking."""
+        monkeypatch.setattr(stratmod, "decide_side",
+                             lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        up_book = make_liquid_book(price=0.75, token_id="up")  # CORE band, Bitcoin-calibrated
+        down_book = make_liquid_book(price=0.20, token_id="down")
+
+        def notional_at(now, crossed_at, seed=0):
+            market = make_market(end_time=1000.0, asset="Bitcoin")
+            activity = MarketActivityState()
+            activity.up_decisive_crossed_at = crossed_at
+            intent = build_order_intent(market, up_book, down_book, activity, random.Random(seed), now=now)
+            return intent.notional_usd if intent is not None else None
+
+        # crossed at t=600 (400s available to close): fraction at t=620 is
+        # 20/400=0.05 (the 1.74x bucket); at t=920 it's 320/400=0.80 (the
+        # 0.71x bucket) -- a clean contrast, both still clearing
+        # MIN_SECONDS_BEFORE_CLOSE (75s) so neither call returns None for
+        # an unrelated reason.
+        tight_reaction = notional_at(now=620.0, crossed_at=600.0)     # fraction=0.05 -> 1.74x
+        slow_reaction = notional_at(now=920.0, crossed_at=600.0)      # fraction=0.80 -> 0.71x
+        no_crossing = notional_at(now=620.0, crossed_at=None)         # fraction=None -> 1.0x (no-op)
+
+        assert tight_reaction is not None and slow_reaction is not None and no_crossing is not None
+        assert tight_reaction != slow_reaction, \
+            "decisiveness_fraction must actually reach decide_size, not be dropped"
+        assert tight_reaction > slow_reaction  # 1.74x bucket must size larger than 0.71x
+
+    def test_decisiveness_fraction_uses_the_traded_sides_own_crossing_time(self, monkeypatch):
+        """The fraction must come from whichever side actually gets traded
+        (forced to Up here), not the other side's -- an unset Down
+        crossing must not leak in and force a no-op."""
+        monkeypatch.setattr(stratmod, "decide_side",
+                             lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        up_book = make_liquid_book(price=0.75, token_id="up")   # CORE -- this side gets traded
+        down_book = make_liquid_book(price=0.20, token_id="down")  # CHEAP
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        activity = MarketActivityState()
+        activity.up_decisive_crossed_at = 700.0
+        activity.down_decisive_crossed_at = None  # must be irrelevant here
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=715.0)
+        assert intent is not None
+        assert intent.side == "Up"
+        # Compare against a no-crossing baseline to confirm the boost fired.
+        activity_baseline = MarketActivityState()
+        intent_baseline = build_order_intent(market, up_book, down_book, activity_baseline,
+                                              random.Random(0), now=715.0)
+        assert intent.notional_usd != intent_baseline.notional_usd
+
     def test_floor_lot_still_skips_below_the_runtime_minimum(self):
         """Floor-lot's whole point is a tiny, often-below-minimum notional
         -- it must still genuinely skip (not get bumped up), unlike the
@@ -924,6 +985,130 @@ class TestMarketActivityStateHedgeTracking:
         activity.release_unfilled("Up", 10.0)
         assert activity.cost_by_side["Up"] == 0.0
         assert activity.cost_by_side["Down"] == 3.0
+
+
+class TestDecisiveCrossingTracking:
+    """ADDED 2026-09-13, alongside DECISIVENESS_ONSET_MULTIPLIER: real,
+    ceiling-effect-confound-checked finding that reaction speed to a
+    market snapping into CORE/HIGH scales with time remaining at the
+    crossing -- see the multiplier's own docstring in behavior_config.py."""
+
+    def test_records_up_crossing_the_first_time_it_reaches_threshold(self):
+        activity = MarketActivityState()
+        activity.update_decisive_crossings(up_price=0.75, down_price=0.25, now=1000.0, threshold=0.70)
+        assert activity.up_decisive_crossed_at == 1000.0
+        assert activity.down_decisive_crossed_at is None
+
+    def test_records_down_crossing_independently(self):
+        activity = MarketActivityState()
+        activity.update_decisive_crossings(up_price=0.25, down_price=0.75, now=1000.0, threshold=0.70)
+        assert activity.down_decisive_crossed_at == 1000.0
+        assert activity.up_decisive_crossed_at is None
+
+    def test_both_sides_can_cross_independently_at_different_times(self):
+        activity = MarketActivityState()
+        activity.update_decisive_crossings(up_price=0.75, down_price=0.25, now=1000.0, threshold=0.70)
+        activity.update_decisive_crossings(up_price=0.80, down_price=0.20, now=1010.0, threshold=0.70)
+        assert activity.up_decisive_crossed_at == 1000.0  # locked, not overwritten by the later tick
+
+    def test_locks_on_first_crossing_does_not_update_on_later_ticks(self):
+        activity = MarketActivityState()
+        activity.update_decisive_crossings(up_price=0.71, down_price=0.29, now=1000.0, threshold=0.70)
+        activity.update_decisive_crossings(up_price=0.95, down_price=0.05, now=1050.0, threshold=0.70)
+        assert activity.up_decisive_crossed_at == 1000.0
+
+    def test_no_crossing_recorded_below_threshold(self):
+        activity = MarketActivityState()
+        activity.update_decisive_crossings(up_price=0.65, down_price=0.35, now=1000.0, threshold=0.70)
+        assert activity.up_decisive_crossed_at is None
+        assert activity.down_decisive_crossed_at is None
+
+    def test_none_price_does_not_crash_or_record(self):
+        activity = MarketActivityState()
+        activity.update_decisive_crossings(up_price=None, down_price=None, now=1000.0, threshold=0.70)
+        assert activity.up_decisive_crossed_at is None
+        assert activity.down_decisive_crossed_at is None
+
+    def test_exact_threshold_price_counts_as_crossed(self):
+        activity = MarketActivityState()
+        activity.update_decisive_crossings(up_price=0.70, down_price=0.30, now=1000.0, threshold=0.70)
+        assert activity.up_decisive_crossed_at == 1000.0
+
+    def test_defaults_to_a_fresh_none_none_for_a_new_instance(self):
+        activity = MarketActivityState()
+        assert activity.up_decisive_crossed_at is None
+        assert activity.down_decisive_crossed_at is None
+
+
+class TestDecisivenessOnsetMultiplier:
+    def test_noop_for_cheap_regime(self):
+        assert bc.decisiveness_onset_multiplier("Bitcoin", "CHEAP", 0.1) == 1.0
+
+    def test_noop_for_mid_regime(self):
+        assert bc.decisiveness_onset_multiplier("Bitcoin", "MID", 0.1) == 1.0
+
+    def test_noop_when_fraction_is_none(self):
+        assert bc.decisiveness_onset_multiplier("Bitcoin", "CORE", None) == 1.0
+
+    def test_noop_for_an_asset_with_no_table_entry(self):
+        assert bc.decisiveness_onset_multiplier("Dogecoin", "HIGH", 0.1) == 1.0
+
+    def test_looks_up_the_correct_bucket_for_core(self):
+        # Bitcoin's [0.00, 0.15) bucket is 1.74 -- see DECISIVENESS_ONSET_MULTIPLIER.
+        assert bc.decisiveness_onset_multiplier("Bitcoin", "CORE", 0.05) == 1.74
+
+    def test_looks_up_the_correct_bucket_for_high(self):
+        assert bc.decisiveness_onset_multiplier("Bitcoin", "HIGH", 0.05) == 1.74
+
+    def test_different_buckets_return_different_values(self):
+        low = bc.decisiveness_onset_multiplier("Bitcoin", "CORE", 0.05)
+        high = bc.decisiveness_onset_multiplier("Bitcoin", "CORE", 0.50)
+        assert low != high
+
+    def test_fraction_at_or_beyond_one_falls_back_to_neutral(self):
+        # The empty tail bucket (no observations at ANY sample size reached
+        # so far) -- deliberately left at 1.0, not extrapolated.
+        assert bc.decisiveness_onset_multiplier("Bitcoin", "CORE", 1.2) == 1.0
+
+    def test_negative_fraction_defensively_falls_back_to_neutral(self):
+        assert bc.decisiveness_onset_multiplier("Bitcoin", "CORE", -0.5) == 1.0
+
+    def test_every_table_value_is_within_the_documented_safety_cap(self):
+        for asset, buckets in bc.DECISIVENESS_ONSET_MULTIPLIER.items():
+            for lo, hi, mult in buckets:
+                assert 0.5 <= mult <= 2.0, f"{asset} bucket [{lo},{hi}) = {mult} exceeds the cap"
+
+
+class TestDecideSizeDecisivenessIntegration:
+    def test_decide_size_is_unaffected_when_fraction_not_passed(self):
+        rng = random.Random(1)
+        notional, _ = decide_size("Bitcoin", "CORE", "first", 0.75, rng)
+        assert notional > 0  # no crash, no-op multiplier applied internally
+
+    def test_decisiveness_boost_changes_core_sizing_when_enabled(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_ONSET_MULTIPLIER", True)
+        rng_a = random.Random(7)
+        rng_b = random.Random(7)
+        notional_noboost, _ = decide_size("Bitcoin", "CORE", "first", 0.75, rng_a,
+                                           decisiveness_fraction=None)
+        notional_boosted, _ = decide_size("Bitcoin", "CORE", "first", 0.75, rng_b,
+                                           decisiveness_fraction=0.05)  # 1.74x bucket
+        assert notional_boosted > notional_noboost
+
+    def test_flag_disabled_makes_decide_size_ignore_the_fraction(self, monkeypatch):
+        # decide_size itself reads config.ENABLE_DECISIVENESS_ONSET_MULTIPLIER
+        # (same gating pattern/location as hedge_count_reinforcement_mult
+        # just above it) -- with the flag off, passing a fraction that would
+        # otherwise land in a boosted bucket must produce the SAME notional
+        # as passing no fraction at all, not merely "still positive."
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_ONSET_MULTIPLIER", False)
+        rng_a = random.Random(9)
+        rng_b = random.Random(9)
+        notional_flagged_off, _ = decide_size("Bitcoin", "CORE", "first", 0.75, rng_a,
+                                               decisiveness_fraction=0.05)  # would be a 1.74x bucket
+        notional_no_fraction, _ = decide_size("Bitcoin", "CORE", "first", 0.75, rng_b,
+                                               decisiveness_fraction=None)
+        assert notional_flagged_off == notional_no_fraction
 
 
 class TestActivityStatePersistence:

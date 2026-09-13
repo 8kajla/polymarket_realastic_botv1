@@ -662,6 +662,77 @@ def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# DECISIVENESS-ONSET size scaling. Added 2026-09-13: a market's price
+# snapping into a decisive band (>=0.70) is a distinct event from just
+# "having a decisive price" -- the trader reacts to the SNAP, not the
+# static level, on a timescale set by how much time is left when it
+# happens (originally reframed from a pure time-to-close angle;
+# see decisiveness-collector-gamma-caching-bug.md's full derivation).
+#
+# Confirmed real via a ceiling-effect confound check before building:
+# early entries are structurally capped at a smaller max-possible delay
+# than late ones (a crossing must precede the entry), so "tighter early /
+# wider late" delay alone could just be that ceiling. Controlling for it
+# -- expressing delay as a FRACTION of the time actually available when
+# the crossing happened (window close minus crossing time), not a raw
+# second count -- the effect survives: late-crossing markets consistently
+# show a SMALLER fraction consumed (more urgent) than early-crossing ones,
+# for all 3 assets. This is the deployable quantity; a fixed-second-window
+# gate would have miscalibrated for crossings outside the exact buckets
+# originally tested.
+#
+# Measured (35h of dense CLOB-book history, decisive-regime real entries
+# only, n=1727/433/228 for BTC/ETH/SOL): density of entries across
+# fraction-of-remaining-time-since-crossing buckets, relative to a flat
+# no-preference null. Values below are that ratio, capped to [0.5, 2.0]
+# (this project's usual safety bound for a frequency-derived multiplier)
+# -- Solana's [0.00,0.15) bucket in particular is thin (n=13) and its raw
+# 0.38x ratio is floored to the cap rather than trusted at face value.
+# The final, open-ended bucket ([0.60, 1.0+)) had ZERO observations in
+# ALL THREE assets at every sample size reached so far -- left at a
+# neutral 1.0x (no boost, no suppression) rather than extrapolating a
+# shape with no supporting data.
+#
+# Only meaningful for CORE/HIGH entries (price >= DECISIVENESS_THRESHOLD)
+# -- see decisiveness_onset_multiplier's own gating. Bucket boundaries
+# are fractions in [0, 1]; a fraction outside [0, 1) (crossing happened
+# so long ago that more than the entire post-crossing window has already
+# elapsed, which shouldn't occur in practice since a market closes at
+# fraction==1.0) falls back to the same neutral 1.0x as the empty tail
+# bucket.
+DECISIVENESS_ONSET_MULTIPLIER = {
+    "Bitcoin":  [(0.00, 0.15, 1.74), (0.15, 0.30, 1.55), (0.30, 0.45, 1.08),
+                 (0.45, 0.60, 1.35), (0.60, 1.00, 0.71)],
+    "Ethereum": [(0.00, 0.15, 1.06), (0.15, 0.30, 1.42), (0.30, 0.45, 0.95),
+                 (0.45, 0.60, 1.77), (0.60, 1.00, 1.10)],
+    "Solana":   [(0.00, 0.15, 0.50), (0.15, 0.30, 1.05), (0.30, 0.45, 1.05),
+                 (0.45, 0.60, 1.87), (0.60, 1.00, 1.73)],
+}
+_DECISIVENESS_ONSET_MULTIPLIER_CAP = 2.0
+
+
+def decisiveness_onset_multiplier(asset: str, regime: str, fraction_consumed: Optional[float]) -> float:
+    """Size multiplier keyed by how much of the time remaining-at-crossing
+    has elapsed since this side's price first snapped decisive. 1.0 (no-op)
+    for CHEAP/MID (never measured there -- the whole angle is about a
+    market that has already become decisive), for an asset with no table
+    entry, or when fraction_consumed is None (no crossing observed yet,
+    e.g. a market that opened already-decisive with no pre-crossing tick
+    captured, or DECISIVENESS_ONSET_MULTIPLIER's own feature disabled
+    upstream)."""
+    if regime not in ("CORE", "HIGH") or fraction_consumed is None:
+        return 1.0
+    buckets = DECISIVENESS_ONSET_MULTIPLIER.get(asset)
+    if buckets is None:
+        return 1.0
+    for lo, hi, mult in buckets:
+        if lo <= fraction_consumed < hi:
+            return max(1.0 / _DECISIVENESS_ONSET_MULTIPLIER_CAP,
+                       min(_DECISIVENESS_ONSET_MULTIPLIER_CAP, mult))
+    return 1.0  # fraction_consumed >= 1.0 (or negative, defensively) -- the empty tail case
+
+
+# ---------------------------------------------------------------------------
 # TIME-TO-CLOSE size scaling. Added 2026-09-10: the whole session's own
 # reverse-engineering work found a real, structural signal (a market
 # entering its 60s TWAP window makes the outcome increasingly computable

@@ -93,9 +93,33 @@ class MarketActivityState:
     # BUGS_TO_FIX.md #5 for the full reasoning.
     real_fill_count: int = 0
     real_hedge_fill_count: int = 0
+    # ADDED 2026-09-13, alongside DECISIVENESS_ONSET_MULTIPLIER: the
+    # timestamp each side's book price FIRST crossed
+    # config.DECISIVENESS_THRESHOLD (0.70). Locks on first crossing (like
+    # first_entry_price) -- never reset or overwritten, since the finding
+    # this feeds measures delay from the market's FIRST snap into a
+    # decisive price, not from any later moment it happens to still be
+    # there. Persisted across restarts via save_activity_state/
+    # load_activity_state like every other field here, so a market mid-
+    # reaction-window survives a deploy without losing its crossing time.
+    up_decisive_crossed_at: Optional[float] = None
+    down_decisive_crossed_at: Optional[float] = None
 
     def position_tier(self) -> str:
         return bc.position_tier_for_index(self.real_fill_count)
+
+    def update_decisive_crossings(self, up_price: Optional[float], down_price: Optional[float],
+                                   now: float, threshold: float = 0.70) -> None:
+        """Records the first time each side's price reaches `threshold`,
+        called every tick with the market's current book prices (mirrors
+        bot.py's _recent_price_delta -- a book-state-derived per-market
+        signal updated once per tick before any decision is made this
+        cycle). A no-op once a side has already crossed -- see the
+        crossed_at fields' own docstring for why this locks."""
+        if self.up_decisive_crossed_at is None and up_price is not None and up_price >= threshold:
+            self.up_decisive_crossed_at = now
+        if self.down_decisive_crossed_at is None and down_price is not None and down_price >= threshold:
+            self.down_decisive_crossed_at = now
 
     def dominant_side(self) -> Optional[str]:
         """The side with more cumulative $ committed so far, or None if
@@ -489,7 +513,8 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
                  size_momentum_residual: Optional[float] = None,
                  bankroll_pnl_residual: Optional[float] = None,
                  real_fill_count: Optional[int] = None,
-                 live_hedge_count: Optional[int] = None) -> tuple[float, bool]:
+                 live_hedge_count: Optional[int] = None,
+                 decisiveness_fraction: Optional[float] = None) -> tuple[float, bool]:
     """
     Returns (notional_usd, is_floor_lot). Rolls the floor-lot tier first for
     assets where it's modeled (Part 4); falls back to the normal
@@ -498,10 +523,11 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     were measured.
 
     seconds_remaining, hours_since_resumption, size_momentum_residual,
-    bankroll_pnl_residual, real_fill_count, and live_hedge_count are all
-    Optional (default None -> no-op) so every existing call site/test that
-    doesn't pass them keeps working unchanged. live_hedge_count should
-    only ever be passed for an ORDINARY (non-hedge) entry -- see
+    bankroll_pnl_residual, real_fill_count, live_hedge_count, and
+    decisiveness_fraction are all Optional (default None -> no-op) so
+    every existing call site/test that doesn't pass them keeps working
+    unchanged. live_hedge_count should only ever be passed for an
+    ORDINARY (non-hedge) entry -- see
     HEDGE_COUNT_REINFORCEMENT_MULTIPLIER's docstring in behavior_config.py.
     """
     floor_p = bc.floor_lot_probability(asset, regime, position_tier)
@@ -606,10 +632,17 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # not pass live_hedge_count for a hedge leg's own sizing.
     hedge_count_reinforcement_mult = bc.hedge_count_reinforcement_multiplier(
         asset, regime, live_hedge_count) if config.ENABLE_HEDGE_COUNT_REINFORCEMENT else 1.0
+    # DECISIVENESS-ONSET (2026-09-13 finding): reaction speed to a market
+    # snapping into CORE/HIGH scales with how much time was left when it
+    # happened, not a fixed absolute delay -- see DECISIVENESS_ONSET_
+    # MULTIPLIER's docstring in behavior_config.py for the ceiling-effect
+    # confound check this survived before being built.
+    decisiveness_mult = bc.decisiveness_onset_multiplier(
+        asset, regime, decisiveness_fraction) if config.ENABLE_DECISIVENESS_ONSET_MULTIPLIER else 1.0
     # COMBINED-MULTIPLIER SAFETY BOUND (2026-09-12, bug audit #4): each of
     # within_band/momentum_mult/bankroll_mult/ttc_mult/resumption_mult/
-    # reentry_fatigue_mult/hedge_count_reinforcement_mult was
-    # fit MARGINALLY -- controlling for other already-known variables
+    # reentry_fatigue_mult/hedge_count_reinforcement_mult/decisiveness_mult
+    # was fit MARGINALLY -- controlling for other already-known variables
     # individually at build time -- but their PRODUCT has never been
     # validated against his real observed size distribution as a joint
     # quantity. Specific risk flagged in BUGS_TO_FIX.md #4: momentum_mult
@@ -632,7 +665,7 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # of every factor aligning in the same direction at once.
     combined_signal = (within_band * momentum_mult * bankroll_mult * ttc_mult
                         * resumption_mult * reentry_fatigue_mult
-                        * hedge_count_reinforcement_mult)
+                        * hedge_count_reinforcement_mult * decisiveness_mult)
     cap = config.COMBINED_SIZE_MULTIPLIER_CAP
     combined_signal = max(1.0 / cap, min(cap, combined_signal))
     # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a
@@ -790,6 +823,21 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         return None
     regime = bc.classify_regime(price)
 
+    # DECISIVENESS-ONSET fraction (2026-09-13): how much of the time
+    # available when this side first snapped decisive has elapsed since.
+    # None whenever there's no crossing recorded yet for this side (most
+    # CHEAP/MID entries -- decisiveness_onset_multiplier no-ops on those
+    # regimes anyway) or `now` wasn't supplied. Computed here, once side/
+    # price/regime are all known, rather than threaded in from bot.py --
+    # activity and market (for end_time) are already in scope.
+    decisiveness_fraction: Optional[float] = None
+    if now is not None:
+        crossed_at = activity.up_decisive_crossed_at if side == "Up" else activity.down_decisive_crossed_at
+        if crossed_at is not None:
+            total_available = market.end_time - crossed_at
+            if total_available > 0:
+                decisiveness_fraction = (now - crossed_at) / total_available
+
     ok, reason = availability_check(side_book)
     if not ok:
         # Diagnostic (2026-09-08): this was a silent None-return -- same
@@ -921,7 +969,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                                                   size_momentum_residual=size_momentum_residual,
                                                   bankroll_pnl_residual=bankroll_pnl_residual,
                                                   real_fill_count=activity.real_fill_count,
-                                                  live_hedge_count=activity.real_hedge_fill_count)
+                                                  live_hedge_count=activity.real_hedge_fill_count,
+                                                  decisiveness_fraction=decisiveness_fraction)
     else:
         notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
                                               seconds_remaining=seconds_remaining,
@@ -929,7 +978,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                                               size_momentum_residual=size_momentum_residual,
                                               bankroll_pnl_residual=bankroll_pnl_residual,
                                               real_fill_count=activity.real_fill_count,
-                                              live_hedge_count=activity.real_hedge_fill_count)
+                                              live_hedge_count=activity.real_hedge_fill_count,
+                                              decisiveness_fraction=decisiveness_fraction)
 
     is_scout = False
     if not is_hedge and not is_floor_lot and activity.entry_count == 0:

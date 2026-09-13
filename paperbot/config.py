@@ -893,3 +893,22 @@ MOMENTUM_LOOKBACK_MINUTES = float(os.environ.get("MOMENTUM_LOOKBACK_MINUTES", "3
 # returns HTTP 451 there; see live-momentum-wiring-tested-rejected.md).
 # 15s comfortably clears Coinbase's public rate limit for 3 products.
 COINBASE_POLL_INTERVAL_SECONDS = float(os.environ.get("COINBASE_POLL_INTERVAL_SECONDS", "15.0"))
+
+# ---------------------------------------------------------------------------
+# DECISIVENESS_THRESHOLD: the book price a side must reach to count as
+# having "snapped decisive" for DECISIVENESS_ONSET_MULTIPLIER (behavior_
+# config.py) -- matches the CORE/HIGH regime boundary exactly (0.70),
+# since the whole effect is specifically about entries in that combined
+# population. Also used by MarketActivityState.update_decisive_crossings.
+DECISIVENESS_THRESHOLD = float(os.environ.get("DECISIVENESS_THRESHOLD", "0.70"))
+
+# Feature flag for DECISIVENESS_ONSET_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-13 -- real reaction-speed effect,
+# confirmed cross-asset (Bitcoin/Ethereum well-powered, Solana thin but
+# directionally consistent) and confirmed to survive a ceiling-effect
+# confound check (a naive early-entries-react-faster reading could just
+# be an artifact of early entries having a smaller max-possible delay).
+# Default TRUE everywhere.
+ENABLE_DECISIVENESS_ONSET_MULTIPLIER = os.environ.get(
+    "ENABLE_DECISIVENESS_ONSET_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")

@@ -626,6 +626,16 @@ class PaperBot:
 
         activity = self.activity[market.condition_id]
         delta = self._recent_price_delta(market.token_id_up, up_book.best_bid)
+        # DECISIVENESS-ONSET tracking (2026-09-13): records the first tick
+        # each side's price reaches config.DECISIVENESS_THRESHOLD, feeding
+        # build_order_intent's decisiveness_fraction computation. Must run
+        # every tick regardless of what happens below (a market can snap
+        # decisive on a tick where nothing else changes) and before
+        # build_order_intent, which reads the crossing timestamps this
+        # sets. Persisted via activity's own save/load, like every other
+        # MarketActivityState field.
+        activity.update_decisive_crossings(up_book.best_bid, down_book.best_bid, now,
+                                            threshold=config.DECISIVENESS_THRESHOLD)
         hours_since_resumption = self._hours_since_resumption(now)
         is_first_entry = activity.entry_count == 0  # captured BEFORE record_entry increments it
 

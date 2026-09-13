@@ -389,6 +389,34 @@ class TestAfterBigLossTracking:
 
         assert captured["after_big_loss"] is True
 
+    def test_evaluate_one_market_records_decisive_crossing_from_the_live_book(self):
+        """ADDED 2026-09-13: _evaluate_one_market must update
+        activity.up_decisive_crossed_at/down_decisive_crossed_at from the
+        CURRENT book every tick -- build_order_intent has no other way to
+        learn a crossing happened, since it only sees whatever activity
+        already holds coming in."""
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market, bid=0.75, ask=0.76)  # Up crosses DECISIVENESS_THRESHOLD (0.70)
+        activity = bot.activity[market.condition_id]
+        assert activity.up_decisive_crossed_at is None
+
+        bot._evaluate_one_market(market, now=1000.0)
+
+        assert activity.up_decisive_crossed_at == 1000.0
+        assert activity.down_decisive_crossed_at is None  # Down's book is ~0.24-0.25, never crossed
+
+    def test_evaluate_one_market_does_not_move_an_already_recorded_crossing(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market, bid=0.75, ask=0.76)
+        activity = bot.activity[market.condition_id]
+        activity.up_decisive_crossed_at = 500.0  # e.g. restored from a persisted restart
+
+        bot._evaluate_one_market(market, now=1000.0)
+
+        assert activity.up_decisive_crossed_at == 500.0
+
 
 class TestForcedFirstEntrySideHook:
     """PaperBot._forced_first_entry_side, added 2026-09-13 -- the one
