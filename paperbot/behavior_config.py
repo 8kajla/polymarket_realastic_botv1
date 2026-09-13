@@ -228,23 +228,59 @@ ENTRY_SIZING_USD = {
     # qualitative reversal" claim), with Bitcoin HIGH/first the one
     # cell showing a real, well-powered further decline (21.620->19.000,
     # n=305, -12.1%).
+    #
+    # INDEX SEMANTICS CORRECTED 2026-09-13 (/loop cycle 21, same day):
+    # verified cycle 20's own indexing against bot.py directly (not just
+    # against the docstring's own prose) and found a further, more
+    # fundamental mismatch -- real_fill_count (what position_tier_for_
+    # index actually receives live) increments for EVERY confirmed fill
+    # in a market, hedge or ordinary alike (see bot.py's
+    # record_real_fill), not just for decisions on the dominant side.
+    # Cycle 20 assigned tier by a dominant-side-ONLY sub-index (ignoring
+    # interspersed hedge fills advancing the shared counter), which
+    # quietly shifts every dominant decision's effective tier earlier
+    # than it truly is in any market that hedges before that decision.
+    # Also directly compared against "first-entered side" (the side of
+    # the market's very first fill) rather than "dominant by final
+    # cost" as the SIDE filter, since decide_side can genuinely persist-
+    # or-switch the bot's own held side mid-market (see decide_side's
+    # own docstring) -- but this whole project's own established
+    # convention throughout (is_hedge == opposite-of-dominant, used to
+    # classify every real trade in every other table in this file) already
+    # treats "dominant by cost" as the operational stand-in for
+    # "ordinary" trades, so kept that as the side filter for consistency
+    # with the rest of this file rather than introducing a second,
+    # incompatible convention just for this table.
+    # Redone a second time same day: for each market, walk ALL decisions
+    # (both sides) in chronological order maintaining ONE shared index
+    # (matching real_fill_count exactly), but only SAMPLE dominant-side
+    # decisions at their true combined-index tier. Most cells shift a
+    # further 0-10% from cycle 20's dominant-sub-index numbers; a few
+    # HIGH-band cells shift more (12-20%) but those were already the
+    # thinnest, least-certain cells in every prior pass. Cells whose
+    # combined-index sample fell below n>=200 (several HIGH/first and
+    # CORE/first cells specifically -- hedges are more common in HIGH,
+    # thinning out how many EARLY dominant decisions remain unhedged
+    # enough to still sit at a low combined index) were left at their
+    # last-known (cycle 20 or original) value rather than shipped on a
+    # newly-thin sample.
     "Bitcoin": {
-        "CHEAP": {"first": 1.596, "2nd_3rd": 1.463, "4th_plus": 1.380},
-        "MID":   {"first": 2.391, "2nd_3rd": 2.385, "4th_plus": 2.444},
-        "CORE":  {"first": 5.621, "2nd_3rd": 5.928, "4th_plus": 5.928},
-        "HIGH":  {"first": 19.000, "2nd_3rd": 18.600, "4th_plus": 18.600},
+        "CHEAP": {"first": 1.596, "2nd_3rd": 1.463, "4th_plus": 1.400},
+        "MID":   {"first": 2.332, "2nd_3rd": 2.332, "4th_plus": 2.496},
+        "CORE":  {"first": 5.396, "2nd_3rd": 5.928, "4th_plus": 5.928},
+        "HIGH":  {"first": 19.000, "2nd_3rd": 16.284, "4th_plus": 19.000},  # first THIN (n=79)
     },
     "Ethereum": {
-        "CHEAP": {"first": 1.150, "2nd_3rd": 1.040, "4th_plus": 0.650},
-        "MID":   {"first": 2.016, "2nd_3rd": 1.995, "4th_plus": 2.016},
-        "CORE":  {"first": 5.613, "2nd_3rd": 4.860, "4th_plus": 4.594},
-        "HIGH":  {"first": 16.160, "2nd_3rd": 14.469, "4th_plus": 14.469},
+        "CHEAP": {"first": 1.150, "2nd_3rd": 1.024, "4th_plus": 0.700},
+        "MID":   {"first": 1.995, "2nd_3rd": 1.995, "4th_plus": 2.136},
+        "CORE":  {"first": 5.613, "2nd_3rd": 5.032, "4th_plus": 4.818},  # first THIN (n=176)
+        "HIGH":  {"first": 16.160, "2nd_3rd": 14.400, "4th_plus": 15.980},  # first THIN (n=105)
     },
     "Solana": {
-        "CHEAP": {"first": 1.346, "2nd_3rd": 0.955, "4th_plus": 0.543},
-        "MID":   {"first": 1.891, "2nd_3rd": 1.891, "4th_plus": 1.770},
-        "CORE":  {"first": 5.175, "2nd_3rd": 5.032, "4th_plus": 4.818},  # 4th_plus THIN (n=158)
-        "HIGH":  {"first": 14.469, "2nd_3rd": 14.250, "4th_plus": 14.472},
+        "CHEAP": {"first": 1.348, "2nd_3rd": 0.999, "4th_plus": 0.600},
+        "MID":   {"first": 1.788, "2nd_3rd": 1.891, "4th_plus": 1.891},
+        "CORE":  {"first": 5.175, "2nd_3rd": 5.175, "4th_plus": 5.074},  # first THIN (n=170)
+        "HIGH":  {"first": 14.469, "2nd_3rd": 14.249, "4th_plus": 15.326},  # first THIN (n=113)
     },
     "Dogecoin": {
         "CHEAP": {"first": 0.671, "2nd_3rd": 0.495, "4th_plus": 0.276},
