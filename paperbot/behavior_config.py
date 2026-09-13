@@ -1203,10 +1203,31 @@ def bankroll_pnl_size_multiplier(asset: str, cum_realized_pnl: Optional[float]) 
 # is the proper full-post-halt-window replacement, not just a snapshot.
 # HIGH cells stay THIN (n=69-80) for all three assets -- first-pass
 # estimate, revisit once more post-halt volume accumulates.
+#
+# RE-VERIFIED 2026-09-13 (/loop cycle 25, same day as ENTRY_SIZING_USD's
+# and REENTRY_FATIGUE's own boundary+index fixes): unlike those two
+# tables, this one has no position-index dependency (a simple per-market
+# rate keyed only on first-entry regime), so it isn't exposed to the
+# same real_fill_count bug class -- only the HALT_END boundary bug
+# (1788870060 vs the correct 1788704494, see cycle 18) applied here.
+# Re-derived with the corrected boundary: BTC/ETH/SOL's well-powered
+# cells (n=318-1000) all land within ~1-10% of what's already deployed
+# -- CONFIRMS cycle 18's original "no qualitative reversal expected"
+# assumption for this table specifically, unlike the deeper problems
+# found in ENTRY_SIZING_USD/REENTRY_FATIGUE. Updated the cells that
+# clear n>=200 anyway, since the drift, while modest, is real:
+#   Bitcoin:  CHEAP 0.6936->0.7193 (n=456), MID 0.7319->0.7390 (n=1000),
+#             CORE 0.4506->0.4937 (n=318)
+#   Ethereum: CHEAP 0.3838->0.4127 (n=790), MID 0.5751->0.5730 (n=651)
+#   Solana:   CHEAP 0.5178->0.5331 (n=756), MID 0.6626->0.6612 (n=667)
+# Bitcoin/HIGH, Ethereum/CORE+HIGH, Solana/CORE+HIGH stay UNCHANGED --
+# fresh samples (n=80-191) don't clear the trust bar (Solana/HIGH
+# looked like a +27% swing at n=113, exactly the kind of thin-sample
+# noise this bar exists to guard against).
 HEDGE_TRIGGER_PROBABILITY = {
-    "Bitcoin":     {"CHEAP": 0.6936, "MID": 0.7319, "CORE": 0.4506, "HIGH": 0.2754},
-    "Ethereum":    {"CHEAP": 0.3838, "MID": 0.5751, "CORE": 0.4460, "HIGH": 0.2179},
-    "Solana":      {"CHEAP": 0.5178, "MID": 0.6626, "CORE": 0.3967, "HIGH": 0.1250},
+    "Bitcoin":     {"CHEAP": 0.7193, "MID": 0.7390, "CORE": 0.4937, "HIGH": 0.2754},
+    "Ethereum":    {"CHEAP": 0.4127, "MID": 0.5730, "CORE": 0.4460, "HIGH": 0.2179},
+    "Solana":      {"CHEAP": 0.5331, "MID": 0.6612, "CORE": 0.3967, "HIGH": 0.1250},
     "Dogecoin":    {"CHEAP": 0.3515, "MID": 0.4531, "CORE": 0.6209, "HIGH": 0.3041},
     "Hyperliquid": {"CHEAP": 0.3506, "MID": 0.5819, "CORE": 0.5628, "HIGH": 0.3079},
     "BNB":         {"CHEAP": 0.8389, "MID": 0.9004, "CORE": 0.7806, "HIGH": 0.4884},
