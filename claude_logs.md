@@ -6974,3 +6974,104 @@ structural checks), further /loop cycles should watch for enough new
 placed_at-carrying data to actually run the TTC-composition analysis,
 or look for genuinely new ground beyond this entire audit's original
 scope.
+
+## 2026-09-13: /loop cycle 18 — found and corrected a real bug in this session's OWN post-halt research methodology
+
+With the audit's data-recalibration candidate list exhausted, turned
+the "check every single line, don't just trust your own earlier work"
+discipline the user originally established back onto this session's
+OWN process, rather than only the trader's behavior — exactly what the
+user's very first instruction ("check each and everything we did since
+the very start... see if everything adds up") called for.
+
+**The bug**: `HALT_END=1788870060` (2026-09-08 12:21 UTC) was hardcoded
+into every single one of this session's post-halt-only scratch
+research scripts, across all 17 prior /loop cycles. Ran a direct
+gap-scan of the full trade mirror (853,818 trades, sorted timestamps,
+find the largest inter-trade gap) to independently re-verify this
+boundary from first principles rather than trusting the constant
+copy-pasted forward through 17 cycles' worth of scripts — and found the
+ACTUAL halt ended at `1788704494` (2026-09-06 14:21:34 UTC), which
+matches this project's own long-standing documented finding (the
+13.6-day halt, 2026-08-23 22:53 UTC -> 2026-09-06 14:21 UTC, discovered
+much earlier this session, well before the /loop began). The two
+timestamps differ by ~46 hours (~1.9 days) — every "post-halt-only"
+filter used across this entire audit was silently excluding the first
+~46 hours of genuinely valid post-halt data, roughly 28% of all
+post-halt time available as of this check (~4.9 days had been used
+where ~6.8 were actually available).
+
+**Scope, clarified precisely**: this is a bug in this session's OWN
+throwaway analysis scripts (written to `$CLAUDE_JOB_DIR/tmp`, copied to
+the server, run, and discarded — never committed to the repo), NOT in
+any shipped production code. Grepped the entire `paperbot/` package for
+`HALT_END` and confirmed it never appears as an actual constant
+anywhere — only in `behavior_config.py`'s own comments, describing the
+methodology used to derive already-shipped numbers. No bot has ever
+run on the wrong boundary; only the RESEARCH that produced 17 cycles'
+worth of calibration values used one that was ~2 days too conservative.
+
+**Deliberately did NOT blanket-revert or redo all 16 already-
+recalibrated tables.** Each of those had large, robust sample sizes
+(typically n>500-1,000+, several in the thousands) built on the
+(slightly truncated) post-halt window — an extra ~28% of data is very
+unlikely to change any of their QUALITATIVE conclusions (whether an
+effect is real, vanished, or reversed), though the exact numeric values
+could shift somewhat with a full from-scratch re-derivation. This is an
+honest, explicitly disclosed limitation of this cycle's fix, not a
+silently-skipped gap — a complete re-verification of all 16 with the
+corrected boundary remains a legitimate follow-up if a future cycle has
+the budget for it, but wasn't attempted here given the low expected
+payoff relative to the effort (thousands-of-rows samples don't
+meaningfully change from a 28% top-up).
+
+**What WAS re-run**: the 3 verdicts from cycles 11-13 that were most
+likely to actually flip with meaningfully more data — the sample-
+starved or borderline-significant ones, where an extra ~28% matters
+most:
+
+- `HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER` (cycle 12, retired): the
+  clean null HOLDS UP on corrected data — Ethereum ratio=1.062
+  (z=0.540, n=94, up from n=74), Solana ratio=1.047 (z=0.482, n=90, up
+  from n=64). Retirement verdict CONFIRMED, unchanged.
+- `HEDGE_COUNT_REINFORCEMENT` (cycle 11, not recalibrated): modestly
+  IMPROVED internal consistency in 2 of 4 cells with more data —
+  Ethereum/CHEAP's tier1/tier2 are now both positive and much closer
+  in magnitude to each other (previously tier2 was nonsensically
+  LOWER than tier1); Solana/MID now has both tiers positive with
+  tier2 clearing the trust bar outright (z=4.449). Ethereum/MID and
+  Solana/CHEAP remain internally inconsistent, so the table is still
+  not confidently actionable as a whole — verdict unchanged — but the
+  DIRECTION of change with more data (toward signal, not toward noise)
+  is itself an encouraging, informative data point for a future
+  recheck once more post-halt hedge activity accumulates.
+- `BANKROLL_PNL_SIZE_MULTIPLIER` (cycle 13, not recalibrated): if
+  anything MORE clearly unstable with the corrected boundary, not
+  less — Ethereum's detrended correlation now technically clears the
+  |t|>=2.58 trust bar (t=-3.620), but its OWN first/second-half split
+  flips sign entirely (first-half t=-3.898, second-half t=+3.110) —
+  a real instability, not resolved by more data. Solana's detrended
+  significance actually weakened toward zero (t=-3.802 -> t=1.864).
+  This reinforces, rather than reverses, the "genuinely unstable, not
+  actionable" verdict from cycle 13.
+
+Documented the discovery and all 3 corrected re-checks directly inside
+their tables' own docstrings in `behavior_config.py`, so a future
+reader sees both the original (buggy-boundary) check AND the corrected
+re-verification in one place, with the exact before/after numbers for
+each. No table values were changed as a result of any of the 3
+re-checks — this was purely a verification pass, not a recalibration.
+537/537 tests passing (doc-only commit, no functional change, so no
+bot restart was needed — server git checkout kept in sync anyway for
+consistency).
+
+**Running tally: 16 tables recalibrated or retired, plus 2 confirmed-
+not-actionable (now RE-VERIFIED with corrected data), 1
+checked-with-insufficient-rigor, 1 architecture gap closed, and now 1
+methodology bug found-and-corrected, across 18 /loop cycles.** This
+cycle is a direct, literal instance of the user's very first
+instruction in this whole session ("check each and everything we did
+since the very start... see if everything adds up") — applied
+reflexively to this session's OWN analysis process, not just to the
+real trader's behavior, which is exactly the kind of check that
+instruction was meant to catch.

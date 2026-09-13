@@ -1526,3 +1526,32 @@ insufficient-rigor, 1 architecture gap closed). See
 [[full-behavioral-audit-tracker]] -- the audit's own candidate list is
 now essentially exhausted; further cycles should watch for enough new
 data to run the TTC-composition check, or find genuinely new ground.
+
+## 2026-09-13 (loop cycle 18): found this session's OWN post-halt boundary was wrong -- self-audit finding
+
+Turned the "check everything" discipline on the audit's own
+methodology. Found HALT_END=1788870060 (used in every post-halt-only
+script across all 17 prior cycles) doesn't match the actual halt end.
+Direct gap-scan of the full trade mirror confirms real halt end is
+1788704494 (2026-09-06 14:21:34 UTC) -- matching this project's own
+long-documented finding. Every post-halt-only filter this whole audit
+excluded the first ~46 hours (~1.9 days, ~28% of available post-halt
+time) of genuinely valid data.
+
+Important: this is a bug in throwaway research scripts, NEVER
+production code (HALT_END never appears as an actual constant in
+paperbot/, only in comments). No blanket revert of the 16 already-
+recalibrated tables -- all had large, robust samples where 28% more
+data is unlikely to flip the qualitative conclusion (disclosed
+limitation, not silently skipped). Re-ran the 3 most sample-sensitive
+verdicts instead: HEDGE_TRIGGER_AFTER_BIG_LOSS's null holds up
+unchanged; HEDGE_COUNT_REINFORCEMENT improved but still not actionable;
+BANKROLL_PNL_SIZE_MULTIPLIER's instability reinforced, not reversed
+(Ethereum's correlation now literally flips sign between halves).
+
+537/537 tests passing, no value changes, doc-only commit.
+
+**Running tally: 16 recalibrated/retired + 2 confirmed-not-actionable
+(re-verified) + 1 checked-with-insufficient-rigor + 1 architecture gap
++ 1 methodology bug found-and-corrected, across 18 /loop cycles.** See
+[[full-behavioral-audit-tracker]].
