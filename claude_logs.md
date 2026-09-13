@@ -7075,3 +7075,69 @@ since the very start... see if everything adds up") — applied
 reflexively to this session's OWN analysis process, not just to the
 real trader's behavior, which is exactly the kind of check that
 instruction was meant to catch.
+
+## 2026-09-13: /loop cycle 19 — ENTRY_SIZING_USD spot-check follow-through, 5 cells recalibrated
+
+Cycle 18 found a ~46-hour boundary bug in this session's own post-halt
+research methodology, but explicitly declined to blanket-redo all 16
+already-recalibrated tables, asserting (as a disclosed ASSUMPTION, not
+a verified fact) that their large sample sizes made this unlikely to
+matter — while specifically flagging `ENTRY_SIZING_USD` (the single
+most foundational table, governing every entry's base dollar size) as
+the one most worth directly spot-checking rather than leaving that
+assumption untested.
+
+**Did the spot-check**: re-ran the exact original methodology
+(standalone-only — single-sided markets with no hedge ever, first
+decision's own price/size — matching this table's own documented
+convention) with the corrected boundary, combined with whatever extra
+calendar time has simply passed since this table was last touched
+(both effects are entangled in a spot-check like this; separating them
+cleanly would need re-running the ORIGINAL check's exact query window
+too, which wasn't preserved — acknowledged as a limitation rather than
+glossed over).
+
+**Result — a genuine, partial revision of cycle 18's own confidence
+level**: of the 12 (asset, regime) cells, 5 clear this table's own
+n>=200 trust bar and show a further, modest decline in the SAME
+direction as the table's original post-halt fix (not a reversal):
+- Bitcoin MID: 2.356 -> 2.279 (n=260, -3.3%)
+- Ethereum CHEAP: 1.300 -> 1.079 (n=462, -17.0%)
+- Ethereum MID: 2.051 -> 1.976 (n=277, -3.7%)
+- Solana CHEAP: 1.370 -> 1.350 (n=350, -1.5%)
+- Solana MID: 1.891 -> 1.840 (n=225, -2.7%)
+
+The other 7 cells' fresh samples don't clear n>=200 (n=57-161) and were
+deliberately left UNCHANGED, consistent with this table's own
+established discipline — several show much larger apparent swings
+(Bitcoin HIGH -33% at n=57, the thinnest cell) that are exactly the
+kind of thin-sample noise this trust bar exists to guard against, not
+something to ship confidence in just because the number moved.
+
+No test changes needed — no test anywhere hardcodes these exact
+literal values (confirmed via grep before editing). 537/537 tests
+passing, deployed to all 3 bots (paperbot/paperbot-100/coinbase-bot),
+verified healthy via journalctl (no errors on any service).
+
+**Why this matters methodologically**: cycle 18's claim that the 16
+already-recalibrated tables were "unlikely to change materially" was
+explicitly disclosed as an assumption, not something verified for
+every table — this cycle tested that assumption directly on the most
+consequential one and found it partially wrong at the margin (5 cells
+DID move meaningfully, 1.5-17%) while confirming it in the larger sense
+(no qualitative reversal, modest continued softening in the expected
+direction). This is a concrete instance of the discipline this whole
+audit has tried to model: state an assumption plainly, then actually
+go test it rather than letting the caveat stand as an excuse not to
+look.
+
+**Running tally: 17 tables recalibrated or retired (16 plus this
+partial follow-up), plus 2 confirmed-not-actionable (re-verified with
+corrected data), 1 checked-with-insufficient-rigor, 1 architecture gap
+closed, and 1 methodology bug found-and-corrected, across 19 /loop
+cycles.** The remaining 7 untouched ENTRY_SIZING_USD cells, and the
+other 15 tables' own un-spot-checked cells, are a legitimate, openly
+disclosed follow-up for whenever more calendar time provides denser
+samples to work with — not treated as urgent given every signal so far
+points toward "modest continued softening," not a reversal that would
+change any bot's behavior in a meaningfully wrong direction today.

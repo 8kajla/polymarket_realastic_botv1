@@ -1555,3 +1555,28 @@ BANKROLL_PNL_SIZE_MULTIPLIER's instability reinforced, not reversed
 (re-verified) + 1 checked-with-insufficient-rigor + 1 architecture gap
 + 1 methodology bug found-and-corrected, across 18 /loop cycles.** See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 19): ENTRY_SIZING_USD spot-check follow-through -- 5 cells recalibrated
+
+Followed through on cycle 18's own flagged assumption ("large-sample
+tables unlikely to change materially") by directly testing it on the
+single most foundational table. Result: partially revises that
+assumption -- 5 of 12 cells clear the n>=200 trust bar and show a
+further 1.5-17% decline (same direction as original fix, not
+reversed): Bitcoin MID, Ethereum CHEAP/MID, Solana CHEAP/MID. The other
+7 cells' fresh samples don't clear n>=200 (some show much larger but
+thin-sample swings, e.g. -33% at n=57) -- left unchanged per this
+table's own discipline.
+
+537/537 tests passing (no test changes needed), deployed to all 3
+bots, verified healthy.
+
+Why this matters: confirms cycle 18's broader claim (no qualitative
+reversal) while correcting its confidence level for at least one table
+-- an honest example of testing your own prior cycle's assumption
+rather than letting it stand unverified.
+
+**Running tally: 17 tables recalibrated + 2 confirmed-not-actionable
+(re-verified) + 1 checked-with-insufficient-rigor + 1 architecture gap
++ 1 methodology bug found-and-corrected, across 19 /loop cycles.** See
+[[full-behavioral-audit-tracker]].
