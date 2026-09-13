@@ -5512,3 +5512,78 @@ hold up cleanly under adversarial parameter sweeps. Property-based
 fuzzing is now a useful addition to this project's own testing
 discipline going forward -- cheap to write, and it exercises far more
 of the state space than hand-written unit tests can practically cover.
+
+## 2026-09-13: Root-cause investigation — the standing CHEAP first-entry edge gap
+
+User asked directly: "our bot is still not replicating the trader
+perfectly after working for two weeks find the root cause." Ran a
+focused investigation on the single most-flagged, longest-standing,
+already-quantified open gap: the CHEAP-band first-entry negative edge.
+
+Methodology (6 scripts, all run against fresh server data):
+1. Re-confirmed the gap is current, not stale: 6-day fresh window,
+   real trader CHEAP first-entry edge (won-price) +0.0239 (n=1684) vs
+   paperbot -0.0163 (n=802) / paperbot-100 -0.0348 (n=637).
+2. Price-level composition check: our bots enter CHEAP at a lower
+   average price (0.147-0.148 vs his 0.182) -- but re-sliced into six
+   0.05-wide price buckets, we're STILL worse in nearly every bucket.
+   Composition ruled out.
+3. Momentum-alignment check (reusing the earlier-validated "aligned
+   wins more" finding): computed the trader's own CHEAP first-entry
+   alignment rate with real 3-min Coinbase spot momentum over the same
+   window -- a striking, new, previously-undocumented result: he's
+   ANTI-aligned 93.3% of the time (only 6.7% aligned; aligned wins
+   50.7% vs against 17.0%, replicating the earlier shape). Our bots sit
+   near chance (46-53%), as expected from a momentum-blind mechanism.
+   Since HE is less aligned than us, not more, this rules OUT "he's
+   naturally more momentum-aligned" as the explanation for our gap --
+   it points the wrong direction.
+4. Execution/reprice check: split CHEAP entries by single-fill (no
+   reprice) vs multi-fill (repriced at least once) using the recently-
+   added per-fill ledger data. Even single-fill entries -- filled
+   immediately at the intended price, no chase -- show the same
+   negative edge (paperbot -0.0418 n=216, paperbot-100 -0.0255 n=150).
+   Rules out reprice-driven adverse selection as the primary driver.
+5. Sanity-checked for a bucketing artifact (regime label vs actual fill
+   price drifting out of band) -- confirmed zero CHEAP-labeled records
+   have entry_price >= 0.30. Not an artifact.
+6. **Most-supported finding**: tested whether CROSS_MARKET_SIDE_
+   PERSISTENCE's calibrated rates actually predict winning, not just
+   match his revealed frequency (these are different things -- the
+   original Wald-Wolfowitz validation only confirmed the FREQUENCY
+   pattern is real, never that following it predicts a win). Fresh
+   30-day check: within CHEAP, persisting beats switching in 5 of 6
+   (asset, after_win/after_loss) cells, sometimes by a wide margin
+   (ETH after_win: persist 21.6% vs switch 17.9%; SOL after_loss:
+   persist 23.2% vs switch 18.7%). But the deployed after_win
+   persistence rates sit near a coin flip (BTC 51.48%, SOL 48.12%,
+   ETH 46.75% -- ETH actually BELOW 50%, favoring switch, the WRONG
+   direction given ETH's own CHEAP data). Mechanically replicating his
+   aggregate frequency isn't the same as replicating an edge, especially
+   if his real case-by-case switches are driven by information (spot
+   price checks, chart-reading, etc.) we don't model -- we get his
+   average behavior right but lose the informative correlation.
+
+**Blocking gap for full closure**: the ledger (SettlementRecord) has no
+entry-placement timestamp or TTC-at-entry field, so the TTC-composition
+hypothesis (does the bot enter CHEAP markets at different points in the
+5-min window than he does, at the same displayed price, which could
+carry a different true win probability) can't be tested on our own
+data. Checked what data IS available: the trader's own CHEAP edge split
+by TTC bucket (early >150s vs late <=150s) shows no strong, consistent
+within-price-bucket pattern in his data specifically -- tempers (doesn't
+rule out) this as a driver for OUR gap, since we can't test it directly.
+
+**Recommended next steps (not yet implemented, flagged for user
+decision)**:
+1. Recalibrate CROSS_MARKET_SIDE_PERSISTENCE with a CHEAP-specific (or
+   fully regime-split) table targeting "does this choice predict a win"
+   rather than "matches his aggregate frequency" -- ETH's after-win cell
+   is the clearest, most actionable single fix.
+2. Add a placement timestamp to SettlementRecord (same additive pattern
+   as the already-shipped per-fill `fills` field) so the TTC-composition
+   question can finally be tested on the bot's own data.
+
+Logged to project memory as a new file (cheap-edge-gap-root-cause-
+persistence-miscalibration.md) since this spans multiple future
+sessions' worth of follow-up work.
