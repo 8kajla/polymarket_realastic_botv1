@@ -2299,6 +2299,27 @@ def reentry_fatigue_multiplier(asset: str, regime: str,
 # (n=270-960) and non-monotonic in places to trust a fitted curve over a
 # second conservative step, matching REENTRY_FATIGUE's own discrete-
 # threshold design rather than overfitting the wiggle.
+#
+# CHECKED FOR POST-HALT FRESHNESS 2026-09-13 (/loop cycle 11), NOT
+# RECALIBRATED -- genuinely underpowered right now, a different verdict
+# than REENTRY_FATIGUE's clean "3 kept, 3 vanished" split. Re-ran the
+# exact same live-hedge-count methodology on post-halt-only
+# (ts>=HALT_END) data and got noisy, internally inconsistent results in
+# ALL 4 cells (e.g. Ethereum/CHEAP tier1 ratio 2.625x but tier2 ratio
+# only 1.067x -- LOWER than tier1, which should never happen if the
+# dose-response were real; Ethereum/MID tier2 actually reverses sign,
+# z=-2.359). Root cause identified, not just "noisy": only ~4.9 days of
+# post-halt data exist as of this check (vs the multi-week TWAP-era
+# window this table was built from), and this table's already-narrow
+# population (only original-side entries placed AFTER at least one
+# hedge already exists) is additionally cut down by the separately-
+# documented hedge-rate secular decline (see hedge-rate-secular-decline
+# in project memory) -- so the bucket sample sizes collapsed to n=45-149
+# per cell/tier, roughly 1/13th to 1/60th of the original calibration's
+# n=814-2,812. This is a genuine "can't independently verify YET" verdict,
+# not a "vanished" one -- kept at the original TWAP-era values rather
+# than recalibrated on underpowered noise or blindly assumed unchanged.
+# Revisit once meaningfully more post-halt hedge activity accumulates.
 HEDGE_COUNT_REINFORCEMENT_TIERS = {
     ("Ethereum", "CHEAP"): [(2, 1.5), (5, 1.8)],
     ("Ethereum", "MID"): [(2, 1.25), (5, 1.4)],
