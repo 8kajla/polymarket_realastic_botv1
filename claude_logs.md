@@ -7763,3 +7763,73 @@ across 27 /loop cycles.** This cycle is a useful demonstration that
 that isn't a bug with a clean fix — and the right response is to write
 it down clearly, not to force a resolution the available data and
 methods can't actually support.
+
+## 2026-09-13: /loop cycle 28 (same day) — tested a candidate fix for the last_side/dominant_side gap against ground truth, rejected
+
+Rather than leave cycle 27's `last_side` vs `dominant_side()` finding
+as a purely theoretical, undiagnosed gap, tried to make real progress
+on it with a concrete, testable idea.
+
+**The idea**: for an order placed on the momentarily-non-dominant side
+(by cumulative cost so far, at the moment of placement), compare its
+actual notional size against two predictions — what `median_entry_
+notional` (the ordinary sizing curve, at this side's own position
+tier) would predict, versus what `hedge_size_ratio * dominant_cost_
+so_far` (the hedge sizing formula) would predict — and classify the
+order as a genuine switch or a hedge based on whichever prediction its
+actual size sits closer to, in log-space (since both quantities are
+naturally log-distributed).
+
+**Crucially, validated it rather than shipping on plausibility alone**:
+the real trader's raw `trades.jsonl` has no ground-truth `is_hedge`
+label to check against — but the paper bots' OWN ledger does, since
+every order the bots place is genuinely tagged `is_hedge` by
+`decide_hedge`/`decide_side` at the moment it's created. Used the
+`placed_at` field (added earlier today, cycle 17) to reconstruct each
+market's true chronological placement order from the ledger, pulled
+the live `paper_ledger.json` (22,639 total settlement records, 232
+with `placed_at` populated so far — expected, since that field is only
+hours old), and computed the heuristic's accuracy against the real
+`is_hedge` label for every order that qualified.
+
+**Result — a genuine negative finding**: on the ambiguous population
+(orders on the momentarily-non-dominant side at placement, ~37.5% of
+all orders, n=87), the existing naive convention (classify as hedge
+iff the order's side isn't the FINAL, whole-market dominant side)
+scored 58.6% accuracy against ground truth. The proposed size-based
+heuristic scored WORSE — 51.7%, barely better than a coin flip. **The
+heuristic does not improve on the status quo and was not shipped.**
+
+Disclosed caveat: n=87 is thin, simply because `placed_at` has only
+existed for a few hours of live trading as of this test — neither
+accuracy number should be treated as fully precise. But thin sample or
+not, there's no signal here favoring the heuristic; if anything it
+points the other way. This isn't "inconclusive, revisit later with
+more data" in the same sense as `HEDGE_COUNT_REINFORCEMENT` (cycle
+11/18), where the DIRECTION was already right and only the sample size
+was lacking — here the heuristic actively underperformed the baseline
+it was meant to beat, which is a real (if not yet fully precise)
+signal against the whole approach, not merely an underpowered test of
+a promising one.
+
+Documented directly in `last-side-vs-dominant-side-divergence.md`: if
+this architectural gap is ever revisited, it needs a genuinely
+DIFFERENT disambiguation approach, not a refinement of sizing-curve-
+distance comparison — that specific idea has now been tested and
+found wanting, so a future pass shouldn't re-try the same thing hoping
+for a different answer.
+
+**This is a clean demonstration of the discipline holding under
+sustained pressure to keep producing new fixes**: had a real,
+implementable idea, built the validation properly (using the one
+dataset in this whole project that actually has ground truth for this
+specific question), and reported the honest negative result rather
+than either forcing the heuristic through on plausibility or quietly
+dropping the idea without follow-through.
+
+**Running tally: 21 tables recalibrated or retired, plus 2 confirmed-
+not-actionable, 1 checked-with-insufficient-rigor, 1 architecture gap
+closed, 5 methodology bugs found-and-corrected, 1 infra issue
+investigated-and-confirmed-safe, 1 genuine architectural limitation
+documented, and now 1 candidate fix tested-and-rejected with real
+evidence, across 28 /loop cycles.**

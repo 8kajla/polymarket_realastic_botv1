@@ -1796,3 +1796,29 @@ actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
 5 methodology bugs found-and-corrected + 1 infra issue confirmed-safe
 + 1 genuine architectural limitation documented, across 27 /loop
 cycles.** See [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 28, same day): tested a candidate fix for the last_side/dominant_side gap -- rejected after validation against ground truth
+
+Rather than leave cycle 27's finding purely theoretical, tried a
+concrete disambiguation idea: for orders on the momentarily-non-
+dominant side, compare notional against ordinary-sizing prediction vs
+hedge-sizing prediction, classify to whichever is closer.
+
+Validated against the paper bots' OWN ledger (which has real is_hedge
+ground truth, unlike the real trader's raw data), using the placed_at
+field added earlier today. Result: the heuristic does NOT beat the
+naive baseline (51.7% vs 58.6% accuracy on the ambiguous subset,
+n=87 -- thin since placed_at is brand new, but no signal it helps).
+Not shipped.
+
+Why this matters: tested a real idea against real ground truth rather
+than shipping on plausibility or leaving it as an unverified
+suggestion -- a genuine negative result, documented honestly in
+[[last-side-vs-dominant-side-divergence]].
+
+**Running tally: 21 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
+5 methodology bugs found-and-corrected + 1 infra issue confirmed-safe
++ 1 architectural limitation documented + 1 tested-and-rejected
+candidate fix, across 28 /loop cycles.** See
+[[full-behavioral-audit-tracker]].
