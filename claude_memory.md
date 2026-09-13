@@ -1762,3 +1762,37 @@ only. This closes the investigation for real.
 actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
 5 methodology bugs found-and-corrected + 1 infra issue confirmed-safe,
 across 26 /loop cycles.** See [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 27): genuine architectural finding -- last_side vs dominant_side() divergence (not fixed)
+
+Investigating whether SIDE_PERSISTENCE needed the same boundary/index
+fixes as ENTRY_SIZING_USD/REENTRY_FATIGUE/FLOOR_LOT_PROBABILITY,
+discovered something deeper: MarketActivityState.record_entry() sets
+last_side unconditionally -- for hedge fills exactly as much as
+ordinary ones. decide_side/SIDE_PERSISTENCE reads last_side ("whichever
+side was entered most recently, hedge or ordinary"), but dominant_side()
+(what today's sizing-table recalibrations used) is a SEPARATE
+computation from cumulative cost_by_side. These can diverge.
+
+Why it matters unevenly: every calibration this session classifies raw
+trader fills via the is_hedge==opposite-of-dominant proxy (no is_hedge
+label exists in raw data). Fine for sizing tables where index matters
+more than exact side. But SIDE_PERSISTENCE measures EXACTLY the
+switches this proxy is most likely to misclassify as hedges instead --
+the measurement target and the classification error aren't independent
+for this one table.
+
+Deliberately NOT fixed: unlike the crisp, code-verifiable index bugs
+found earlier today, distinguishing genuine switches from hedges in
+raw fill data is an interpretive problem with no obviously-correct
+answer -- guessing risks a new unforced error. Also low urgency:
+SIDE_PERSISTENCE replicates a frequency, not a win-rate edge.
+
+Documented as [[last-side-vs-dominant-side-divergence]] for whoever
+next touches this. No code change.
+
+**Running tally: 21 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
+5 methodology bugs found-and-corrected + 1 infra issue confirmed-safe
++ 1 genuine architectural limitation documented, across 27 /loop
+cycles.** See [[full-behavioral-audit-tracker]].

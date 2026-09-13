@@ -7681,3 +7681,85 @@ methodology bugs found-and-corrected (HALT_END boundary; cycle-19
 population definition; index semantics for ENTRY_SIZING_USD,
 REENTRY_FATIGUE, and now FLOOR_LOT_PROBABILITY), and 1 infra issue
 investigated-and-confirmed-safe, across 26 /loop cycles.**
+
+## 2026-09-13: /loop cycle 27 — genuine architectural finding (last_side vs dominant_side() divergence), deliberately not fixed
+
+Set out to check whether `SIDE_PERSISTENCE` needed the same boundary
+and index-semantics fixes already applied to `ENTRY_SIZING_USD`
+(cycles 20-21), `REENTRY_FATIGUE` (cycle 22), and
+`FLOOR_LOT_PROBABILITY` (cycle 26) — a natural next candidate, since
+it directly affects win-rate (side selection, not just sizing) and has
+never been rechecked with the corrected `HALT_END` boundary.
+
+**Before writing a recalibration script, dug into exactly what live
+quantity this table governs** — the same discipline that found today's
+other three bugs — and found something deeper than a simple index
+mismatch this time.
+
+**The finding**: `MarketActivityState.record_entry()` sets `self.
+last_side = side` UNCONDITIONALLY in `strategy.py` — for hedge fills
+exactly as much as ordinary ones. `decide_side`'s own persist-or-switch
+roll (and therefore everything `SIDE_PERSISTENCE` governs) reads
+`activity.last_side` as "the currently held side." But `dominant_
+side()` — what today's other three fixes used to classify which raw
+fills are "ordinary" versus "hedge" — is computed entirely separately,
+from `cost_by_side` (cumulative dollar cost per side), with no
+reference to `last_side` at all. A hedge fire silently updates `last_
+side` to the hedge's own side without touching which side is
+cost-dominant; a genuine `SIDE_PERSISTENCE`-driven switch can place an
+ordinary (non-hedge) entry on whatever is momentarily the
+non-dominant side. These two concepts — "most recently entered side"
+and "cumulative cost leader" — are independently maintained and can
+point at different sides at the same moment in a market's life.
+
+**Why this matters unevenly across tables, not uniformly**: every
+calibration this session — from the original pre-loop cycles through
+today's three index fixes — classifies real trader fills (which carry
+no `is_hedge` label at all in the raw data) using the project-wide
+`is_hedge == opposite-of-dominant` proxy. That's a reasonable
+approximation for sizing tables, where getting the position INDEX
+right (today's actual bug) matters more than getting the exact side
+classification perfectly right in every edge case. But `SIDE_
+PERSISTENCE` measures EXACTLY the switches this proxy is most likely
+to mis-classify as hedges instead of genuine switches — the
+measurement target and the classification error are not independent
+for this one table, in a way they are (or matter much less) for the
+sizing tables.
+
+**Verdict: deliberately NOT attempted as a quick fix.** Unlike the
+crisp, code-verifiable index bugs found earlier today — each had one
+unambiguous right answer, checkable directly against `bot.py`'s own
+counter-increment sites — correctly reconstructing genuine switches
+versus hedges from raw fill data with no `is_hedge` label is a
+genuinely harder, more interpretive problem. Guessing at a
+disambiguation rule risks introducing a NEW, unforced error rather
+than fixing a verified one — exactly the opposite of the discipline
+that made today's other fixes trustworthy. Also lower urgency on its
+own terms: `SIDE_PERSISTENCE`'s own docstring already established
+(from the original full-audit root-cause pass) that this table
+replicates a real behavioral FREQUENCY, not a predictive win-rate
+edge — so even an imprecise recalibration wouldn't misdirect real
+money the way a sizing-table bug would; it would only shift an exact
+persistence-frequency percentage.
+
+**No code change this cycle.** Documented as a standalone project
+memory file (`last-side-vs-dominant-side-divergence.md`) plus an entry
+in the audit tracker, specifically so this genuine limitation is
+preserved for whoever next touches `SIDE_PERSISTENCE` or any other
+`last_side`-dependent table, rather than being rediscovered from
+scratch or silently ignored. A future resolution would need either a
+principled way to distinguish genuine switches from hedges in raw
+data (no such method identified this session), or an explicit
+acknowledgment that the same aggregate proxy used everywhere else is
+being applied here too, with this specific caveat attached.
+
+**Running tally: 21 tables recalibrated or retired, plus 2 confirmed-
+not-actionable, 1 checked-with-insufficient-rigor, 1 architecture gap
+closed, 5 methodology bugs found-and-corrected, 1 infra issue
+investigated-and-confirmed-safe, and now 1 genuine architectural
+limitation documented (not fixed, but real and worth preserving),
+across 27 /loop cycles.** This cycle is a useful demonstration that
+"keep researching" sometimes surfaces something true and important
+that isn't a bug with a clean fix — and the right response is to write
+it down clearly, not to force a resolution the available data and
+methods can't actually support.
