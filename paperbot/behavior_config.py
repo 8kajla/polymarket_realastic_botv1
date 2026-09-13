@@ -622,22 +622,46 @@ def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
 # omitted (not live-traded, no data) -- ttc_size_multiplier returns 1.0
 # (no-op) for any asset/regime not in this table, same fallback pattern
 # as within_band_size_multiplier.
+# CHECKED FOR POST-HALT FRESHNESS 2026-09-13 (/loop cycle 14). The
+# original audit's own item #11 check ("CONFIRMED, holds up well") used
+# a 5d/14d window queried close to the halt's own resumption -- both
+# windows substantially straddle the halt, the same blind-window issue
+# later found and fixed for SCOUT_PROBABILITY (cycle 7). Redone here
+# with a strict post-halt-only (ts>=HALT_END) filter, median usdc per
+# TTC-midpoint bucket, weighted-mean-normalized:
+#
+# CHEAP/MID (all 6 cells, healthy post-halt n=490-4433): SAME SHAPE
+# preserved for every cell -- CHEAP still declines late-window, MID
+# still rises late-window, exactly as originally found. Bitcoin's
+# magnitudes barely moved; Ethereum/Solana's got noticeably MORE
+# EXTREME (wider spread) than before, e.g. Solana/MID's late-window
+# peak rose from 1.5376 to 1.734, Ethereum/CHEAP's late-window trough
+# fell from 0.8513 to 0.6453. Recalibrated below.
+#
+# CORE/HIGH: same general shape/direction also holds on a first look,
+# but NOT recalibrated -- the 270-midpoint bucket (longest time
+# remaining) is too thin in the post-halt window to trust a full
+# refresh (Bitcoin n=101, Ethereum n=25, Solana n=31), especially in
+# HIGH where the whole finding IS the 270-bucket's low value. Left at
+# the existing (pre-halt-inclusive) numbers rather than reshape a
+# thinly-supported point -- revisit once more post-halt HIGH/CORE
+# volume accumulates.
 TTC_SIZE_MULTIPLIER = {
     "Bitcoin": {
-        "CHEAP": {270: 1.1502, 210: 1.063, 150: 0.9984, 90: 0.8641},
-        "MID": {270: 0.9221, 210: 0.9878, 150: 1.045, 90: 1.0869},
+        "CHEAP": {270: 1.1373, 210: 1.0504, 150: 0.9736, 90: 0.9131},
+        "MID": {270: 0.918, 210: 0.9759, 150: 1.061, 90: 1.061},
         "CORE": {270: 0.9122, 210: 1.0321, 150: 1.0093, 90: 1.0001},
         "HIGH": {270: 0.6673, 210: 0.6673, 150: 0.9282, 90: 1.1731},
     },
     "Ethereum": {
-        "CHEAP": {270: 1.1222, 210: 1.0766, 150: 0.9583, 90: 0.8513},
-        "MID": {270: 0.773, 210: 0.9392, 150: 1.0528, 90: 1.2595},
+        "CHEAP": {270: 1.4682, 210: 1.2171, 150: 0.9563, 90: 0.6453},
+        "MID": {270: 0.8206, 210: 0.9546, 150: 1.0248, 90: 1.1434},
         "CORE": {270: 1.0162, 210: 1.041, 150: 0.9756, 90: 0.9792},
         "HIGH": {270: 0.7042, 210: 0.7042, 150: 0.9046, 90: 1.1689},
     },
     "Solana": {
-        "CHEAP": {270: 1.1344, 210: 0.9901, 150: 1.0373, 90: 0.8356},
-        "MID": {270: 0.7752, 210: 0.9129, 150: 1.1741, 90: 1.5376},
+        "CHEAP": {270: 1.2632, 210: 1.0252, 150: 1.1442, 90: 0.5268},
+        "MID": {270: 0.569, 210: 0.7509, 150: 1.4399, 90: 1.734},
         "CORE": {270: 0.9691, 210: 0.9821, 150: 1.0242, 90: 1.007},
         "HIGH": {270: 0.7084, 210: 0.7084, 150: 0.9776, 90: 1.1434},
     },
