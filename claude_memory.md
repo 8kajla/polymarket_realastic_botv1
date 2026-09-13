@@ -1580,3 +1580,32 @@ rather than letting it stand unverified.
 (re-verified) + 1 checked-with-insufficient-rigor + 1 architecture gap
 + 1 methodology bug found-and-corrected, across 19 /loop cycles.** See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 20): caught cycle 19's own methodology flaw, fully re-derived ENTRY_SIZING_USD
+
+While extending cycle 19's spot-check to 2nd_3rd/4th_plus tiers, found
+cycle 19's "first" tier check used the WRONG population -- required
+markets to stay single-sided forever, a strict subset of the table's
+actual "dominant-side decisions only" convention. This understated n
+badly (Bitcoin CHEAP n=128 vs correct n=253) and produced at least one
+wrong value (Bitcoin MID 2.279, should be 2.391).
+
+Redone properly for all 3 tiers, fixing both cycle 18's boundary bug
+and this population-definition bug together. 11 of 12 cells now clear
+n>=200 (only Solana CORE/4th_plus thin). Most land within a few percent
+of deployed values (confirms cycle 18's "no reversal" claim); Bitcoin
+HIGH/first shows a real further decline (21.620->19.000, n=305, -12%)
+neither cycle 1 nor cycle 19 caught.
+
+537/537 tests passing, deployed to all 3 bots, verified healthy.
+
+Why this matters: second consecutive cycle catching a flaw in the
+IMMEDIATELY PRIOR cycle's own work -- the "keep checking, don't just
+build on top of your own conclusions" discipline now operating
+recursively within the loop itself, not just against the trader's
+behavior.
+
+**Running tally: 18 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
+2 methodology bugs found-and-corrected, across 20 /loop cycles.** See
+[[full-behavioral-audit-tracker]].

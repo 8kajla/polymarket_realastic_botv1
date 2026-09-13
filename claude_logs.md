@@ -7141,3 +7141,81 @@ disclosed follow-up for whenever more calendar time provides denser
 samples to work with — not treated as urgent given every signal so far
 points toward "modest continued softening," not a reversal that would
 change any bot's behavior in a meaningfully wrong direction today.
+
+## 2026-09-13: /loop cycle 20 — caught a methodology flaw in cycle 19's OWN recheck; fully re-derived ENTRY_SIZING_USD
+
+While extending cycle 19's `ENTRY_SIZING_USD` spot-check from just the
+"first" tier to also cover "2nd_3rd" and "4th_plus" (which cycle 19
+hadn't touched at all), re-read this table's own 2026-09-08 methodology
+note closely before writing the extension query — and caught a real
+mismatch in cycle 19's own prior work in the process.
+
+**The flaw**: cycle 19's "first" tier check required the ENTIRE market
+to remain single-sided FOREVER (no hedge ever occurring anywhere in
+it) before counting its first entry. But the table's own documented
+convention (from the 2026-09-08 correction note, written well before
+this /loop began) is "STANDALONE-ONLY (dominant-side trades only)" —
+every decision on the dominant side, at its own index within that
+side's own sequence, regardless of whether the market later happens to
+get hedged on the OTHER side. Cycle 19's stricter "never hedged at all"
+requirement is a strict subset of the correct population — it silently
+throws away every first-entry decision from a market that later got
+hedged, even though that first entry itself was every bit as valid a
+"first"-tier dominant-side data point as one from a market that never
+gets hedged.
+
+**Consequence, verified concretely**: this mismatch badly understated
+sample sizes across the board (Bitcoin CHEAP n=128 in cycle 19's flawed
+check vs n=253 under the correct definition — nearly double) and
+produced at least one materially wrong shipped value: cycle 19's
+Bitcoin MID update (2.356 -> 2.279) overshot where the correctly-
+defined population actually sits (2.391) — closer to the ORIGINAL
+value than to cycle 19's own "fix".
+
+**Redone properly, fixing two bugs at once**: re-ran the check for ALL
+THREE tiers with the corrected population AND the cycle-18-corrected
+HALT_END boundary together — for each market, decision-collapse, find
+the dominant side by total cost across the whole market, then take
+ONLY that side's own decisions in chronological order (index
+0="first", 1-2="2nd_3rd", 3+="4th_plus"), with regime determined by
+each decision's own price.
+
+**Result**: 11 of the table's 12 (asset, regime) cells now clear the
+n>=200 trust bar (only Solana CORE/4th_plus remains thin at n=158) —
+dramatically more complete coverage than either the original cycle-1
+pass or cycle 19's flawed attempt. Most cells land within a few
+percent of what was already deployed, which further CONFIRMS cycle
+18's broader claim (no qualitative reversal from the boundary fix
+alone) — but one cell stands out as a genuine, well-powered further
+decline that neither cycle 1 nor cycle 19 had caught at all: Bitcoin
+HIGH/first, 21.620 -> 19.000 (n=305, -12.1%) — cycle 19 never even
+checked Bitcoin's HIGH cell, since its spot-check scope was narrower.
+
+**Handled honestly in the docstring**: superseded every number cycle
+19 touched, but kept cycle 19's own note in place (not deleted) with a
+clear pointer forward to this correction — so a future reader sees the
+full history: what cycle 19 did, why it was wrong, and what cycle 20
+did instead. No test changes needed (no test anywhere hardcodes any of
+the old or new literal values — confirmed via grep). 537/537 tests
+passing, deployed to all 3 bots (paperbot/paperbot-100/coinbase-bot),
+verified healthy via journalctl (no errors on any service).
+
+**Why this cycle matters beyond its own fix**: this is the SECOND
+consecutive cycle to catch a real flaw in the immediately prior
+cycle's own work within this same session — cycle 18 found a boundary
+bug spanning all 17 prior cycles; cycle 19 used the corrected boundary
+to (partially) fix one table, but with its own subtly wrong population
+definition; cycle 20 caught cycle 19's mistake simply by reading the
+methodology note carefully before extending the same check to more
+tiers. This is the "keep checking your own conclusions, don't just
+build on top of them uncritically" discipline the user's very first
+instruction in this whole session called for — now demonstrably
+operating recursively within the loop's own recent history, not only
+against the real trader's original behavior from weeks ago.
+
+**Running tally: 18 tables recalibrated or retired (17 plus this
+correction), plus 2 confirmed-not-actionable (re-verified), 1
+checked-with-insufficient-rigor, 1 architecture gap closed, and 2
+methodology bugs found-and-corrected (the HALT_END boundary in cycle
+18, and this cycle's own population-definition fix), across 20 /loop
+cycles.**
