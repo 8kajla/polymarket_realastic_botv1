@@ -5939,3 +5939,27 @@ Tracker status: 22/28 items resolved (verified/deprioritized/marked
 inconclusive). Remaining: 19 (ADVERSE_MOVE_CONTINUATION_SIZE_
 MULTIPLIER), 20 (HEDGE_TTC_SIZE_MULTIPLIER, this session's own), and 3
 of item 7's hedge-trigger sub-multipliers. Continuing.
+
+## 2026-09-13: Audit item 19 — most severe flattening found yet, 6/6 pattern
+
+Fresh Bitcoin continuation-hedge quartiles (14d, n=2251) vs deployed
+ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER table: move~-0.56 ratio 0.070
+vs static(-0.41) 0.270 (~26%), move~-0.085 ratio 0.132 vs static(-0.09)
+0.680 (~19%), move~+0.26 ratio 0.362 vs interpolated static ~2.285
+(~16%!). Direction preserved, magnitude collapsed to a sixth to a
+quarter of original -- the most severe version of the flattening
+pattern found across the whole audit.
+
+**Cross-cutting pattern is now 6/6**: items 8, 10, 13, 16, 19, 26 all
+independently show the same underlying shift -- his sizing behavior has
+lost most of its internal structure (level, price-sensitivity, cross-
+market autocorrelation, adverse-move responsiveness on both first and
+continuation hedges, position-index tiering) since these tables were
+calibrated. This is now well past the point of coincidence. Flagged as
+THE single biggest discovery of this whole audit -- bigger than any
+individual table's staleness -- and updated the tracker's cross-cutting
+section accordingly.
+
+Tracker status: 25/28 items resolved. Remaining: 3 of item 7's hedge-
+trigger sub-multipliers (hedge_liquidity, cross_market_hedge_rate,
+conviction). Continuing to close these out.
