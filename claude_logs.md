@@ -5587,3 +5587,24 @@ decision)**:
 Logged to project memory as a new file (cheap-edge-gap-root-cause-
 persistence-miscalibration.md) since this spans multiple future
 sessions' worth of follow-up work.
+
+## 2026-09-13: Full systematic re-audit launched — master tracker created
+
+User's explicit, direct instruction: check EVERY line of behavior built
+into this project since the start, not just new work -- keep a running
+list in memory/logs as each item is verified (previous turns weren't
+doing this consistently, called out by name). Created
+`full-behavioral-audit-tracker.md` in project memory: a 28-item
+checklist of every calibration table/mechanism in behavior_config.py,
+grouped by priority (win-rate-relevant side-selection/hedge-trigger
+mechanisms first, then sizing-only multipliers, then structural
+assumptions like the regime band boundaries and the core "hedge =
+insurance" interpretation itself, never previously questioned).
+
+Status so far: item 1 (SIDE_PERSISTENCE) = CONFOUNDED (see prior entry
+today). Item 2 (CROSS_MARKET_SIDE_PERSISTENCE) = CONFIRMED real but
+under-calibrated (see prior entry today). Items 3-28 = UNCHECKED,
+starting now with item 27 (the core hedge=insurance interpretation)
+since the user specifically challenged whether the project's foundation
+itself is right, and this is the single most foundational unquestioned
+assumption in the whole hedge subsystem.
