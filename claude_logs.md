@@ -7608,3 +7608,76 @@ reasonably wait.
 not-actionable, 1 checked-with-insufficient-rigor, 1 architecture gap
 closed, 4 methodology bugs found-and-corrected, and 1 infra issue
 investigated-and-confirmed-safe, across 25 /loop cycles.**
+
+## 2026-09-13: /loop cycle 26 (same day) — FLOOR_LOT_PROBABILITY shares the real_fill_count bug; cycle 23's own closure was premature and is corrected here
+
+Continued checking the "does the real_fill_count index bug reach
+further than already found" question, and found a third affected
+table: `FLOOR_LOT_PROBABILITY` is ALSO keyed by `position_tier`
+(`floor_lot_probability(asset, regime, position_tier)`), and
+`position_tier` live comes from exactly the same
+`position_tier_for_index(real_fill_count)` combined counter already
+found buggy in `ENTRY_SIZING_USD` (cycles 20-21) and `REENTRY_FATIGUE`
+(cycle 22). The cycle-6 derivation of this table used a sub-index that
+didn't account for interspersed hedge fills advancing the true shared
+counter — the identical mistake.
+
+**An important, explicit correction to this session's own prior
+conclusion**: cycle 23 had declared this whole investigation "closed,"
+having traced every DIRECT reader of `real_fill_count`/`real_hedge_
+fill_count` in `strategy.py` and finding exactly 2 affected (already
+fixed at the time) and 2 structurally immune. That closure was
+carefully reasoned and honestly documented — but it searched the WRONG
+scope. `floor_lot_probability` never reads `real_fill_count` directly;
+it reads the DERIVED `position_tier` string, which cycle 23's grep for
+the raw counter never traced backward to find. This is exactly the
+kind of mistake this whole audit exists to catch, and it's worth
+naming plainly rather than quietly re-opening a "closed" investigation
+without acknowledging the earlier conclusion was incomplete.
+
+**Methodology**: redone with the correct combined index — raw,
+uncollapsed fills (floor lots are the tiny fragments a decision-collapse
+step would erase, unchanged from cycle 6's own reasoning for using raw
+data), walking all fills chronologically with one shared counter
+matching `real_fill_count` exactly, sampling dominant-side fills at
+their true combined-index tier — plus the cycle-18-corrected
+`HALT_END` boundary, which had also never been applied to this table.
+
+**Result**: most cells shift a further 10-30%, mostly DOWN (fewer
+floor-lot probes at a given position than the mis-indexed version
+implied) — consistent in direction and rough magnitude with the
+broader post-halt softening pattern already documented across many
+other tables this session:
+- Ethereum: CHEAP +12-17%, MID -13-19%, CORE -12-23% (2nd_3rd/4th_plus),
+  HIGH -9-16% (2nd_3rd/4th_plus)
+- Solana: CHEAP -3-30%, MID -8-20%, CORE -14-16%, HIGH -7-15%
+
+CORE/first and HIGH/first for both assets fell below the n>=200 trust
+bar under this more selective definition and were left at their
+last-known values (Ethereum HIGH/first looked like a +197% swing but
+at n=106 that's pure thin-sample noise, not signal).
+
+No test changes needed (confirmed via grep). 537/537 tests passing,
+deployed to all 3 bots (paperbot/paperbot-100/coinbase-bot), verified
+healthy via journalctl.
+
+**Re-did the audit properly this time, with the corrected scope**:
+rather than trust that this was now the last affected table, grepped
+`behavior_config.py` for every function that takes `position_tier` as
+a parameter at all (not just `real_fill_count` readers) — found
+exactly 2: `median_entry_notional` (ENTRY_SIZING_USD) and
+`floor_lot_probability` (FLOOR_LOT_PROBABILITY), both now fixed. Then
+traced `position_tier`'s only other flow in the codebase — into
+`OrderIntent` and then `SimulatedOrder` — and confirmed it's purely
+inert metadata there (used only for the `PLACE order=... pos=%s` log
+line, never read back as a second calibration lookup by anything).
+This closes the investigation with a scope that's actually verifiably
+complete this time, not just asserted to be.
+
+**Running tally: 21 tables recalibrated or retired (20 plus FLOOR_LOT_
+PROBABILITY's own correction), plus 2 confirmed-not-actionable, 1
+checked-with-insufficient-rigor, 1 architecture gap closed, 5
+methodology bugs found-and-corrected (HALT_END boundary; cycle-19
+population definition; index semantics for ENTRY_SIZING_USD,
+REENTRY_FATIGUE, and now FLOOR_LOT_PROBABILITY), and 1 infra issue
+investigated-and-confirmed-safe, across 26 /loop cycles.**

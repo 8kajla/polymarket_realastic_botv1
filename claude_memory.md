@@ -1737,3 +1737,28 @@ lower priority given this table held up fine.
 actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
 4 methodology bugs found-and-corrected + 1 infra issue confirmed-safe,
 across 25 /loop cycles.** See [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 26, same day): FLOOR_LOT_PROBABILITY has the same real_fill_count bug -- cycle 23's closure was premature
+
+FLOOR_LOT_PROBABILITY is ALSO keyed by position_tier (derived from
+real_fill_count via position_tier_for_index), same combined-counter
+bug found in ENTRY_SIZING_USD/REENTRY_FATIGUE. Cycle 23's "audit
+closed" conclusion was based on the WRONG scope -- it traced direct
+real_fill_count readers only, missing that floor_lot_probability reads
+the DERIVED position_tier value instead. Real mistake in my own recent
+work, caught and corrected rather than left standing.
+
+Redone with correct combined index + corrected boundary: most cells
+shift 10-30% further, mostly down. 537/537 tests passing, deployed,
+verified healthy.
+
+Re-audited with CORRECTED scope this time: every position_tier
+consumer in behavior_config.py (exactly 2: median_entry_notional,
+floor_lot_probability, both now fixed). Traced position_tier's only
+other flow (OrderIntent/SimulatedOrder) -- confirmed inert metadata
+only. This closes the investigation for real.
+
+**Running tally: 21 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
+5 methodology bugs found-and-corrected + 1 infra issue confirmed-safe,
+across 26 /loop cycles.** See [[full-behavioral-audit-tracker]].
