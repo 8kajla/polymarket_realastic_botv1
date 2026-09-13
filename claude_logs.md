@@ -5320,3 +5320,51 @@ Remaining: item 4 (cross-asset entry/hedge trigger — architecturally the
 most involved, needs a new sub-100%-baseline attempt-gate design), the
 full multiplier-interaction code audit, and the new standalone "coinbase
 bot" instance. Moving to item 4 next.
+
+## 2026-09-13: Full code-interaction audit (item 5) — one real gap found and fixed
+
+Systematic pass over behavior_config.py/strategy.py/bot.py/config.py
+checking every multiplier for compounding/interaction risk, per the
+explicit "check our code completely and see anything stops or mess with
+other" instruction. Method: traced every multiplier's application site,
+checked for existing safety caps, and cross-referenced every ENABLE_*
+config flag against its actual usage site to catch orphaned/dead flags.
+
+**Found: the hedge-sizing chain in build_order_intent (strategy.py) had
+no combined safety cap**, unlike the ordinary entry-curve path in
+decide_size (which got COMBINED_SIZE_MULTIPLIER_CAP after BUGS_TO_FIX.md
+#4). ADVERSE_MOVE_SIZE_MULTIPLIER (cap 6.0), ABSOLUTE_PRICE_HEDGE_SIZE_
+MULTIPLIER (cap 3.0), and HEDGE_TTC_SIZE_MULTIPLIER (~0.6-1.4x) all
+multiply into the same `ratio` with no joint bound — worst case product
+~24.7x on top of HEDGE_SIZE_RATIO's own base (as high as 2.64x for
+BTC/CHEAP). The first two are NOT double-counting the same effect
+(absolute-price was explicitly fit as a residual controlling for
+adverse_move via partial correlation) but each is independently clamped
+to its own generous cap, and a large adverse move + an extreme hedge
+price are mechanically the same real event viewed two ways — so both
+caps get exercised together more often than not. This is the exact same
+class of risk COMBINED_SIZE_MULTIPLIER_CAP was built for, just never
+extended to this newer, separately-grown chain.
+
+**Fix**: added `HEDGE_RATIO_MULTIPLIER_CAP` (config.py, default 8.0,
+symmetric) and restructured build_order_intent's hedge-sizing block to
+accumulate all the CORRECTION multipliers into a separate `hedge_mult`
+(never the base HEDGE_SIZE_RATIO/HEDGE_CONTINUATION_SIZE_RATIO value,
+which isn't 1.0-centered), clamp that once, then apply it to `ratio`.
+Covers both the first-hedge and continuation-hedge chains. Set above the
+largest single contributing multiplier's own cap (6.0) so an ordinary
+single-factor extreme is never touched — only genuine multi-factor
+pile-up is. Added 2 new tests mirroring the existing COMBINED_SIZE_
+MULTIPLIER_CAP interaction tests (pathological pile-up, both directions).
+Full suite: 493/493 passing, all pre-existing tests unaffected (the cap
+is dormant in every real-calibration scenario checked, same as its
+entry-side counterpart).
+
+Also checked every ENABLE_* config flag is actually referenced at its
+call site (catches a flag that's defined but silently ignored, always-on
+regardless of setting) — all 25 flags confirmed wired correctly, no
+orphans.
+
+This closes item 5 (the interaction/regression audit) of the "build
+everything" list with one real, fixed finding. Moving to the final item:
+the standalone "coinbase bot" instance.

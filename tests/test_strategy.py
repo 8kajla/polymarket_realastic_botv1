@@ -2006,6 +2006,66 @@ class TestBuildOrderIntentHedge:
         assert captured["previous_market_first_side"] is None, \
             "with the flag off, previous_market_first_side must never reach decide_side"
 
+    def test_hedge_ratio_multiplier_cap_bounds_a_pathological_pileup(self, monkeypatch):
+        """Full code-audit pass (2026-09-13, 'build everything' item 5):
+        the exact same risk COMBINED_SIZE_MULTIPLIER_CAP already bounds on
+        the ordinary entry-curve path (decide_size) also applies to the
+        hedge-ratio chain here -- ADVERSE_MOVE_SIZE_MULTIPLIER,
+        ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER, and HEDGE_TTC_SIZE_MULTIPLIER
+        all multiply into the same `ratio`, and nothing bounded their joint
+        product until now. None of them individually reaches anywhere near
+        its own cap under the real calibration tables in ordinary use, so
+        this monkeypatches the underlying behavior_config functions
+        directly to force a pathological all-aligned case, the same
+        technique test_reentry_fatigue_and_hedge_count_reinforcement_
+        dont_compound_pathologically uses for the entry-curve side."""
+        monkeypatch.setattr(config, "SIZING_JITTER_FRACTION", 0.0)  # deterministic
+        monkeypatch.setattr(bc, "adverse_move_size_multiplier", lambda asset, move: 6.0)
+        monkeypatch.setattr(bc, "absolute_price_hedge_size_multiplier", lambda asset, price: 3.0)
+        monkeypatch.setattr(bc, "hedge_ttc_size_multiplier", lambda asset, regime, secs: 1.4)
+
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE", price=0.80)
+
+        monkeypatch.setattr(stratmod, "decide_hedge",
+                             lambda asset, activity, rng, liquidity=None, is_weekend=None,
+                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        assert intent is not None
+        base_ratio = bc.hedge_size_ratio("Bitcoin", "CORE")
+        # Raw (uncapped) correction would be 6.0 * 3.0 * 1.4 = 25.2 -- the
+        # cap must clamp it down to HEDGE_RATIO_MULTIPLIER_CAP instead.
+        expected_notional = 10.0 * base_ratio * config.HEDGE_RATIO_MULTIPLIER_CAP
+        assert intent.notional_usd == pytest.approx(expected_notional)
+
+    def test_hedge_ratio_multiplier_cap_bounds_the_downside_too(self, monkeypatch):
+        monkeypatch.setattr(config, "SIZING_JITTER_FRACTION", 0.0)
+        small = 1.0 / 6.0
+        monkeypatch.setattr(bc, "adverse_move_size_multiplier", lambda asset, move: small)
+        monkeypatch.setattr(bc, "absolute_price_hedge_size_multiplier", lambda asset, price: small)
+        monkeypatch.setattr(bc, "hedge_ttc_size_multiplier", lambda asset, regime, secs: small)
+
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.80, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE", price=0.80)
+
+        monkeypatch.setattr(stratmod, "decide_hedge",
+                             lambda asset, activity, rng, liquidity=None, is_weekend=None,
+                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: "Down")
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+
+        assert intent is not None
+        base_ratio = bc.hedge_size_ratio("Bitcoin", "CORE")
+        expected_notional = 10.0 * base_ratio / config.HEDGE_RATIO_MULTIPLIER_CAP
+        assert intent.notional_usd == pytest.approx(expected_notional)
 
 class TestBuildOrderIntentScout:
     """SCOUT: a deliberately small, tentative FIRST entry -- the gap

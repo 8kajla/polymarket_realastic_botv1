@@ -401,6 +401,34 @@ SIZE_SCALE_FACTOR = float(os.environ.get("SIZE_SCALE_FACTOR", "1.0"))
 COMBINED_SIZE_MULTIPLIER_CAP = float(os.environ.get("COMBINED_SIZE_MULTIPLIER_CAP", "4.0"))
 
 # ---------------------------------------------------------------------------
+# Full code-audit pass (2026-09-13, "build everything" item 5): the exact
+# same risk COMBINED_SIZE_MULTIPLIER_CAP above was built to bound exists on
+# the HEDGE sizing path in strategy.py's build_order_intent, and was never
+# addressed there even as multipliers kept getting added to that chain --
+# ADVERSE_MOVE_SIZE_MULTIPLIER (cap 6.0) and ABSOLUTE_PRICE_HEDGE_SIZE_
+# MULTIPLIER (cap 3.0) both apply to the first hedge, HEDGE_TTC_SIZE_
+# MULTIPLIER (~0.6-1.4x) applies to both first and continuation hedges, and
+# none of them are jointly bounded. Individually these two size caps are
+# NOT double-counting the same effect (ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER
+# was explicitly fit as a residual AFTER controlling for adverse_move via
+# partial correlation -- see its docstring in behavior_config.py) -- but
+# each is independently clamped to its OWN generous cap, and nothing stops
+# both hitting their respective caps at once (which, mechanically, happens
+# together more often than not: a large adverse move against the dominant
+# side and an extreme hedge-side price are the same real event viewed two
+# ways). Unclamped worst case: 6.0 * 3.0 * ~1.37 =~ 24.7x on top of
+# HEDGE_SIZE_RATIO's own base value (itself as high as 2.64x for BTC/CHEAP)
+# -- clearly beyond anything the real joint data ever showed. Same
+# treatment as COMBINED_SIZE_MULTIPLIER_CAP: a REASONED safety bound
+# (not a data-derived one), applied only to the accumulated CORRECTION
+# multiplier (never to HEDGE_SIZE_RATIO/HEDGE_CONTINUATION_SIZE_RATIO's own
+# base value, which varies legitimately by asset/regime and isn't a
+# 1.0-centered factor), set above the largest single contributing
+# multiplier's own cap (6.0) so an ordinary single-factor extreme is never
+# clipped by this -- only genuine multi-factor pile-up is.
+HEDGE_RATIO_MULTIPLIER_CAP = float(os.environ.get("HEDGE_RATIO_MULTIPLIER_CAP", "8.0"))
+
+# ---------------------------------------------------------------------------
 # Hard per-order cap, as a fraction of CURRENT EQUITY -- not a fixed dollar
 # amount. Added 2026-09-11 for the $100-bankroll instance, specifically to
 # guarantee no single order (however the calibrated multipliers above

@@ -750,6 +750,18 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # place) -- using placement-based hedge_count here instead could
         # size a hedge decide_hedge classified as "first" using the
         # continuation ratio, or vice versa.
+        # hedge_mult accumulates every CORRECTION multiplier below,
+        # separately from `ratio`'s own base value (HEDGE_SIZE_RATIO /
+        # HEDGE_CONTINUATION_SIZE_RATIO, which varies legitimately by
+        # asset/regime/index and isn't a 1.0-centered factor) -- so the
+        # combined-pileup safety cap just below only ever bounds the
+        # correction, never clips a base ratio that's intentionally > 1.0
+        # (e.g. BTC/CHEAP's 2.64). See HEDGE_RATIO_MULTIPLIER_CAP's
+        # docstring in config.py (code-audit pass, 2026-09-13) -- the exact
+        # same class of risk COMBINED_SIZE_MULTIPLIER_CAP already bounds on
+        # the ordinary entry-curve path in decide_size, never previously
+        # extended to this chain even as multipliers kept being added here.
+        hedge_mult = 1.0
         if activity.real_hedge_fill_count == 0:
             ratio = bc.hedge_size_ratio(market.asset, activity.first_entry_regime)
             # ADDED 2026-09-10: real, cross-asset-confirmed finding that
@@ -764,7 +776,7 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             # = moved against the dominant side).
             if config.ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER and activity.first_entry_price is not None:
                 adverse_move = activity.first_entry_price - (1.0 - price)
-                ratio *= bc.adverse_move_size_multiplier(market.asset, adverse_move)
+                hedge_mult *= bc.adverse_move_size_multiplier(market.asset, adverse_move)
             # ADDED 2026-09-12: real, confirmed-independent (via partial
             # correlation controlling for adverse_move) finding that the
             # hedge side's own ABSOLUTE price also predicts size, on top of
@@ -774,7 +786,7 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             # own book price) the adverse_move calculation above already
             # reads, no new state needed.
             if config.ENABLE_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER:
-                ratio *= bc.absolute_price_hedge_size_multiplier(market.asset, price)
+                hedge_mult *= bc.absolute_price_hedge_size_multiplier(market.asset, price)
         else:
             ratio = bc.hedge_continuation_size_ratio(activity.real_hedge_fill_count + 1)
             # ADDED 2026-09-10: direct extension of the hedge_count==0 case
@@ -784,7 +796,7 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             # docstring in behavior_config.py.
             if config.ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER and activity.first_entry_price is not None:
                 adverse_move = activity.first_entry_price - (1.0 - price)
-                ratio *= bc.adverse_move_continuation_size_multiplier(market.asset, adverse_move)
+                hedge_mult *= bc.adverse_move_continuation_size_multiplier(market.asset, adverse_move)
         # HEDGE TTC (time-to-close) scaling (2026-09-13 finding): re-derived
         # and regime-composition-checked specifically for hedges (the
         # entry-side correction at TTC_SIZE_MULTIPLIER was never verified
@@ -793,7 +805,10 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # and continuation hedges (calibrated on all hedge trades pooled).
         # See HEDGE_TTC_SIZE_MULTIPLIER's docstring in behavior_config.py.
         if config.ENABLE_HEDGE_TTC_SIZE_MULTIPLIER and seconds_remaining is not None:
-            ratio *= bc.hedge_ttc_size_multiplier(market.asset, regime, seconds_remaining)
+            hedge_mult *= bc.hedge_ttc_size_multiplier(market.asset, regime, seconds_remaining)
+        cap = config.HEDGE_RATIO_MULTIPLIER_CAP
+        hedge_mult = max(1.0 / cap, min(cap, hedge_mult))
+        ratio *= hedge_mult
         jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)
         notional = max(dominant_cost * ratio * jitter, 0.0)
         is_floor_lot = False
