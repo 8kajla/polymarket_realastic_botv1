@@ -1064,3 +1064,28 @@ anything else in decide_side/decide_hedge's core logic. Not yet re-
 calibrated or changed in code -- flagged for explicit user decision on
 how to proceed (recalibrate SIDE_PERSISTENCE toward neutral/50%,
 re-audit decide_hedge's core premise next, or something else).
+
+**ROOT CAUSE FOUND for the cross-cutting "sizing has flattened" audit
+finding (2026-09-13, /loop cycle 1): a discrete step-change tied to the
+13.6-day halt, NOT a mysterious ongoing drift.** Traced Bitcoin's
+within-band CHEAP slope and MID median size week-by-week from the TWAP
+switch onward: pre-halt weeks (Aug 8-22) cluster around one level
+(slope ~4.1-4.5, MID median ~$2.4-4.1, matching what got calibrated
+into ENTRY_SIZING_USD/WITHIN_BAND_SIZE_SLOPE), post-halt weeks (Sep 6-19,
+now spanning two full weeks and STABLE across both -- not still moving)
+sit at a genuinely different, lower level (slope ~2.0-3.0, MID median
+~$2.2-2.3). Confirmed the same pre/post-halt step pattern for
+Ethereum and Solana's MID median size too. Every one of the six flattened
+sizing tables found in the full audit was built from PRE-HALT-dominated
+data; the trader has been operating in a new, stable post-halt regime
+for over a week now that was never recalibrated against.
+
+**FIXED (2026-09-13)**: recalibrated `ENTRY_SIZING_USD` and
+`HEDGE_TRIGGER_PROBABILITY` for Bitcoin/Ethereum/Solana using ONLY
+post-halt data (since 2026-09-06 14:21 UTC), same standalone-only/
+dominant-side methodology as every prior recalibration in this file.
+Both live on paperbot/paperbot-100/coinbase-bot. Remaining flattened
+tables from the audit (WITHIN_BAND_SIZE_SLOPE, CROSS_MARKET_SIZE_
+MOMENTUM_MULTIPLIER, HEDGE_SIZE_RATIO for ETH/SOL, ADVERSE_MOVE_SIZE_
+MULTIPLIER, ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER) still need the
+same post-halt-only recalibration -- queued for the next /loop cycle.

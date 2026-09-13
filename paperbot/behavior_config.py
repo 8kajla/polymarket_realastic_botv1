@@ -173,23 +173,45 @@ ENTRY_SIZING_USD = {
     # showed <1% standalone-vs-blended difference -- not worth a separate
     # note per cell). Solana was the one asset where this contamination
     # mattered a lot; Bitcoin and Ethereum were only mildly affected.
+    # RECALIBRATED 2026-09-13 (full-audit root-cause pass): every cell
+    # above this comment for Bitcoin/Ethereum/Solana was measuring a
+    # PRE-HALT regime that no longer exists. The full audit (see
+    # full-behavioral-audit-tracker.md in project memory) found SIX
+    # independent sizing signals had all "gone stale" in the same
+    # direction; tracing the actual weekly timeline (not just before/
+    # after) showed this isn't a continuous drift at all -- it's a
+    # discrete STEP CHANGE that lines up exactly with the 13.6-day halt
+    # (2026-08-23 22:53 -> 2026-09-06 14:21 UTC): pre-halt weeks (Aug 8-22)
+    # and post-halt weeks (Sep 6-19, now a full ~8 days and STABLE across
+    # both weeks measured, not still moving) are two genuinely different,
+    # internally-consistent regimes. Every cell below is now measured
+    # STANDALONE-ONLY (dominant-side, same discipline as the 2026-09-08
+    # correction note above) from ONLY the post-halt window --
+    # pre-halt data is deliberately excluded, not blended, since blending
+    # two different regimes together would just recreate a confused
+    # in-between number that matches neither. n>=200 cleared the trust
+    # bar for every cell except the four marked THIN (CORE/HIGH's 4th_plus
+    # tier for Ethereum/Solana specifically, where post-halt volume is
+    # still catching up) -- those are a first-pass estimate, not a fully-
+    # trusted recalibration; revisit once more post-halt volume
+    # accumulates. Re-derive again if a comparably large gap ever recurs.
     "Bitcoin": {
-        "CHEAP": {"first": 1.793, "2nd_3rd": 1.528, "4th_plus": 1.356},
-        "MID":   {"first": 4.209, "2nd_3rd": 2.226, "4th_plus": 2.385},
-        "CORE":  {"first": 12.403, "2nd_3rd": 10.989, "4th_plus": 5.396},
-        "HIGH":  {"first": 39.009, "2nd_3rd": 39.960, "4th_plus": 16.284},
+        "CHEAP": {"first": 1.584, "2nd_3rd": 1.449, "4th_plus": 1.380},
+        "MID":   {"first": 2.356, "2nd_3rd": 2.332, "4th_plus": 2.385},
+        "CORE":  {"first": 5.621, "2nd_3rd": 5.928, "4th_plus": 5.928},
+        "HIGH":  {"first": 21.620, "2nd_3rd": 18.600, "4th_plus": 18.600},
     },
     "Ethereum": {
-        "CHEAP": {"first": 0.994, "2nd_3rd": 0.750, "4th_plus": 0.674},
-        "MID":   {"first": 2.968, "2nd_3rd": 2.600, "4th_plus": 1.947},
-        "CORE":  {"first": 9.148, "2nd_3rd": 7.677, "4th_plus": 6.381},
-        "HIGH":  {"first": 28.292, "2nd_3rd": 26.758, "4th_plus": 19.380},
+        "CHEAP": {"first": 1.300, "2nd_3rd": 1.050, "4th_plus": 0.677},
+        "MID":   {"first": 2.051, "2nd_3rd": 2.072, "4th_plus": 2.010},
+        "CORE":  {"first": 5.396, "2nd_3rd": 5.079, "4th_plus": 4.818},  # first/4th_plus THIN (n=191/183)
+        "HIGH":  {"first": 16.284, "2nd_3rd": 14.469, "4th_plus": 14.469},  # 4th_plus THIN (n=183)
     },
     "Solana": {
-        "CHEAP": {"first": 1.097, "2nd_3rd": 0.805, "4th_plus": 0.354},
-        "MID":   {"first": 2.850, "2nd_3rd": 2.597, "4th_plus": 1.083},
-        "CORE":  {"first": 7.373, "2nd_3rd": 6.880, "4th_plus": 6.235},
-        "HIGH":  {"first": 21.620, "2nd_3rd": 23.126, "4th_plus": 19.740},
+        "CHEAP": {"first": 1.370, "2nd_3rd": 1.050, "4th_plus": 0.583},
+        "MID":   {"first": 1.891, "2nd_3rd": 1.891, "4th_plus": 1.769},
+        "CORE":  {"first": 5.032, "2nd_3rd": 4.608, "4th_plus": 4.818},  # 4th_plus THIN (n=129)
+        "HIGH":  {"first": 14.469, "2nd_3rd": 14.469, "4th_plus": 14.469},  # 4th_plus THIN (n=161)
     },
     "Dogecoin": {
         "CHEAP": {"first": 0.671, "2nd_3rd": 0.495, "4th_plus": 0.276},
@@ -941,10 +963,21 @@ def bankroll_pnl_size_multiplier(asset: str, cum_realized_pnl: Optional[float]) 
 # stayed under 2.5pp, unchanged. CORE/HIGH cells for all three assets
 # looked more dramatic on their face but stayed below the trust bar
 # (n=8-136) -- not chased, same discipline as every thin cell in this file.
+# RECALIBRATED 2026-09-13 (full-audit root-cause pass, same investigation
+# as ENTRY_SIZING_USD's matching note above): the hedge-rate secular-
+# decline finding (hedge-rate-secular-decline.md, iter 143) already knew
+# his overall hedge propensity had dropped a lot over the TWAP era, but
+# every cell below was still measuring a blend that pre-dates the
+# 13.6-day halt. Re-derived from ONLY post-halt data (since 2026-09-06
+# 14:21 UTC, now ~8 days): live table was off by up to 32pp in the worst
+# cell (Solana) against a 3-day snapshot taken during this audit -- this
+# is the proper full-post-halt-window replacement, not just a snapshot.
+# HIGH cells stay THIN (n=69-80) for all three assets -- first-pass
+# estimate, revisit once more post-halt volume accumulates.
 HEDGE_TRIGGER_PROBABILITY = {
-    "Bitcoin":     {"CHEAP": 0.6242, "MID": 0.8018, "CORE": 0.4754, "HIGH": 0.2967},
-    "Ethereum":    {"CHEAP": 0.5336, "MID": 0.6562, "CORE": 0.5064, "HIGH": 0.2971},
-    "Solana":      {"CHEAP": 0.7225, "MID": 0.7286, "CORE": 0.5523, "HIGH": 0.3039},
+    "Bitcoin":     {"CHEAP": 0.6936, "MID": 0.7319, "CORE": 0.4506, "HIGH": 0.2754},
+    "Ethereum":    {"CHEAP": 0.3838, "MID": 0.5751, "CORE": 0.4460, "HIGH": 0.2179},
+    "Solana":      {"CHEAP": 0.5178, "MID": 0.6626, "CORE": 0.3967, "HIGH": 0.1250},
     "Dogecoin":    {"CHEAP": 0.3515, "MID": 0.4531, "CORE": 0.6209, "HIGH": 0.3041},
     "Hyperliquid": {"CHEAP": 0.3506, "MID": 0.5819, "CORE": 0.5628, "HIGH": 0.3079},
     "BNB":         {"CHEAP": 0.8389, "MID": 0.9004, "CORE": 0.7806, "HIGH": 0.4884},
