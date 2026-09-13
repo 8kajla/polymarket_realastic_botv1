@@ -2188,21 +2188,42 @@ def scout_size_ratio(asset: str) -> float:
 # values are each cell's measured post-cliff / pre-cliff-average win-rate
 # ratio, i.e. scale the stake down roughly in proportion to the
 # demonstrated drop in edge, not an arbitrarily chosen cut.
+# RECALIBRATED 2026-09-13 (post-halt audit, /loop cycle 10). Since this
+# table is calibrated on real MARKET-OUTCOME win rates rather than the
+# trader's own behavior, it can drift for reasons unrelated to his
+# decision process (e.g. the post-halt basket permanently drops BNB,
+# and overall volume roughly halved -- real market microstructure
+# changed too, not just him). Recomputed each cell's pre-cliff-average
+# vs post-cliff win rate on post-halt-only (ts>=HALT_END) raw per-fill
+# data (position index = count of same-side real fills so far in that
+# market, 1-indexed, matching real_fill_count's own semantics), same
+# cliff thresholds as originally derived (not re-run through cliff-
+# detection this cycle -- a known scope limit, flagged rather than
+# silently assumed unchanged):
+#   Bitcoin/CORE:    ratio 0.88->0.9179 (z=-6.479, still clearly real,
+#                     but the drop is now milder)
+#   Ethereum/CHEAP:  ratio 0.73->0.6480 (z=-5.791, real AND stronger)
+#   Solana/CHEAP:    ratio 0.77->0.7412 (z=-2.938, real, roughly similar)
+# REMOVED (genuinely vanished post-halt, not just weakened -- z well
+# under this file's |z|>=2.58 bar, and 2 of the 3 actually point the
+# WRONG direction now):
+#   Ethereum/MID:  z=1.482, post-cliff win rate actually HIGHER
+#                   (0.4575 vs 0.4309 pre) -- effect reversed to noise.
+#   Solana/MID:    z=-0.637, ratio 0.9691 -- indistinguishable from flat.
+#   Ethereum/CORE: z=0.533, post-cliff HIGHER again (0.8047 vs 0.7887).
+# All 3 removed cells had solid post-halt sample sizes (n=215-2103 per
+# side of the split, not a thin-data artifact) -- this is a genuine
+# disappearance, not underpowering, so removed from both tables below
+# rather than kept at a stale value or forced to a fake curve.
 REENTRY_FATIGUE_THRESHOLD = {
-    ("Ethereum", "MID"): 5,
-    ("Solana", "MID"): 5,
     ("Bitcoin", "CORE"): 8,
-    ("Ethereum", "CORE"): 8,
     ("Ethereum", "CHEAP"): 8,
     ("Solana", "CHEAP"): 8,
 }
 REENTRY_FATIGUE_MULTIPLIER = {
-    ("Ethereum", "MID"): 0.77,
-    ("Solana", "MID"): 0.72,
-    ("Bitcoin", "CORE"): 0.88,
-    ("Ethereum", "CORE"): 0.81,
-    ("Ethereum", "CHEAP"): 0.73,
-    ("Solana", "CHEAP"): 0.77,
+    ("Bitcoin", "CORE"): 0.9179,
+    ("Ethereum", "CHEAP"): 0.6480,
+    ("Solana", "CHEAP"): 0.7412,
 }
 
 

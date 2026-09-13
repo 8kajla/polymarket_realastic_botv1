@@ -463,12 +463,17 @@ class TestSizingDecision:
             assert notional_low == notional_high, f"{asset}/{regime} should be a strict no-op"
 
     def test_reentry_fatigue_respects_the_per_instance_feature_flag(self, monkeypatch):
+        # Ethereum/CHEAP (not MID -- Ethereum/MID's own fatigue effect
+        # vanished post-halt and was removed from the table entirely in
+        # the 2026-09-13 /loop cycle 10 recalibration, which would make
+        # this test trivially pass even with the flag ON and not actually
+        # exercise the flag's gating).
         monkeypatch.setattr(config, "ENABLE_REENTRY_FATIGUE_DAMPENER", False)
         rng_a = random.Random(101)
         rng_b = random.Random(101)
-        notional_low, _ = decide_size("Ethereum", "MID", "4th_plus", 0.5, rng_a,
+        notional_low, _ = decide_size("Ethereum", "CHEAP", "4th_plus", 0.15, rng_a,
                                        real_fill_count=1)
-        notional_high, _ = decide_size("Ethereum", "MID", "4th_plus", 0.5, rng_b,
+        notional_high, _ = decide_size("Ethereum", "CHEAP", "4th_plus", 0.15, rng_b,
                                         real_fill_count=20)
         assert notional_low == notional_high, (
             "with the flag off, re-entry fatigue must be a strict no-op"
@@ -523,8 +528,8 @@ class TestSizingDecision:
         )
 
     def test_reentry_fatigue_and_hedge_count_reinforcement_dont_compound_pathologically(self):
-        """/loop iter 139 due-diligence check: 4 (asset, regime) cells --
-        Ethereum/Solana x CHEAP/MID -- are calibrated for BOTH
+        """/loop iter 139 due-diligence check: originally 4 (asset, regime)
+        cells -- Ethereum/Solana x CHEAP/MID -- were calibrated for BOTH
         REENTRY_FATIGUE (keyed on same-side real_fill_count) and
         HEDGE_COUNT_REINFORCEMENT (keyed on opposite-side live_hedge_count)
         simultaneously, since a market can plausibly have both a long
@@ -538,7 +543,16 @@ class TestSizingDecision:
         bigger tier -- re-checked the WORST case (reentry fatigue x the
         higher tier-2 multiplier) explicitly, not just tier 1. Widened the
         band to 1.4 to match (max real combination is 1.314x, still a very
-        modest adjustment relative to COMBINED_SIZE_MULTIPLIER_CAP=4.0)."""
+        modest adjustment relative to COMBINED_SIZE_MULTIPLIER_CAP=4.0).
+
+        UPDATED 2026-09-13 (/loop cycle 10, post-halt audit): Ethereum/MID
+        and Solana/MID's REENTRY_FATIGUE effect genuinely vanished
+        post-halt and was removed from that table entirely -- only
+        Ethereum/CHEAP and Solana/CHEAP still overlap with
+        HEDGE_COUNT_REINFORCEMENT now, 2 cells not 4. The overlap set is
+        still computed dynamically below rather than hardcoded, so this
+        test adapts on its own; the loop assertion still exercises real
+        values either way."""
         overlap_cells = set(bc.REENTRY_FATIGUE_MULTIPLIER) & set(bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER)
         assert overlap_cells, "expected at least one overlapping cell to actually exercise this"
         for asset, regime in overlap_cells:

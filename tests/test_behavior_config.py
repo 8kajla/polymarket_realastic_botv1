@@ -933,6 +933,14 @@ class TestReentryFatigueMultiplier:
         for asset in ("Bitcoin", "Ethereum", "Solana"):
             assert bc.reentry_fatigue_multiplier(asset, "HIGH", 20) == 1.0
 
+    def test_noop_for_cells_that_vanished_post_halt(self):
+        # RECALIBRATED 2026-09-13 (/loop cycle 10): Ethereum/MID,
+        # Solana/MID, and Ethereum/CORE all showed a genuinely vanished
+        # (not just weakened) fatigue effect on fresh post-halt data --
+        # removed from the table entirely, see the module docstring.
+        for asset, regime in [("Ethereum", "MID"), ("Solana", "MID"), ("Ethereum", "CORE")]:
+            assert bc.reentry_fatigue_multiplier(asset, regime, 20) == 1.0
+
     def test_noop_when_real_fill_count_missing(self):
         for asset, regime in bc.REENTRY_FATIGUE_THRESHOLD:
             assert bc.reentry_fatigue_multiplier(asset, regime, None) == 1.0
