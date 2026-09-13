@@ -1822,3 +1822,30 @@ actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
 + 1 architectural limitation documented + 1 tested-and-rejected
 candidate fix, across 28 /loop cycles.** See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 29, same day): completed function-signature audit; strengthened the SIDE_PERSISTENCE finding
+
+Two closing pieces: (1) grepped every function in behavior_config.py
+and classified every count/index-like parameter -- confirmed exactly
+2 position_tier consumers exist (both fixed) and everything else uses
+the separate hedge-only counter (already verified immune). Verifiably
+complete now, not just asserted.
+
+(2) Worked through whether either naive grouping (dominant-side-only,
+or all-raw-decisions-together) could sidestep the SIDE_PERSISTENCE
+disambiguation problem without a heuristic. Both fail in opposite
+ways: dominant-only gives trivial 100% persistence (no switches
+observable), all-decisions conflates switches with hedges (which are
+ALWAYS a "switch" by definition). Confirms no naive shortcut exists --
+unlike other tables' boundary-only refreshes, which had a clean
+aggregate approximation available.
+
+No code change. See [[last-side-vs-dominant-side-divergence]] for full
+writeup.
+
+**Running tally: 21 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
+5 methodology bugs found-and-corrected + 1 infra issue confirmed-safe
++ 1 architectural limitation (now rigorously confirmed) + 1 tested-
+and-rejected candidate fix, across 29 /loop cycles.** See
+[[full-behavioral-audit-tracker]].

@@ -7833,3 +7833,87 @@ closed, 5 methodology bugs found-and-corrected, 1 infra issue
 investigated-and-confirmed-safe, 1 genuine architectural limitation
 documented, and now 1 candidate fix tested-and-rejected with real
 evidence, across 28 /loop cycles.**
+
+## 2026-09-13: /loop cycle 29 (same day) — completed the function-signature audit; strengthened (not resolved) the SIDE_PERSISTENCE finding
+
+Two pieces of closing-out work, neither producing a code change, both
+worth preserving.
+
+**1. Completed the position-index bug-class audit with a verifiably
+complete scope this time.** Cycle 23 had closed this investigation by
+tracing direct readers of `real_fill_count`; cycle 26 found that scope
+was incomplete (missed `floor_lot_probability`, which reads the
+*derived* `position_tier` instead) and re-closed it by tracing every
+consumer of `position_tier` specifically. This cycle went one level
+further: grepped EVERY function definition in `behavior_config.py` and
+classified every count/index-like parameter across the entire file,
+not just the ones already known to be related to `position_tier`.
+Result: exactly 2 functions consume `position_tier`
+(`median_entry_notional` for `ENTRY_SIZING_USD`, `floor_lot_
+probability` for `FLOOR_LOT_PROBABILITY`, both already fixed), and
+every other count-like parameter (`attempt_index`, `hedge_count`,
+`hedge_index`, `live_hedge_count`) is sourced from `real_hedge_fill_
+count`, the genuinely separate hedge-only counter already verified
+immune to this bug class in cycles 11 and 23. This is now a
+verifiably complete closure — checked against the full function list,
+not just the subset already implicated — rather than an assertion
+that "there's probably nothing else."
+
+**2. Strengthened the `SIDE_PERSISTENCE` finding from cycles 27-28**
+by working through whether either of the two simplest possible naive
+groupings (no disambiguation heuristic required at all) could sidestep
+the disambiguation problem entirely, rather than stopping at "the one
+heuristic I tried didn't work."
+
+- **"Dominant-side decisions only"** (the grouping today's other three
+  fixes used successfully for sizing tables): fails immediately for
+  this purpose — by construction every decision in this group is on
+  the SAME side, so "does this decision match the previous one" is
+  trivially always true within the group. That would produce 100%
+  persistence, which cannot be reconciled with the deployed table's
+  genuinely varied 66-93% rates. This grouping only works when the
+  POSITION INDEX is what matters (sizing tables); it can't observe a
+  side-transition by construction.
+- **"All raw decisions, hedge and ordinary alike, in one chronological
+  sequence"**: doesn't have that problem, but overcorrects the other
+  way — a hedge decision is BY DEFINITION always on the opposite side
+  of whatever came immediately before it (that's what makes it a
+  hedge, not a coincidence), so every hedge transition trivially
+  counts as "switched" under this grouping. Given hedge rates are
+  substantial (30-70%+ depending on asset and regime, per `HEDGE_
+  TRIGGER_PROBABILITY`) and hedges occur at varied points within a
+  market's life, mixing them into the persistence count would bias the
+  measured rate downward by an amount that depends on the local hedge
+  rate — contaminating the exact quantity being measured with an
+  entirely separate decision mechanism (`decide_hedge`'s own trigger
+  logic, unrelated to `decide_side`'s persistence roll).
+
+Both failure modes trace back to the identical root cause: correctly
+measuring `SIDE_PERSISTENCE` requires including ordinary-to-ordinary
+transitions and excluding every transition touching a hedge on either
+end — precisely the disambiguation problem cycle 28 already tested a
+candidate solution for and found wanting. There is no naive grouping
+that sidesteps it. This confirms, more rigorously than cycle 27's
+original finding alone, that `SIDE_PERSISTENCE` genuinely cannot be
+given the same simple boundary-only refresh that worked cleanly for
+`HEDGE_TRIGGER_PROBABILITY` (cycle 25) — not because of missing data
+or thin samples, but because there is no clean aggregate approximation
+available for a table that specifically measures the one thing the
+approximation can't cleanly isolate.
+
+Documented the full reasoning in `last-side-vs-dominant-side-
+divergence.md` so a future attempt starts from "two naive approaches
+already tried and confirmed unworkable, for these specific reasons"
+rather than re-deriving the same dead ends.
+
+**No code change this cycle.** This is a closing-out pass: confirming
+completeness where cycle 23 had wrongly asserted it, and deepening
+understanding of a genuinely hard problem rather than forcing a
+resolution it doesn't have yet.
+
+**Running tally: 21 tables recalibrated or retired, plus 2 confirmed-
+not-actionable, 1 checked-with-insufficient-rigor, 1 architecture gap
+closed, 5 methodology bugs found-and-corrected, 1 infra issue
+investigated-and-confirmed-safe, 1 genuine architectural limitation
+(now rigorously confirmed rather than merely suspected), and 1
+tested-and-rejected candidate fix, across 29 /loop cycles.**
