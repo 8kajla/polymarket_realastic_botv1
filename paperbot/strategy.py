@@ -424,7 +424,8 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
                  hours_since_resumption: Optional[float] = None,
                  size_momentum_residual: Optional[float] = None,
                  bankroll_pnl_residual: Optional[float] = None,
-                 real_fill_count: Optional[int] = None) -> tuple[float, bool]:
+                 real_fill_count: Optional[int] = None,
+                 live_hedge_count: Optional[int] = None) -> tuple[float, bool]:
     """
     Returns (notional_usd, is_floor_lot). Rolls the floor-lot tier first for
     assets where it's modeled (Part 4); falls back to the normal
@@ -433,9 +434,11 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     were measured.
 
     seconds_remaining, hours_since_resumption, size_momentum_residual,
-    bankroll_pnl_residual, and real_fill_count are all Optional (default
-    None -> no-op) so every existing call site/test that doesn't pass them
-    keeps working unchanged.
+    bankroll_pnl_residual, real_fill_count, and live_hedge_count are all
+    Optional (default None -> no-op) so every existing call site/test that
+    doesn't pass them keeps working unchanged. live_hedge_count should
+    only ever be passed for an ORDINARY (non-hedge) entry -- see
+    HEDGE_COUNT_REINFORCEMENT_MULTIPLIER's docstring in behavior_config.py.
     """
     floor_p = bc.floor_lot_probability(asset, regime, position_tier)
     if floor_p > 0 and rng.random() < floor_p:
@@ -529,9 +532,19 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # (asset, regime) cell was left out.
     reentry_fatigue_mult = bc.reentry_fatigue_multiplier(asset, regime, real_fill_count) \
         if config.ENABLE_REENTRY_FATIGUE_DAMPENER else 1.0
+    # HEDGE-COUNT REINFORCEMENT (2026-09-13 finding): the mirror-image
+    # signal to re-entry fatigue -- needing 2+ hedges against a market's
+    # original side predicts that side wins MORE, not less, for Ethereum/
+    # Solana in CHEAP/MID. Verified against the LIVE hedge-count-so-far
+    # (not a post-hoc final total) before building. See
+    # HEDGE_COUNT_REINFORCEMENT_MULTIPLIER's docstring in behavior_config.py.
+    # Only meaningful for ordinary (non-hedge) entries -- the caller must
+    # not pass live_hedge_count for a hedge leg's own sizing.
+    hedge_count_reinforcement_mult = bc.hedge_count_reinforcement_multiplier(
+        asset, regime, live_hedge_count) if config.ENABLE_HEDGE_COUNT_REINFORCEMENT else 1.0
     # COMBINED-MULTIPLIER SAFETY BOUND (2026-09-12, bug audit #4): each of
     # within_band/momentum_mult/bankroll_mult/ttc_mult/resumption_mult/
-    # reentry_fatigue_mult was
+    # reentry_fatigue_mult/hedge_count_reinforcement_mult was
     # fit MARGINALLY -- controlling for other already-known variables
     # individually at build time -- but their PRODUCT has never been
     # validated against his real observed size distribution as a joint
@@ -554,7 +567,8 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # is expected and legitimate; this only stops the worst-case scenario
     # of every factor aligning in the same direction at once.
     combined_signal = (within_band * momentum_mult * bankroll_mult * ttc_mult
-                        * resumption_mult * reentry_fatigue_mult)
+                        * resumption_mult * reentry_fatigue_mult
+                        * hedge_count_reinforcement_mult)
     cap = config.COMBINED_SIZE_MULTIPLIER_CAP
     combined_signal = max(1.0 / cap, min(cap, combined_signal))
     # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a
@@ -788,14 +802,16 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                                                   hours_since_resumption=hours_since_resumption,
                                                   size_momentum_residual=size_momentum_residual,
                                                   bankroll_pnl_residual=bankroll_pnl_residual,
-                                                  real_fill_count=activity.real_fill_count)
+                                                  real_fill_count=activity.real_fill_count,
+                                                  live_hedge_count=activity.real_hedge_fill_count)
     else:
         notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
                                               seconds_remaining=seconds_remaining,
                                               hours_since_resumption=hours_since_resumption,
                                               size_momentum_residual=size_momentum_residual,
                                               bankroll_pnl_residual=bankroll_pnl_residual,
-                                              real_fill_count=activity.real_fill_count)
+                                              real_fill_count=activity.real_fill_count,
+                                              live_hedge_count=activity.real_hedge_fill_count)
 
     is_scout = False
     if not is_hedge and not is_floor_lot and activity.entry_count == 0:

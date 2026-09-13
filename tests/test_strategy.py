@@ -455,6 +455,54 @@ class TestSizingDecision:
             "with the flag off, re-entry fatigue must be a strict no-op"
         )
 
+    def test_hedge_count_reinforcement_defaults_to_a_noop_when_not_passed(self):
+        rng_a = random.Random(103)
+        rng_b = random.Random(103)
+        notional_no_arg, _ = decide_size("Ethereum", "MID", "4th_plus", 0.5, rng_a)
+        notional_explicit_none, _ = decide_size("Ethereum", "MID", "4th_plus", 0.5, rng_b,
+                                                 live_hedge_count=None)
+        assert notional_no_arg == notional_explicit_none
+
+    def test_hedge_count_reinforcement_boosts_size_at_and_beyond_threshold(self):
+        price_for_regime = {"CHEAP": 0.2, "MID": 0.5, "CORE": 0.8, "HIGH": 0.95}
+        for (asset, regime), threshold in bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD.items():
+            price = price_for_regime[regime]
+
+            def avg_notional(live_hedge_count, n=400):
+                rng = random.Random(107)
+                total = 0.0
+                for _ in range(n):
+                    notional, _ = decide_size(asset, regime, "4th_plus", price, rng,
+                                               live_hedge_count=live_hedge_count)
+                    total += notional
+                return total / n
+
+            before_threshold = avg_notional(threshold - 1)
+            at_threshold = avg_notional(threshold)
+            assert at_threshold > before_threshold, f"{asset}/{regime} did not boost at threshold"
+
+    def test_hedge_count_reinforcement_is_a_noop_for_excluded_cells(self):
+        for asset, regime in [("Bitcoin", "MID"), ("Ethereum", "CORE"), ("Solana", "HIGH")]:
+            rng_a = random.Random(109)
+            rng_b = random.Random(109)
+            notional_low, _ = decide_size(asset, regime, "4th_plus", 0.5, rng_a,
+                                           live_hedge_count=1)
+            notional_high, _ = decide_size(asset, regime, "4th_plus", 0.5, rng_b,
+                                            live_hedge_count=20)
+            assert notional_low == notional_high, f"{asset}/{regime} should be a strict no-op"
+
+    def test_hedge_count_reinforcement_respects_the_per_instance_feature_flag(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_HEDGE_COUNT_REINFORCEMENT", False)
+        rng_a = random.Random(113)
+        rng_b = random.Random(113)
+        notional_low, _ = decide_size("Ethereum", "CHEAP", "4th_plus", 0.2, rng_a,
+                                       live_hedge_count=1)
+        notional_high, _ = decide_size("Ethereum", "CHEAP", "4th_plus", 0.2, rng_b,
+                                        live_hedge_count=20)
+        assert notional_low == notional_high, (
+            "with the flag off, hedge-count reinforcement must be a strict no-op"
+        )
+
     def test_combined_multiplier_cap_bounds_worst_case_compounding(self, monkeypatch):
         """FIXED 2026-09-12 (bug audit #4): each cross-market/time
         multiplier was fit MARGINALLY and none of them, individually,

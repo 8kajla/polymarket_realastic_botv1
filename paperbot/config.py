@@ -731,6 +731,20 @@ ENABLE_REENTRY_FATIGUE_DAMPENER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for HEDGE_COUNT_REINFORCEMENT_MULTIPLIER (see its docstring
+# in behavior_config.py). Added 2026-09-13 (/loop iters 131-133, 138) --
+# the mirror-image signal to REENTRY_FATIGUE_DAMPENER: needing 2+ hedges
+# against a market's original side predicts that side wins MORE, not less,
+# for Ethereum/Solana in CHEAP/MID (Bitcoin excluded, same pattern as
+# REENTRY_FATIGUE). Verified against the LIVE hedge-count-so-far, not a
+# post-hoc final total, before building -- real-time actionable. Also a
+# deliberate risk/reward adjustment, not a replicated real behavior.
+# Default TRUE everywhere.
+ENABLE_HEDGE_COUNT_REINFORCEMENT = os.environ.get(
+    "ENABLE_HEDGE_COUNT_REINFORCEMENT", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Hard cap on hedge_count. Added 2026-09-09, hours after
 # HEDGE_CONTINUATION_PROBABILITY shipped (behavior_config.py) let
 # decide_hedge fire more than once per market -- CONFIRMED LIVE this

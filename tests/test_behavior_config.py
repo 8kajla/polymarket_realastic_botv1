@@ -864,6 +864,52 @@ class TestReentryFatigueMultiplier:
             assert 0.0 < mult < 1.0, f"{key}: expected a dampener (0,1), got {mult}"
 
 
+class TestHedgeCountReinforcementMultiplier:
+    """Hedge-count reinforcement, added 2026-09-13 (/loop iters 131-133,
+    138) -- the mirror-image signal to REENTRY_FATIGUE: needing 2+ hedges
+    against a market's original side predicts that side wins MORE, not
+    less, for Ethereum/Solana in CHEAP/MID. Verified against the LIVE
+    hedge-count-so-far (not a post-hoc final total) before building --
+    real-time actionable. Bitcoin and CORE/HIGH deliberately excluded."""
+
+    def test_noop_for_uncalibrated_asset_regime_cells(self):
+        assert bc.hedge_count_reinforcement_multiplier("Bitcoin", "MID", 5) == 1.0
+        assert bc.hedge_count_reinforcement_multiplier("Ethereum", "CORE", 5) == 1.0
+        assert bc.hedge_count_reinforcement_multiplier("Solana", "HIGH", 5) == 1.0
+
+    def test_noop_when_live_hedge_count_missing(self):
+        for asset, regime in bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD:
+            assert bc.hedge_count_reinforcement_multiplier(asset, regime, None) == 1.0
+
+    def test_noop_below_threshold(self):
+        for (asset, regime), threshold in bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD.items():
+            for n in range(0, threshold):
+                assert bc.hedge_count_reinforcement_multiplier(asset, regime, n) == 1.0
+
+    def test_boosts_at_and_beyond_threshold(self):
+        for (asset, regime), expected in bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER.items():
+            threshold = bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD[(asset, regime)]
+            got = bc.hedge_count_reinforcement_multiplier(asset, regime, threshold)
+            assert got == expected
+            got_far = bc.hedge_count_reinforcement_multiplier(asset, regime, threshold + 10)
+            assert got_far == expected
+
+    def test_every_threshold_cell_has_a_matching_multiplier_and_vice_versa(self):
+        assert set(bc.HEDGE_COUNT_REINFORCEMENT_THRESHOLD) == set(bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER)
+
+    def test_multiplier_is_a_real_boost_not_a_dampener(self):
+        for key, mult in bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER.items():
+            assert mult > 1.0, f"{key}: expected a boost (>1.0), got {mult}"
+
+    def test_multiplier_stays_within_the_established_modest_range(self):
+        # Consistent with every other multiplier in this file staying well
+        # under its own nominal safety cap in practice -- this is a
+        # deliberate damping choice, not a mechanical constraint, so pin it
+        # down with a test rather than let it silently drift wide later.
+        for key, mult in bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER.items():
+            assert mult <= 2.0, f"{key}: {mult} exceeds the intended modest damped range"
+
+
 class TestAccuracyScoutMultiplier:
     """Accuracy-conditioned scout rate, added 2026-09-11 -- real, cross-
     asset-POOLED (only the pooled version was circularity-checked), so

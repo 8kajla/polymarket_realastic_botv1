@@ -1977,3 +1977,72 @@ def reentry_fatigue_multiplier(asset: str, regime: str,
     if real_fill_count < threshold:
         return 1.0
     return REENTRY_FATIGUE_MULTIPLIER.get(key, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# HEDGE-COUNT REINFORCEMENT. Added 2026-09-13 (/loop iters 131-133 found and
+# validated it, iter 138 verified the LIVE version and built it): the
+# counterpart signal to REENTRY_FATIGUE above -- another market-OUTCOME
+# dose-response finding, not a replicated-sizing one. Needing 2+ hedges
+# against a market's original first-entry side predicts that ORIGINAL side
+# ends up winning MORE often than markets that only needed 1 hedge --
+# counter-intuitive (more hedging might suggest a shakier original read),
+# but real, and the mirror image of REENTRY_FATIGUE's logic: both dampen or
+# boost further SAME-SIDE additions based on what real outcomes show at
+# this specific juncture, not on what "should" intuitively happen.
+#
+# CRITICAL: verified against the LIVE hedge-count-so-far (only hedges that
+# already happened before this same-side entry's own timestamp), not the
+# market's final total hedge count (which is a post-hoc quantity, no
+# different a mistake than the one caught and fixed for REENTRY_FATIGUE's
+# own live-index reverification). Original-side eventual win rate, live
+# hedge-count-so-far == 1 vs >= 2, TWAP-era:
+#   Ethereum CHEAP: 11.67% -> 25.92% (n=814/2,812), ratio 2.22x
+#   Ethereum MID:   32.27% -> 50.00% (n=1,531/4,588), ratio 1.55x
+#   Solana CHEAP:   15.26% -> 25.91% (n=1,376/4,327), ratio 1.70x
+#   Solana MID:     31.42% -> 40.86% (n=2,180/7,946), ratio 1.30x
+# All 4 cells temporally stable both halves (z range 4.49-12.27). Bitcoin
+# excluded -- same recurring pattern as REENTRY_FATIGUE and several other
+# findings this session (his tighter, more rule-following behavior leaves
+# less room for this class of effect); CORE band excluded (not confirmed
+# to the same bar as CHEAP/MID for this specific live-index framing).
+#
+# Multiplier values are DELIBERATELY damped well below the raw 1.3x-2.2x
+# odds-ratio scale above -- consistent with every other multiplier in this
+# file staying in a modest ~0.7x-1.3x practical range even when a nominal
+# cap would allow more (see COMBINED_SIZE_MULTIPLIER_CAP's docstring in
+# strategy.py). This is a reward signal (the mirror of REENTRY_FATIGUE's
+# penalty), so the discipline matters just as much in the boosting
+# direction as the dampening one.
+HEDGE_COUNT_REINFORCEMENT_THRESHOLD = {
+    ("Ethereum", "CHEAP"): 2,
+    ("Ethereum", "MID"): 2,
+    ("Solana", "CHEAP"): 2,
+    ("Solana", "MID"): 2,
+}
+HEDGE_COUNT_REINFORCEMENT_MULTIPLIER = {
+    ("Ethereum", "CHEAP"): 1.5,
+    ("Ethereum", "MID"): 1.25,
+    ("Solana", "CHEAP"): 1.35,
+    ("Solana", "MID"): 1.15,
+}
+
+
+def hedge_count_reinforcement_multiplier(asset: str, regime: str,
+                                          live_hedge_count: Optional[int]) -> float:
+    """1.0 (no-op) for any (asset, regime) cell not in
+    HEDGE_COUNT_REINFORCEMENT_THRESHOLD (Bitcoin, CORE/HIGH, and all
+    dormant assets -- not just uncalibrated, see the module comment
+    above), before that cell's threshold is reached, or for a market's
+    very first entry (real_hedge_fill_count starts at 0, always below
+    threshold, so this is naturally a no-op there without a separate
+    check). Only ever applies to ordinary (non-hedge) same-side entries --
+    the caller is responsible for not applying this to a hedge leg's own
+    sizing, same discipline as REENTRY_FATIGUE_MULTIPLIER above."""
+    key = (asset, regime)
+    threshold = HEDGE_COUNT_REINFORCEMENT_THRESHOLD.get(key)
+    if threshold is None or live_hedge_count is None:
+        return 1.0
+    if live_hedge_count < threshold:
+        return 1.0
+    return HEDGE_COUNT_REINFORCEMENT_MULTIPLIER.get(key, 1.0)
