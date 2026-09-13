@@ -6831,3 +6831,57 @@ structural/foundational confirmations rather than sizing tables, lower
 priority to redo); and the still-open TTC-composition architecture gap
 (needs an actual `SettlementRecord` placement-timestamp field added —
 a real code change, not a pure recalibration).
+
+## 2026-09-13: /loop cycle 16 — HEDGE_CONTINUATION_SIZE_RATIO recalibrated on post-halt-only data
+
+Continued the fresh sweep: item #18 (`HEDGE_CONTINUATION_SIZE_RATIO`)
+was flagged for the same halt-straddling-window issue diagnosed for
+SCOUT_PROBABILITY (cycle 7) and TTC_SIZE_MULTIPLIER (cycle 15) — its
+original "CONFIRMED, holds up" verdict was based on a 10-day pooled
+window, which (with the halt ending only ~7 days before this check)
+substantially overlaps pre-halt data.
+
+**Methodology**: reconstructed the exact original definition — for
+each market, decision-collapsed (5s same-side merge) fills, determined
+the dominant side by total cost, then for each hedge (opposite-side)
+decision at index >=2, computed `this hedge's own cost / dominant
+side's running cumulative cost at that moment` (not the eventual final
+total, which isn't knowable at decision time — same reasoning
+SCOUT_SIZE_RATIO uses). Post-halt-only (ts>=HALT_END).
+
+**Result — a consistent, well-supported level shift**:
+- hedge#2: 0.186 -> 0.1517 (n=733)
+- hedge#3: 0.133 -> 0.1026 (n=496)
+- hedge#4+: 0.106 -> 0.0837 (n=914)
+
+A consistent ~19-23% decline across all 3 indices — same direction and
+similar relative magnitude at every index, not a shape change. This
+fits cleanly into the broader pattern this session has already
+documented several times over: hedge SIZING overall has softened
+post-halt (`HEDGE_SIZE_RATIO`, `ADVERSE_MOVE_SIZE_MULTIPLIER`, and the
+standalone hedge-rate-secular-decline finding) — this is simply the
+same softening showing up in one more, previously-unchecked table.
+
+**Test fix**: `test_hedge_continuation_size_ratio_decays_and_defaults_
+for_deep_indices` had two hardcoded literals (`0.186`, `0.133`) —
+switched to deriving the expected values from
+`bc.HEDGE_CONTINUATION_SIZE_RATIO[2]`/`[3]` directly, matching this
+session's established "derive from the table, don't hardcode"
+discipline. Every other reference to this function across the test
+suite already calls `bc.hedge_continuation_size_ratio(2)` dynamically
+rather than hardcoding the value, so nothing else needed touching.
+
+531/531 tests passing, deployed to all 3 bots
+(paperbot/paperbot-100/coinbase-bot), verified healthy via journalctl
+(no errors/tracebacks on any of the 3 services).
+
+**Running tally: 16 tables recalibrated or retired, plus 2 confirmed-
+not-yet-actionable and 1 checked-with-insufficient-rigor, across 16
+/loop cycles.** Remaining from the fresh sweep: `TTC_SIZE_MULTIPLIER`'s
+own CORE/HIGH cells (needs more post-halt volume, per cycle 15), items
+#25 and #27's own 30-day-window checks (lower priority — both are
+structural/foundational confirmations about the model's overall design,
+not sizing tables that directly drive bot behavior), and the still-open
+TTC-composition architecture gap (needs an actual `SettlementRecord`
+placement-timestamp field added, a real code change rather than a pure
+recalibration).

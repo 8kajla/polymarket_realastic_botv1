@@ -1474,3 +1474,21 @@ See [[full-behavioral-audit-tracker]] for what's left: TTC_SIZE_
 MULTIPLIER's CORE/HIGH cells, items #18/#25/#27's own halt-straddling
 windows, and the TTC-composition architecture gap (needs a
 SettlementRecord timestamp field -- an actual code change).
+
+## 2026-09-13 (loop cycle 16): HEDGE_CONTINUATION_SIZE_RATIO recalibrated
+
+Item #18's "CONFIRMED, holds up" verdict used a 10-day window that
+substantially straddles the halt (same issue as SCOUT_PROBABILITY/
+TTC_SIZE_MULTIPLIER). Redone post-halt-only: consistent ~19-23%
+decline across all 3 hedge indices (0.186->0.1517, 0.133->0.1026,
+0.106->0.0837), same direction/magnitude at every index -- a level
+shift, matches the broader post-halt hedge-sizing softening pattern
+already found this session.
+
+531/531 tests passing, deployed to all 3 bots, verified healthy.
+
+**Running tally: 16 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor across 16 /loop
+cycles.** See [[full-behavioral-audit-tracker]] for what's left: TTC's
+CORE/HIGH cells, items #25/#27 (lower priority, structural not sizing),
+and the TTC-composition architecture gap.
