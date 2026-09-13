@@ -5646,3 +5646,22 @@ constant, given the decline is real, large, and still ongoing/unexplained).
 Continuing the audit tracker (25 items remain unchecked or partially
 checked: items 5-6, 8-26, 28). Full tracker at
 full-behavioral-audit-tracker.md in project memory.
+
+## 2026-09-13: Audit item 5 verified — good news, this one holds up
+
+HEDGE_CONTINUATION_PROBABILITY (conditional "does hedging continue past
+k" rate) re-derived via direct decision-sequence walking (collapsed
+same-side-within-5s fills, cost_by_side dominant tracking matching
+decide_hedge's own logic). Static table (k=1:60.2%, k=2:59.8%,
+k=3:53.3%) vs fresh 5-day real data (61.5%, 58.6%, 57.1%) -- all within
+a few points, no material drift. Contrast with item 3: the UNCONDITIONAL
+propensity to hedge AT ALL has drifted hugely (up to 32pp stale), but
+the CONDITIONAL "keep going once you've started" rate hasn't drifted
+meaningfully. Confirms the audit isn't just finding problems everywhere
+-- this is a real, still-accurate piece of the model.
+
+Tracker status after this session's audit pass: 6/28 items fully
+re-verified (1 CONFOUNDED, 2 CONFIRMED-but-miscalibrated, 3 STALE/high-
+severity, 4 inherits #3, 5 CONFIRMED, 27 CONFIRMED). 22 items remain
+(sizing-only multipliers 8-24, structural assumptions 6,25-26,28).
+Continuing.
