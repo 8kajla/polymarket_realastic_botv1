@@ -1420,3 +1420,28 @@ across 12 /loop cycles.** Last remaining candidate: BANKROLL_PNL_SIZE_
 MULTIPLIER (2026-09-12, ETH/SOL) -- a sizing signal, not hedge-activity
 dependent, so a different risk profile than the last two. See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 13): BANKROLL_PNL_SIZE_MULTIPLIER checked — weakened, genuinely unstable, not recalibrated
+
+Closed the full post-cycle-10 candidate list. Recomputed size-residual
+vs fresh cumulative pnl (reset at HALT_END) for Ethereum/Solana.
+Ethereum: same negative direction as original, below trust bar
+(t=-1.911 detrended). Solana: raw correlation LOOKED reversed
+(t=+4.715) but detrending revealed this was a shared-time-trend
+artifact -- detrended it matches the original's negative direction
+(t=-3.802). Important methodological lesson: this is exactly the kind
+of confound the original's own detrending step exists to catch: caught
+it by replicating that check rather than trusting a surprising raw
+number, unlike [[accuracy-conditioned-scout-rate-gap]]'s genuine
+reversal which DID survive its own circularity check.
+
+Both assets fail a temporal-half-stability check, but the post-halt
+window is only ~4.9 days, so a half-split there is a much harsher bar
+than intended. Verdict: weakened but genuinely unstable/inconclusive --
+kept unchanged, documented. 531/531 tests passing (no value change).
+
+**This closes the full post-cycle-10 list.** Running tally: 14
+tables recalibrated/retired + 2 checked-and-confirmed-not-actionable
+across 13 /loop cycles. See [[full-behavioral-audit-tracker]] for what
+comes next (TTC-composition gap needs a SettlementRecord timestamp
+addition; otherwise a fresh full sweep of behavior_config.py).

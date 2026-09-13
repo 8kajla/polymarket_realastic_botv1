@@ -6637,3 +6637,78 @@ not hedge-activity-dependent — a different risk profile (its own risk
 is whatever the accumulated PNL trajectory looks like within a
 ~4.9-day post-halt window, not hedge-activity sparsity), worth checking
 on its own terms rather than assuming the same underpowering applies.
+
+## 2026-09-13: /loop cycle 13 — BANKROLL_PNL_SIZE_MULTIPLIER checked, weakened but genuinely unstable (closes the post-cycle-10 candidate list)
+
+Checked the last candidate from the post-cycle-10 list:
+`BANKROLL_PNL_SIZE_MULTIPLIER` (Ethereum/Solana first-entry size
+correlates negatively with own running realized P&L for that asset —
+sizes DOWN after accumulating profit, UP after a drawdown).
+
+**Methodology**: computed a size-residual proxy —
+`log(first-entry usdc / that regime's post-halt ENTRY_SIZING_USD
+"first"-tier median)` — for every post-halt first entry, paired against
+a freshly-computed running cumulative directional realized pnl per
+asset, reset to 0 at HALT_END (the fair "epoch" analogue to a bot
+restart, matching how production's `Ledger.realized_pnl_by_asset()`
+actually resets on each run, rather than continuing the real trader's
+absolute all-time total across the halt).
+
+**Result**:
+- Ethereum: raw r=-0.0563 (t=-1.971), detrended r=-0.0546 (t=-1.911) —
+  same negative direction as the original, but below this file's own
+  |t|>=2.58 trust bar either way.
+- Solana: raw r=+0.1330 (t=4.715) — LOOKED reversed and strongly
+  significant — but detrended r=-0.1076 (t=-3.802), negative again,
+  matching the original's direction.
+
+**Methodologically important catch**: the Solana raw-vs-detrended flip
+is a clean, concrete demonstration of exactly the confound the original
+2026-09-12 build's own detrending step exists to guard against — both
+variables (cumulative pnl, which is a running sum and nearly always
+drifting somewhere; and the size residual, which independently drifts
+too) carry their own time trend across a short window, so a RAW
+correlation between them is mostly picking up that shared trend, not a
+real underlying relationship. Replicating the exact same detrending
+check the original methodology used (remove each variable's own linear
+trend against timestamp, then correlate the residuals) caught this
+before it became a false "reversed" finding — a good illustration of
+why this session has been careful to reproduce each table's ORIGINAL
+validation steps rather than inventing a simpler substitute each time.
+This is a different kind of event than ACCURACY_SCOUT_MULTIPLIER's
+cycle-8 finding: that one was a genuine reversal that survived its own
+circularity check; this one is the cautionary counter-example where the
+same kind of "surprising reversal" turned out to be an artifact once
+properly checked.
+
+Also checked temporal-half stability within the post-halt window itself
+(Ethereum: first-half t=-2.598, second-half t=0.231) — both assets fail
+this, but the window is only ~4.9 days total, making a ~2.45-day
+half-split a much harsher bar than the original's presumably multi-week
+stability check ever faced. Can't confidently call this "vanished" on
+that basis alone.
+
+**Verdict: weakened to a genuinely unstable/inconclusive state** — a
+third distinct category this session has now produced, alongside
+REENTRY_FATIGUE's clean vanished-cell removals (cycle 10) and
+HEDGE_COUNT_REINFORCEMENT's clean underpowering (cycle 11). Kept the
+table at its original values; documented the full check, including the
+detrending-catches-a-confound lesson, directly in its own docstring. No
+value changes, so no test changes needed — 531/531 still passing.
+
+**This closes the full post-cycle-10 candidate list**: REENTRY_FATIGUE
+(recalibrated, 3/6 cells removed), HEDGE_COUNT_REINFORCEMENT (checked,
+underpowered), HEDGE_TRIGGER_AFTER_BIG_LOSS (checked, retired),
+BANKROLL_PNL_SIZE_MULTIPLIER (checked, weakened-but-unstable) — all 4
+now carry an honestly-differentiated, evidenced verdict rather than one
+blanket treatment applied uniformly.
+
+**Running tally: 14 tables recalibrated or retired, plus 2 checked-and-
+confirmed-not-yet-actionable, across 13 /loop cycles.** With every
+previously-identified candidate now closed, continuing the loop
+requires opening genuinely new ground — most concretely, the still-open
+TTC-composition gap flagged in cheap-edge-gap-root-cause-persistence-
+miscalibration (needs a SettlementRecord placement-timestamp field
+added, an actual code-architecture change rather than a pure
+recalibration) — or a fresh line-by-line sweep of behavior_config.py
+for any remaining table this session hasn't touched at all yet.
