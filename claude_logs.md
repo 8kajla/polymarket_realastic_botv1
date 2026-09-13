@@ -5817,3 +5817,39 @@ Tracker status: 14/28 items now carry a real, evidenced verdict.
 Remaining: 6-7, 10-11, 13, 16-17, 19-20, 22-24 (13 items, all sizing-
 only multipliers or deliberate risk mechanisms from this session).
 Continuing.
+
+## 2026-09-13: Audit items 7 (weekend), 11 (TTC), 22-24 status
+
+**Item 11 (TTC_SIZE_MULTIPLIER)**: CONFIRMED, holds up well. Fresh
+Bitcoin CHEAP/MID mean-neutral shape (5d/14d, real TTC-at-entry from
+slug window-start) matches the deployed table within ~0.02-0.10 across
+all 8 checked cells, same direction preserved. One of the most stable
+multipliers audited so far.
+
+**Item 7 (weekend_hedge_multiplier)**: CONFIRMED as a RATIO. Fresh
+Bitcoin weekend/weekday hedge ratio (14-30d) is 1.08-1.12 vs static
+1.1585 -- close. Absolute levels have drifted UP (68.9%/77.4% vs
+original ~58.87%/68.2%), which looks contradictory to item 3's finding
+of DECLINING regime-specific hedge rates -- resolved as Simpson's
+paradox: pooling all regimes together masks the per-regime decline if
+the regime MIX has shifted toward higher-hedge-rate bands. The ratio
+this multiplier actually encodes is fine. Other hedge-trigger
+multipliers (liquidity, adverse-move-trigger, cross-market-rate,
+conviction) remain unchecked this pass.
+
+**Items 22-24 (this session's own shipped work: REENTRY_FATIGUE,
+HEDGE_COUNT_REINFORCEMENT, HEDGE_TRIGGER_AFTER_BIG_LOSS)**: noted as
+built to current-session standards already (live-index-verified,
+confound-checked at build time, using CURRENT data) -- not re-derived
+again this pass, since staleness risk is inherently low for anything
+built in the last few hours vs the 2026-09-08/09-11 vintage items that
+turned out to be the real problems.
+
+Tracker status: 17/28 items now carry an evidenced verdict (some newly
+just noted rather than freshly re-derived, per above). Remaining
+genuinely unchecked: 6 (GRADIENT_BIAS_PCT), 10 (WITHIN_BAND_SIZE_SLOPE),
+13 (CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER), 16-17 (ADVERSE_MOVE_SIZE_
+MULTIPLIER, ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER), 19-20 (ADVERSE_MOVE_
+CONTINUATION_SIZE_MULTIPLIER, HEDGE_TTC_SIZE_MULTIPLIER), plus the 4
+remaining hedge-trigger multipliers from item 7 (10 items left).
+Continuing.
