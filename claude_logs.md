@@ -5702,3 +5702,21 @@ Tracker status: 7/28 items now verified (added item 8: STALE-CRITICAL).
 Continuing to items 9+ (FLOOR_LOT_PROBABILITY, WITHIN_BAND_SIZE_SLOPE,
 and the rest of the sizing multipliers), plus the still-open structural
 items (regime band boundaries, position-tier bucketing).
+
+## 2026-09-13: Audit item 15 — HEDGE_SIZE_RATIO stale for ETH/SOL, holds up for BTC
+
+Fresh median first-hedge ratio (hedge_usdc / dominant_cost, last 5-10
+days) vs the deployed table:
+  Bitcoin: all 3 checkable cells within -13% to +9% -- holds up.
+  Ethereum: CHEAP +68-69%, MID +137-146%, CORE +63-78%.
+  Solana: CHEAP +308-375% (!), MID -18% to +3%, CORE +41-45%.
+
+Direction is the OPPOSITE of item 3 (HEDGE_TRIGGER_PROBABILITY): that
+one showed we hedge MORE OFTEN than he currently does; this shows that
+when ETH/SOL (especially Solana CHEAP) DO get hedged now, he commits a
+far BIGGER fraction of the dominant position's cost than our table
+assumes -- so the hedge subsystem has two compounding, opposite-flavored
+staleness problems for those two assets. Bitcoin's hedge sizing has
+aged well. NOT YET FIXED.
+
+Tracker status: 8/28 items verified. Continuing.
