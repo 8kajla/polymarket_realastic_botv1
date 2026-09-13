@@ -5459,3 +5459,56 @@ hedging is reachable + confirmed the override never fires past the
 first entry); added forced_first_entry_side coverage to test_strategy.py
 (6 tests) and test_bot.py (3 tests, including "PaperBot's own hook is a
 strict no-op"). Full suite: 535/535 passing.
+
+## 2026-09-13: Second bug-hunting pass — property-based fuzzing, no new bugs found
+
+Following up on the earlier code-audit pass (which found and fixed the
+missing HEDGE_RATIO_MULTIPLIER_CAP), did a second, more adversarial pass
+specifically hunting for "one feature silently stopping another"
+interactions, focused on the newest code (forced_first_entry_side,
+the hedge-ratio cap restructuring, the full-pipeline coinbase bot).
+
+Manual re-read: traced _retire_market, resolution_tick (including the
+ABANDONED path), manage_orders_tick, and the fill_simulation.py
+CHEAP-reprice-cap gate for interaction with the new after_big_loss/
+forced_first_entry_side trackers -- all correctly scoped, no silent
+blocking found. Confirmed all 25 ENABLE_* flags still wired (re-checked
+after this session's additions).
+
+Property-based fuzzing (new technique this session, not previously
+used): wrote 4 scripts sweeping wide parameter grids through the real
+(non-mocked) calibration tables, checking cross-feature invariants
+(no negative/NaN/inf notional, is_hedge/is_scout/is_floor_lot mutual
+exclusivity, size_shares/notional/price reconciliation, hedge notional
+never exceeding a computed worst-case bound, momentum-forced side always
+matching momentum's sign when in scope):
+  - build_order_intent: 17,136 (asset x price x ttc x entry_count x
+    hedge_count) combinations -- 0 violations
+  - decide_hedge: 550,800 combinations (asset x regime x liquidity x
+    weekend x dominant_price x prev_hedge_rate x after_big_loss x
+    real_fill_count x real_hedge_fill_count) -- 0 violations, 0
+    exceptions, p always stayed in [0,1]
+  - decide_size: 300,000 random combinations across the full parameter
+    space -- 0 violations once the fuzz script's own tier-name typo was
+    fixed (decide_size correctly raised on the invalid tier name rather
+    than silently misbehaving -- a positive finding about the code's
+    own defensiveness, not a bug)
+  - CoinbaseMomentumBot._evaluate_one_market end-to-end: 2,040 (asset x
+    price x momentum-return x ttc) combinations plus a 204-case targeted
+    check confirming the placed side always matches momentum's sign
+    whenever the implied regime is CHEAP/MID -- 0 violations, 0
+    mismatches
+
+Live server check: zero "halting its activity" fail-closed events and
+zero unexpected tracebacks (beyond the pre-existing, already-documented
+WS "slow consumer" reconnect noise, confirmed present at a similar rate
+on paperbot/paperbot-100 too) across all three services in the last
+30 minutes, including active order placement/fills/reprices/resolutions
+on the newly-upgraded coinbase-bot.
+
+**Conclusion: no new interaction bugs found in this pass.** The
+forced_first_entry_side integration and the hedge-ratio cap fix both
+hold up cleanly under adversarial parameter sweeps. Property-based
+fuzzing is now a useful addition to this project's own testing
+discipline going forward -- cheap to write, and it exercises far more
+of the state space than hand-written unit tests can practically cover.
