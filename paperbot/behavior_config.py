@@ -1887,62 +1887,93 @@ def scout_size_ratio(asset: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# MID RE-ENTRY FATIGUE. Added 2026-09-13 (/loop iter 130): a market-OUTCOME
-# dose-response finding, not a replicated-sizing finding like every
-# multiplier above -- see the end of this comment for why that distinction
-# matters. In MID band, the more times he's already added to the SAME side
-# within one market, the lower that side's eventual win rate, with a sharp
-# cliff rather than a smooth decline. Real per-trade win rate by live
+# RE-ENTRY FATIGUE. Added 2026-09-13 (/loop iter 130, generalized same day
+# after the MID-only version had been live only minutes -- renamed before
+# it settled in anywhere else): a market-OUTCOME dose-response finding, not
+# a replicated-sizing finding like every multiplier above -- see the end of
+# this comment for why that distinction matters. The more times he's
+# already added to the SAME side within one market, the lower that side's
+# eventual win rate -- confirmed in 3 of the 4 regime bands, each with its
+# OWN shape and cliff point, which is why this is a per-(asset, regime)
+# table rather than one flat curve. Real per-trade win rate by live
 # position index (real_fill_count BEFORE the trade about to be placed),
-# MID band only, TWAP-era, cross-asset:
-#   Ethereum: idx1=47.8%, idx2=47.3%, idx3=46.7%, idx4=45.6%, idx5=44.9%,
-#             idx6+=35.7%  (n=2,381/2,262/2,129/1,999/1,866/14,303)
-#   Solana:   idx1=45.0%, idx2=44.3%, idx3=43.3%, idx4=42.1%, idx5=40.3%,
-#             idx6+=31.0%  (n=2,770/2,661/2,527/2,369/2,206/19,907)
-#   Bitcoin:  idx1-5 flat ~48-49%, idx6+=44.3% -- present but far weaker,
-#             and fails the project's temporal-stability bar in its second
-#             half (z=1.96, just short of |z|>=2.58) -- deliberately
-#             excluded here, same treatment (and same underlying reason:
-#             his BTC behavior is tighter/more rule-following, leaving less
-#             room for a cross-cutting effect like this to show cleanly) as
-#             BANKROLL_PNL_SIZE_MULTIPLIER above.
+# TWAP-era:
 #
-# Confound-checked (2026-09-13): NOT explained by entry price drifting
-# toward 0.50 as idx grows -- mean distance-from-0.5 is ~identical between
-# high- and low-idx groups (~0.10 both ways), and the partial correlation
-# controlling for it barely moves (ETH -0.182 -> -0.178, SOL -0.213 ->
-# -0.212). Distinct from the retracted "size_vs_own_prior_trade" and
+#   MID   (cliff at idx6+): Ethereum idx1-5 avg ~46.5% -> idx6+ 35.7%
+#         (n=1,866-2,381 per bucket / 14,303); Solana idx1-5 avg ~43.0% ->
+#         idx6+ 31.0% (n=2,206-2,770 / 19,907). Bitcoin's MID effect is
+#         present but far weaker and fails the temporal-stability bar in
+#         its second half (z=1.96) -- excluded.
+#   CORE  (flat idx1-8, cliff at idx9+): Bitcoin 80.0% avg -> 70.2%
+#         (n=672-956 per bucket / 5,404); Ethereum 81.6% avg -> 65.9%
+#         (n=235-588 / 1,236). Solana's raw CORE gap does NOT survive
+#         controlling for within-CORE price level (partial r -0.0132 ->
+#         +0.0016, t=0.09) -- fully explained by idx9+ trades skewing to
+#         lower/less-safe CORE prices, not a real fatigue effect. Excluded.
+#   CHEAP (gradual decline + cliff at idx9+): Ethereum 19.9% avg -> 14.5%
+#         (n=1,040-2,260 / 6,841); Solana 20.7% avg -> 16.0% (n=1,078-2,127
+#         / 8,137). Bitcoin's CHEAP shape is NOT monotonic (rises from
+#         20.6% at idx1 to 24.6% at idx8, only partially reverting to 22.0%
+#         at idx9+) -- not a clean fatigue pattern, excluded.
+#   HIGH: inconsistent sign and mostly too thin across all 3 assets --
+#         excluded, no clear pattern to build on.
+#
+# Confound-checked per band before inclusion: MID against entry price
+# drifting toward 0.50 (barely moves the partial correlation); CORE/CHEAP
+# against the already-known within-band price gradient specifically
+# (Solana CORE failed exactly this check and was excluded; the 4 included
+# cells all survive it, in most cases getting slightly STRONGER after
+# controlling for price, e.g. Bitcoin CORE partial r -0.297 -> -0.282,
+# t=-32.4). Temporally stable both halves for every included cell (Ethereum
+# MID z=7.55/8.77, Solana MID z=11.06/9.80, Bitcoin CORE z=8.98/10.07,
+# Ethereum CORE z=10.75/5.15, Ethereum CHEAP z=9.54/4.20, Solana CHEAP
+# z=10.65/2.80). Distinct from the retracted "size_vs_own_prior_trade" and
 # "diminishing increments" threads (both were about SIZE, retracted for
 # regime/total-trades-in-market composition reasons that don't apply here,
 # since this is keyed on the LIVE index as the trade is placed, not a
-# post-hoc final total only knowable after the market closed). Temporally
-# stable both halves for Ethereum (z=7.55/8.77) and Solana (z=11.06/9.80).
+# post-hoc final total only knowable after the market closed).
 #
 # UNLIKE every multiplier above, this isn't calibrated to replicate an
 # observed real sizing pattern -- there's no evidence he actually sizes
-# down at idx6+ himself. This is a deliberate risk-management dampener for
-# the paper bots specifically, in the same spirit as MAX_CHEAP_REPRICES
-# (config.py): both stop leaning further into a zone real outcomes show is
-# reliably worse, rather than mimicking an unobserved real behavior.
-# Multiplier values are the measured idx6+/idx1-5-average win-rate ratio
-# per asset (ETH: 35.7/46.5=0.767, rounded; SOL: 31.0/43.0=0.721, rounded),
-# i.e. scale the stake down roughly in proportion to the demonstrated drop
-# in edge, not an arbitrarily chosen cut.
-MID_REENTRY_FATIGUE_THRESHOLD = 5  # real_fill_count >= this -> about to place idx 6+
-MID_REENTRY_FATIGUE_MULTIPLIER = {
-    "Ethereum": 0.77,
-    "Solana": 0.72,
+# down at the cliff himself. This is a deliberate risk-management dampener
+# for the paper bots, in the same spirit as MAX_CHEAP_REPRICES (config.py):
+# both stop leaning further into a zone real outcomes show is reliably
+# worse, rather than mimicking an unobserved real behavior. Multiplier
+# values are each cell's measured post-cliff / pre-cliff-average win-rate
+# ratio, i.e. scale the stake down roughly in proportion to the
+# demonstrated drop in edge, not an arbitrarily chosen cut.
+REENTRY_FATIGUE_THRESHOLD = {
+    ("Ethereum", "MID"): 5,
+    ("Solana", "MID"): 5,
+    ("Bitcoin", "CORE"): 8,
+    ("Ethereum", "CORE"): 8,
+    ("Ethereum", "CHEAP"): 8,
+    ("Solana", "CHEAP"): 8,
+}
+REENTRY_FATIGUE_MULTIPLIER = {
+    ("Ethereum", "MID"): 0.77,
+    ("Solana", "MID"): 0.72,
+    ("Bitcoin", "CORE"): 0.88,
+    ("Ethereum", "CORE"): 0.81,
+    ("Ethereum", "CHEAP"): 0.73,
+    ("Solana", "CHEAP"): 0.77,
 }
 
 
-def mid_reentry_fatigue_multiplier(asset: str, regime: str,
-                                    real_fill_count: Optional[int]) -> float:
-    """1.0 (no-op) outside MID band, for Bitcoin/dormant assets, or before
-    the fatigue threshold is reached. See the module-level comment above
-    MID_REENTRY_FATIGUE_MULTIPLIER for the full derivation and why this is
-    a deliberate risk dampener rather than a replicated-sizing curve."""
-    if regime != "MID" or real_fill_count is None:
+def reentry_fatigue_multiplier(asset: str, regime: str,
+                                real_fill_count: Optional[int]) -> float:
+    """1.0 (no-op) for any (asset, regime) cell not in
+    REENTRY_FATIGUE_THRESHOLD (includes Bitcoin/MID, Solana/CORE,
+    Bitcoin/CHEAP, and all of HIGH -- each excluded for a specific,
+    documented reason, not just uncalibrated), or before that cell's own
+    fatigue threshold is reached. See the module-level comment above
+    REENTRY_FATIGUE_THRESHOLD for the full derivation, per-band confound
+    checks, and why this is a deliberate risk dampener rather than a
+    replicated-sizing curve."""
+    key = (asset, regime)
+    threshold = REENTRY_FATIGUE_THRESHOLD.get(key)
+    if threshold is None or real_fill_count is None:
         return 1.0
-    if real_fill_count < MID_REENTRY_FATIGUE_THRESHOLD:
+    if real_fill_count < threshold:
         return 1.0
-    return MID_REENTRY_FATIGUE_MULTIPLIER.get(asset, 1.0)
+    return REENTRY_FATIGUE_MULTIPLIER.get(key, 1.0)

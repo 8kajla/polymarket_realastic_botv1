@@ -519,15 +519,16 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # bot-wide, not per-market -- see bot.py's _hours_since_resumption.
     resumption_mult = bc.resumption_size_multiplier(hours_since_resumption) \
         if config.ENABLE_RESUMPTION_SIZE_MULTIPLIER else 1.0
-    # MID RE-ENTRY FATIGUE (2026-09-13 finding): unlike every multiplier
-    # above, this isn't calibrated to replicate observed real sizing -- it's
-    # a deliberate risk dampener once a MID-band market has already had 5+
-    # same-side real fills (the trade about to be placed would be the 6th+
-    # addition), where real outcomes are reliably worse. See
-    # MID_REENTRY_FATIGUE_MULTIPLIER's docstring in behavior_config.py for
-    # the full derivation, confound checks, and why Bitcoin is excluded.
-    reentry_fatigue_mult = bc.mid_reentry_fatigue_multiplier(asset, regime, real_fill_count) \
-        if config.ENABLE_MID_REENTRY_FATIGUE_DAMPENER else 1.0
+    # RE-ENTRY FATIGUE (2026-09-13 finding): unlike every multiplier above,
+    # this isn't calibrated to replicate observed real sizing -- it's a
+    # deliberate risk dampener once a market has already had enough
+    # same-side real fills in one of 6 specific (asset, regime) cells across
+    # MID/CORE/CHEAP, where real outcomes are reliably worse. See
+    # REENTRY_FATIGUE_MULTIPLIER's docstring in behavior_config.py for the
+    # full derivation, per-band confound checks, and why each excluded
+    # (asset, regime) cell was left out.
+    reentry_fatigue_mult = bc.reentry_fatigue_multiplier(asset, regime, real_fill_count) \
+        if config.ENABLE_REENTRY_FATIGUE_DAMPENER else 1.0
     # COMBINED-MULTIPLIER SAFETY BOUND (2026-09-12, bug audit #4): each of
     # within_band/momentum_mult/bankroll_mult/ttc_mult/resumption_mult/
     # reentry_fatigue_mult was

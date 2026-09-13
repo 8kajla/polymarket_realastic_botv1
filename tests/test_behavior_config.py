@@ -816,43 +816,52 @@ class TestBankrollPnlSizeMultiplier:
                     == bc.bankroll_pnl_size_multiplier(asset, xs[-1]))
 
 
-class TestMidReentryFatigueMultiplier:
-    """MID re-entry fatigue dampener, added 2026-09-13 (/loop iter 130) --
-    real, confound-checked, temporally-stable finding that Ethereum/Solana
-    MID-band win rate drops sharply once a market has already had 5+
-    same-side real fills. Unlike most multipliers in this file, this is a
-    deliberate risk dampener, not a replicated real-sizing curve -- Bitcoin
-    is deliberately excluded (see the docstring in behavior_config.py)."""
+class TestReentryFatigueMultiplier:
+    """Re-entry fatigue dampener, added 2026-09-13 (/loop iter 130, then
+    generalized same day from MID-only to 6 (asset, regime) cells across
+    MID/CORE/CHEAP) -- real, confound-checked, temporally-stable finding
+    that win rate drops sharply once a market has already had enough
+    same-side real fills, in specific cells only. Unlike most multipliers
+    in this file, this is a deliberate risk dampener, not a replicated
+    real-sizing curve -- every excluded cell (Bitcoin/MID, Solana/CORE,
+    Bitcoin/CHEAP, all of HIGH) is excluded for a specific, documented
+    reason (see the docstring in behavior_config.py), not just
+    uncalibrated."""
 
-    def test_noop_outside_mid_band(self):
-        assert bc.mid_reentry_fatigue_multiplier("Ethereum", "CHEAP", 10) == 1.0
-        assert bc.mid_reentry_fatigue_multiplier("Ethereum", "CORE", 10) == 1.0
-        assert bc.mid_reentry_fatigue_multiplier("Ethereum", "HIGH", 10) == 1.0
+    def test_noop_for_uncalibrated_asset_regime_cells(self):
+        # Bitcoin/MID, Solana/CORE, Bitcoin/CHEAP, and HIGH for every asset
+        # are all deliberately excluded -- see the module docstring.
+        assert bc.reentry_fatigue_multiplier("Bitcoin", "MID", 20) == 1.0
+        assert bc.reentry_fatigue_multiplier("Solana", "CORE", 20) == 1.0
+        assert bc.reentry_fatigue_multiplier("Bitcoin", "CHEAP", 20) == 1.0
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            assert bc.reentry_fatigue_multiplier(asset, "HIGH", 20) == 1.0
 
     def test_noop_when_real_fill_count_missing(self):
-        assert bc.mid_reentry_fatigue_multiplier("Ethereum", "MID", None) == 1.0
+        for asset, regime in bc.REENTRY_FATIGUE_THRESHOLD:
+            assert bc.reentry_fatigue_multiplier(asset, regime, None) == 1.0
 
     def test_noop_below_threshold(self):
-        for n in range(0, bc.MID_REENTRY_FATIGUE_THRESHOLD):
-            assert bc.mid_reentry_fatigue_multiplier("Ethereum", "MID", n) == 1.0
-            assert bc.mid_reentry_fatigue_multiplier("Solana", "MID", n) == 1.0
+        for (asset, regime), threshold in bc.REENTRY_FATIGUE_THRESHOLD.items():
+            for n in range(0, threshold):
+                assert bc.reentry_fatigue_multiplier(asset, regime, n) == 1.0
 
     def test_dampens_at_and_beyond_threshold(self):
-        for asset, expected in bc.MID_REENTRY_FATIGUE_MULTIPLIER.items():
-            got = bc.mid_reentry_fatigue_multiplier(asset, "MID", bc.MID_REENTRY_FATIGUE_THRESHOLD)
+        for (asset, regime), expected in bc.REENTRY_FATIGUE_MULTIPLIER.items():
+            threshold = bc.REENTRY_FATIGUE_THRESHOLD[(asset, regime)]
+            got = bc.reentry_fatigue_multiplier(asset, regime, threshold)
             assert got == expected
             # Stays dampened (flat), doesn't keep shrinking further past the
             # threshold -- this is a step function, not a continuous decay.
-            got_far = bc.mid_reentry_fatigue_multiplier(asset, "MID", bc.MID_REENTRY_FATIGUE_THRESHOLD + 50)
+            got_far = bc.reentry_fatigue_multiplier(asset, regime, threshold + 50)
             assert got_far == expected
 
-    def test_bitcoin_is_deliberately_excluded_not_just_uncalibrated(self):
-        assert "Bitcoin" not in bc.MID_REENTRY_FATIGUE_MULTIPLIER
-        assert bc.mid_reentry_fatigue_multiplier("Bitcoin", "MID", 20) == 1.0
+    def test_every_threshold_cell_has_a_matching_multiplier_and_vice_versa(self):
+        assert set(bc.REENTRY_FATIGUE_THRESHOLD) == set(bc.REENTRY_FATIGUE_MULTIPLIER)
 
     def test_multiplier_is_a_real_dampener_not_a_boost(self):
-        for asset, mult in bc.MID_REENTRY_FATIGUE_MULTIPLIER.items():
-            assert 0.0 < mult < 1.0, f"{asset}: expected a dampener (0,1), got {mult}"
+        for key, mult in bc.REENTRY_FATIGUE_MULTIPLIER.items():
+            assert 0.0 < mult < 1.0, f"{key}: expected a dampener (0,1), got {mult}"
 
 
 class TestAccuracyScoutMultiplier:
