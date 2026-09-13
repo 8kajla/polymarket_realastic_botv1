@@ -228,12 +228,28 @@ class TestFloorLotProbability:
             assert first < mid < last
 
     def test_flat_by_position_assets_are_actually_flat(self):
-        for asset in ("Ethereum", "Solana", "Dogecoin"):
+        # Dogecoin is dormant (no live post-halt data to recalibrate from)
+        # -- stays flat-by-position, unchanged.
+        for regime in bc.REGIME_NAMES:
+            first = bc.floor_lot_probability("Dogecoin", regime, "first")
+            mid = bc.floor_lot_probability("Dogecoin", regime, "2nd_3rd")
+            last = bc.floor_lot_probability("Dogecoin", regime, "4th_plus")
+            assert first == mid == last
+
+    def test_ethereum_and_solana_are_now_position_dependent(self):
+        # RECALIBRATED 2026-09-13 (post-halt): Ethereum/Solana used to be
+        # flat-by-position (like Dogecoin still is) -- real post-halt data
+        # showed a genuine rise-with-position-index shape for both, not
+        # strictly monotonic in every cell (kept as measured, not smoothed
+        # into a clean story) but never flat either. Confirms they moved
+        # to FLOOR_LOT_POSITION_DEPENDENT_ASSETS along with the data.
+        for asset in ("Ethereum", "Solana"):
+            assert asset in bc.FLOOR_LOT_POSITION_DEPENDENT_ASSETS
             for regime in bc.REGIME_NAMES:
                 first = bc.floor_lot_probability(asset, regime, "first")
                 mid = bc.floor_lot_probability(asset, regime, "2nd_3rd")
                 last = bc.floor_lot_probability(asset, regime, "4th_plus")
-                assert first == mid == last
+                assert not (first == mid == last), f"{asset} {regime}: expected NOT flat"
 
     def test_unknown_position_tier_rejected(self):
         with pytest.raises(ValueError):

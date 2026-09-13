@@ -402,21 +402,30 @@ FLOOR_LOT_PROBABILITY = {
         "CORE":  {"first": 0.45, "2nd_3rd": 0.62, "4th_plus": 0.78},
         "HIGH":  {"first": 0.35, "2nd_3rd": 0.50, "4th_plus": 0.68},
     },
+    # RECALIBRATED 2026-09-13 (post-halt, /loop cycle 6 continued -- see
+    # full-behavioral-audit-tracker.md item 9): re-derived using RAW
+    # per-fill share sizes (not the collapsed-decision view every other
+    # recalibration this session used -- floor lots ARE tiny fragments
+    # by definition, collapsing would erase the exact population being
+    # measured), threshold size<=0.05 shares (a real, clean bimodal split
+    # in the data: p1-p15 of all raw fill sizes sit at EXACTLY 0.02, then
+    # jump straight to 0.5+ at p20 -- not a fuzzy percentile guess).
+    # Floor-lot rate is now MEANINGFULLY HIGHER than the flat historical
+    # values AND shows a real rising-with-position-index shape for both
+    # assets (previously modeled as flat-by-position, like Dogecoin) --
+    # moved to the same per-tier dict structure as Hyperliquid/BNB below,
+    # and added to FLOOR_LOT_POSITION_DEPENDENT_ASSETS.
     "Ethereum": {
-        # Flat-by-position: same float for every position tier.
-        # CHEAP/MID RECALIBRATED 2026-09-08 (n=1,669/752, both trusted)
-        # -- 0.0854->0.1258 (real increase), 0.0987->0.0559 (real
-        # decrease -- not a uniform direction across regimes).
-        # CORE/HIGH left at historical values, recent samples (n=250/327)
-        # below the trust threshold.
-        "CHEAP": 0.1258, "MID": 0.0559, "CORE": 0.1030, "HIGH": 0.0428,
+        "CHEAP": {"first": 0.0786, "2nd_3rd": 0.0766, "4th_plus": 0.1283},
+        "MID":   {"first": 0.1366, "2nd_3rd": 0.1565, "4th_plus": 0.1284},
+        "CORE":  {"first": 0.0857, "2nd_3rd": 0.1423, "4th_plus": 0.1787},
+        "HIGH":  {"first": 0.0127, "2nd_3rd": 0.0611, "4th_plus": 0.0682},
     },
     "Solana": {
-        # CHEAP/MID RECALIBRATED 2026-09-08 (n=881/505, both trusted) --
-        # 0.1704->0.2452, 0.2213->0.2376. CORE/HIGH left at historical
-        # values -- recent samples (n=265/278) are below the n>=500 trust
-        # threshold used for this pass.
-        "CHEAP": 0.2452, "MID": 0.2376, "CORE": 0.2055, "HIGH": 0.0964,
+        "CHEAP": {"first": 0.1244, "2nd_3rd": 0.1140, "4th_plus": 0.2309},
+        "MID":   {"first": 0.2857, "2nd_3rd": 0.2938, "4th_plus": 0.3606},
+        "CORE":  {"first": 0.1736, "2nd_3rd": 0.2443, "4th_plus": 0.2972},
+        "HIGH":  {"first": 0.0854, "2nd_3rd": 0.0900, "4th_plus": 0.1603},
     },
     "Dogecoin": {
         "CHEAP": 0.1520, "MID": 0.1986, "CORE": 0.2209, "HIGH": 0.0923,
@@ -431,7 +440,7 @@ FLOOR_LOT_PROBABILITY = {
 
 # Assets whose floor-lot probability is position-dependent (a dict per
 # regime keyed by position tier) vs. flat (a single float per regime).
-FLOOR_LOT_POSITION_DEPENDENT_ASSETS = {"Hyperliquid", "BNB"}
+FLOOR_LOT_POSITION_DEPENDENT_ASSETS = {"Hyperliquid", "BNB", "Ethereum", "Solana"}
 
 
 def floor_lot_probability(asset: str, regime: str, position_tier: str) -> float:

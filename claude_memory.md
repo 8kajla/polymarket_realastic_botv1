@@ -1224,3 +1224,29 @@ This closes the last of the 4 hedge-trigger sub-multipliers flagged in
 the full audit. Remaining from the 28-item checklist: GRADIENT_BIAS_PCT,
 FLOOR_LOT_PROBABILITY (deliberately low priority), RESUMPTION_SIZE_
 MULTIPLIER (genuinely unverifiable, no new qualifying gap).
+
+**FIXED (2026-09-13, /loop cycle 6, third fix this cycle)**:
+`FLOOR_LOT_PROBABILITY` for Ethereum/Solana -- previously deprioritized
+as "needs a different (raw per-fill, not collapsed-decision)
+methodology," but actually tractable: found a clean, natural bimodal
+split in raw fill sizes (p1-p15 of ALL post-halt fills sit at EXACTLY
+0.02 shares, then jump straight to 0.5+ at p20) confirming size<=0.05
+as a real, non-fuzzy floor-lot threshold. Recalibrated Ethereum/Solana
+using this threshold on RAW (uncollapsed) post-halt fills, bucketed by
+(regime, position-index-derived tier): rates came back MEANINGFULLY
+HIGHER than the old flat values (e.g. Solana MID 23.76%->28.6-36.1%)
+AND showing a real, if not perfectly monotonic, RISE with position
+index -- moved both assets from flat-by-position to the same per-tier
+dict structure Hyperliquid/BNB already use, and added them to
+FLOOR_LOT_POSITION_DEPENDENT_ASSETS. Bitcoin's negligible-everywhere
+status re-confirmed (0-1.8%, matches its existing 0.0 no-op). Dogecoin
+left unchanged (dormant, no post-halt data).
+
+533/533 tests passing (1 new test confirming the position-dependence),
+deployed to all 3 bots.
+
+This closes item 9. Only 2 items remain from the full 28-item checklist:
+GRADIENT_BIAS_PCT (confirmed genuinely infeasible -- needs a continuous
+book-price series market_snapshots.jsonl doesn't have enough density
+for, ~1.04 snapshots/market on average) and RESUMPTION_SIZE_MULTIPLIER
+(confirmed again -- zero post-halt gaps >=4h exist in the data).
