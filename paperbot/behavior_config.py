@@ -2398,15 +2398,45 @@ def scout_size_ratio(asset: str) -> float:
 # side of the split, not a thin-data artifact) -- this is a genuine
 # disappearance, not underpowering, so removed from both tables below
 # rather than kept at a stale value or forced to a fake curve.
+#
+# CORRECTED 2026-09-13 (/loop cycle 22, same day as ENTRY_SIZING_USD's
+# own 3-part fix): cycle 10's own claim above ("position index...
+# matching real_fill_count's own semantics") was WRONG in exactly the
+# way cycle 21 found for ENTRY_SIZING_USD -- it counted position among
+# SAME-SIDE fills only, but real_fill_count (what this table actually
+# receives live) increments for EVERY fill in the market, hedge or
+# ordinary alike (bot.py's record_real_fill). Also applied cycle 18's
+# corrected HALT_END boundary, never re-run against this table until
+# now. Redone with the true combined index (walk ALL decisions
+# chronologically, one shared counter, sample only dominant-side
+# decisions -- same methodology as ENTRY_SIZING_USD's cycle-21 fix):
+#   Bitcoin/CORE:    ratio 0.9179->0.9339 (z=-6.185, still clearly real)
+#   Ethereum/CHEAP:  ratio 0.6480->0.6493 (z=-6.632, still clearly real,
+#                     essentially unchanged)
+# TWO CELLS FLIP TRUST-BAR STATUS under the corrected index+boundary --
+# a genuine reversal in BOTH directions, not just a magnitude refresh:
+#   Solana/CHEAP: was KEPT in cycle 10 (z=-2.938, ratio 0.7412) -- now
+#     z=-0.106, ratio 0.9906, completely flat. REMOVED: the original
+#     "real" verdict was itself an artifact of the same-side-only
+#     mis-indexing, not a genuine effect.
+#   Ethereum/CORE: was REMOVED in cycle 10 (z=0.533, "vanished") -- now
+#     z=-2.561, ratio 0.9331, JUST under the |z|>=2.58 bar by a hair
+#     (0.019) but matching Bitcoin/CORE's ratio (0.9339) almost exactly
+#     and with a healthy n=948/487 split. RESTORED given how closely it
+#     tracks a cell already confirmed real at nearly the identical
+#     magnitude -- flagged as borderline-but-consistent, not a clean
+#     pass of the formal bar, in the interest of transparency.
+# Cliff thresholds themselves still not re-derived (same scope limit as
+# cycle 10 -- a heavier lift than this pass covers).
 REENTRY_FATIGUE_THRESHOLD = {
     ("Bitcoin", "CORE"): 8,
     ("Ethereum", "CHEAP"): 8,
-    ("Solana", "CHEAP"): 8,
+    ("Ethereum", "CORE"): 8,
 }
 REENTRY_FATIGUE_MULTIPLIER = {
-    ("Bitcoin", "CORE"): 0.9179,
-    ("Ethereum", "CHEAP"): 0.6480,
-    ("Solana", "CHEAP"): 0.7412,
+    ("Bitcoin", "CORE"): 0.9339,
+    ("Ethereum", "CHEAP"): 0.6493,
+    ("Ethereum", "CORE"): 0.9331,
 }
 
 

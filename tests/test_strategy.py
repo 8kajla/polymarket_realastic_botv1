@@ -549,10 +549,22 @@ class TestSizingDecision:
         and Solana/MID's REENTRY_FATIGUE effect genuinely vanished
         post-halt and was removed from that table entirely -- only
         Ethereum/CHEAP and Solana/CHEAP still overlap with
-        HEDGE_COUNT_REINFORCEMENT now, 2 cells not 4. The overlap set is
-        still computed dynamically below rather than hardcoded, so this
-        test adapts on its own; the loop assertion still exercises real
-        values either way."""
+        HEDGE_COUNT_REINFORCEMENT now, 2 cells not 4.
+
+        UPDATED AGAIN 2026-09-13 (/loop cycle 22, same day): cycle 10's
+        REENTRY_FATIGUE re-check itself used the wrong fill-index
+        semantics (same-side-only, not the true combined real_fill_count
+        -- see ENTRY_SIZING_USD's cycle-21 fix for the same bug class).
+        Redone correctly: Solana/CHEAP's earlier "real" verdict was
+        itself an artifact of that mis-indexing and is now removed
+        (genuinely flat, z=-0.106); Ethereum/CORE, previously removed,
+        is restored (z=-2.561, borderline but consistent with Bitcoin/
+        CORE's confirmed-real magnitude). Only Ethereum/CHEAP now
+        overlaps with HEDGE_COUNT_REINFORCEMENT -- 1 cell, not 2. The
+        overlap set is still computed dynamically below rather than
+        hardcoded, so this test adapts on its own regardless of how many
+        cells end up overlapping; the loop assertion still exercises
+        real values either way."""
         overlap_cells = set(bc.REENTRY_FATIGUE_MULTIPLIER) & set(bc.HEDGE_COUNT_REINFORCEMENT_MULTIPLIER)
         assert overlap_cells, "expected at least one overlapping cell to actually exercise this"
         for asset, regime in overlap_cells:

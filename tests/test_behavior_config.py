@@ -934,11 +934,19 @@ class TestReentryFatigueMultiplier:
             assert bc.reentry_fatigue_multiplier(asset, "HIGH", 20) == 1.0
 
     def test_noop_for_cells_that_vanished_post_halt(self):
-        # RECALIBRATED 2026-09-13 (/loop cycle 10): Ethereum/MID,
-        # Solana/MID, and Ethereum/CORE all showed a genuinely vanished
-        # (not just weakened) fatigue effect on fresh post-halt data --
-        # removed from the table entirely, see the module docstring.
-        for asset, regime in [("Ethereum", "MID"), ("Solana", "MID"), ("Ethereum", "CORE")]:
+        # RECALIBRATED 2026-09-13 (/loop cycle 10): Ethereum/MID and
+        # Solana/MID showed a genuinely vanished (not just weakened)
+        # fatigue effect on fresh post-halt data -- removed from the
+        # table entirely, see the module docstring. Ethereum/CORE was
+        # ALSO removed here originally, but cycle 22 (same day) found
+        # cycle 10's own fill-index semantics were wrong (same-side-only,
+        # not the true combined real_fill_count) and restored it once
+        # redone correctly -- see this file's own docstring for the full
+        # story, and test_dampens_at_and_beyond_threshold below for its
+        # current (non-no-op) behavior. Cycle 22 ALSO found Solana/CHEAP's
+        # earlier "real" verdict was itself an artifact of the same bug
+        # and removed it -- covered by the assertion below instead.
+        for asset, regime in [("Ethereum", "MID"), ("Solana", "MID"), ("Solana", "CHEAP")]:
             assert bc.reentry_fatigue_multiplier(asset, regime, 20) == 1.0
 
     def test_noop_when_real_fill_count_missing(self):
