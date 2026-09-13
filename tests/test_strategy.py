@@ -1088,8 +1088,17 @@ class TestDecideHedgeLiquidityMultiplier:
         )
         assert n_no_arg == n_explicit_none
 
-    def test_high_liquidity_fires_more_often_than_low_liquidity(self):
-        # Bitcoin/MID -- real curve: 8590->0.9336, 19828->1.0704.
+    def test_high_liquidity_fires_more_often_than_low_liquidity(self, monkeypatch):
+        # HEDGE_LIQUIDITY_MULTIPLIER is empty as of 2026-09-13 (the
+        # underlying correlation vanished post-halt for all three live
+        # assets -- see TestHedgeLiquidityMultiplier's docstring), so
+        # this mocks the multiplier function directly to exercise
+        # decide_hedge's WIRING (does it apply whatever
+        # hedge_liquidity_multiplier returns to the trigger probability)
+        # independent of whether any asset currently has real calibration
+        # data for it.
+        monkeypatch.setattr(bc, "hedge_liquidity_multiplier",
+                             lambda asset, liquidity: 0.5 if liquidity < 10000 else 1.5)
         activity = MarketActivityState()
         record_filled_entry(activity, "Up", notional_usd=10.0, regime="MID")
         n = 500

@@ -1133,12 +1133,23 @@ def hedge_trigger_probability(asset: str, primary_regime: str) -> float:
 # quartile meaningfully above 1.0 in all three: 1.07/1.14/1.11) --
 # interpolated as-measured rather than smoothed into a false monotonic
 # shape that isn't actually in the data.
-HEDGE_LIQUIDITY_MULTIPLIER = {
-    "Bitcoin": {8590: 0.9336, 13072: 0.9577, 15927: 1.0382, 19828: 1.0704},
-    "Ethereum": {4191: 1.0128, 7378: 0.9015, 9076: 0.9460, 10100: 1.1388},
-    "Solana": {2504: 1.0214, 3688: 0.8715, 5007: 0.9933, 5792: 1.1115},
-}
+# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 6 -- see full-
+# behavioral-audit-tracker.md's hedge-trigger sub-multipliers note): this
+# was previously flagged as blocked (Gamma's liquidityNum isn't in
+# trades.jsonl, this project's main data source) -- unblocked by finding
+# /opt/trader-intel/data/market_snapshots.jsonl, a separate collector
+# that DOES capture per-market liquidity, joined here on condition_id
+# (3,890 post-halt markets matched a liquidity value). Checked the
+# underlying correlation, not just quartile shape: liquidity vs whether
+# a market gets hedged is essentially ZERO for all three assets post-
+# halt (Bitcoin r=+0.010, Ethereum r=+0.022, Solana r=+0.056, n=1263-
+# 1357 each) -- the effect has genuinely vanished, not just weakened
+# like some of this session's other findings. REMOVED entirely (clean
+# 1.0 no-op via the function's own "asset not in table" fallback) rather
+# than force a fabricated curve onto noise. Eighth distinct multiplier
+# this session to show this pattern.
 _HEDGE_LIQUIDITY_MULTIPLIER_CAP = 3.0  # symmetric clamp on the FINAL probability multiplier
+HEDGE_LIQUIDITY_MULTIPLIER: dict = {}
 
 
 def hedge_liquidity_multiplier(asset: str, liquidity: Optional[float]) -> float:

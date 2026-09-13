@@ -406,49 +406,30 @@ class TestHedgeTtcSizeMultiplier:
 
 class TestHedgeLiquidityMultiplier:
     """Liquidity-conditioned first-hedge trigger, added 2026-09-10 --
-    confirmed real, well-powered (t=5.263, n=1023/322) correlation
-    between a market's liquidity and whether he hedges it at all. Unlike
-    TTC (a size signal) this is an ACTION-level measurement already (did
-    he hedge or not), so it clears the same bar the price-velocity signal
-    failed without needing a separate sizing-reaction check."""
+    originally confirmed real, well-powered (t=5.263, n=1023/322)
+    correlation between a market's liquidity and whether he hedges it at
+    all. RETIRED 2026-09-13 (post-halt, /loop cycle 6 -- see full-
+    behavioral-audit-tracker.md's hedge-trigger sub-multipliers note):
+    unblocked from its earlier "no liquidity data available" status by
+    finding /opt/trader-intel/data/market_snapshots.jsonl, a separate
+    collector that does capture it -- joined against post-halt trades
+    (n=1263-1357 per asset) and found the correlation has genuinely
+    vanished for all three assets (Bitcoin r=+0.010, Ethereum r=+0.022,
+    Solana r=+0.056 -- all essentially zero). HEDGE_LIQUIDITY_MULTIPLIER
+    is now an empty dict; every asset (including the three that used to
+    have a real curve) gets the function's own no-op fallback."""
 
-    def test_neutral_for_assets_not_in_the_table(self):
-        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+    def test_always_neutral_now_the_table_is_empty(self):
+        # Every asset, including the three that used to have a real
+        # curve, must be a strict no-op now the underlying signal is gone.
+        for asset in ("Bitcoin", "Ethereum", "Solana", "Dogecoin", "Hyperliquid", "BNB"):
             assert bc.hedge_liquidity_multiplier(asset, 10000.0) == 1.0
 
     def test_neutral_when_liquidity_is_unavailable(self):
         assert bc.hedge_liquidity_multiplier("Bitcoin", None) == 1.0
 
-    def test_exact_at_each_calibrated_point(self):
-        for asset, curve in bc.HEDGE_LIQUIDITY_MULTIPLIER.items():
-            for liq, expected in curve.items():
-                got = bc.hedge_liquidity_multiplier(asset, float(liq))
-                assert abs(got - expected) < 1e-9, f"{asset}@{liq}: {got} != {expected}"
-
-    def test_interpolates_between_points(self):
-        # Bitcoin: 13072->0.9577, 15927->1.0382 -- the midpoint liquidity
-        # value must interpolate to (roughly) the midpoint ratio.
-        mid_liq = (13072 + 15927) / 2
-        mid_val = bc.hedge_liquidity_multiplier("Bitcoin", mid_liq)
-        assert 0.9577 < mid_val < 1.0382
-
-    def test_flat_beyond_the_measured_range_no_extrapolation(self):
-        at_min = bc.hedge_liquidity_multiplier("Bitcoin", 8590.0)
-        below_min = bc.hedge_liquidity_multiplier("Bitcoin", 100.0)
-        assert at_min == below_min
-
-        at_max = bc.hedge_liquidity_multiplier("Bitcoin", 19828.0)
-        above_max = bc.hedge_liquidity_multiplier("Bitcoin", 1_000_000.0)
-        assert at_max == above_max
-
-    def test_higher_liquidity_means_higher_multiplier_for_every_live_asset(self):
-        for asset in ("Bitcoin", "Ethereum", "Solana"):
-            curve = bc.HEDGE_LIQUIDITY_MULTIPLIER[asset]
-            lowest_liq = min(curve)
-            highest_liq = max(curve)
-            low_val = bc.hedge_liquidity_multiplier(asset, lowest_liq)
-            high_val = bc.hedge_liquidity_multiplier(asset, highest_liq)
-            assert high_val > low_val, f"{asset}: expected highest-liquidity point to score above lowest"
+    def test_table_is_empty(self):
+        assert bc.HEDGE_LIQUIDITY_MULTIPLIER == {}
 
 
 class TestAdverseMoveSizeMultiplier:

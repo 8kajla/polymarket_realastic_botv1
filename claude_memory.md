@@ -1197,3 +1197,30 @@ Remaining from the 28-item checklist: GRADIENT_BIAS_PCT, FLOOR_LOT_
 PROBABILITY (deliberately low priority), RESUMPTION_SIZE_MULTIPLIER
 (genuinely unverifiable), HEDGE_LIQUIDITY_MULTIPLIER (blocked -- needs
 Gamma liquidityNum data not present in trades.jsonl).
+
+**FIXED (2026-09-13, /loop cycle 6)**: `HEDGE_LIQUIDITY_MULTIPLIER`
+was previously flagged as BLOCKED (needs Gamma's liquidityNum, not in
+trades.jsonl) -- unblocked by finding `/opt/trader-intel/data/
+market_snapshots.jsonl`, a separate collector that DOES capture
+per-market liquidity. Joined it against post-halt trades (n=1263-1357
+per asset matched a liquidity value) and checked the underlying
+correlation directly: essentially ZERO for all three assets (Bitcoin
+r=+0.010, Ethereum r=+0.022, Solana r=+0.056) -- the effect has
+genuinely vanished, not just weakened. REMOVED entirely (empty dict,
+clean 1.0 no-op via the existing fallback) rather than fabricate a
+curve from noise. This is the EIGHTH distinct multiplier this session
+to show the "weakened or vanished post-halt" pattern.
+
+Rewrote TestHedgeLiquidityMultiplier (all Bitcoin-specific curve
+assertions no longer apply) and fixed one test_strategy.py test that
+exercised decide_hedge's wiring using Bitcoin's now-retired real curve
+-- switched to mocking bc.hedge_liquidity_multiplier directly, which
+tests the WIRING independent of whether any asset currently has
+calibration data (a more robust pattern going forward). 532/532 tests
+passing (3 fewer than before -- 3 curve-specific tests were replaced
+by simpler retirement-confirming ones, not silently dropped).
+
+This closes the last of the 4 hedge-trigger sub-multipliers flagged in
+the full audit. Remaining from the 28-item checklist: GRADIENT_BIAS_PCT,
+FLOOR_LOT_PROBABILITY (deliberately low priority), RESUMPTION_SIZE_
+MULTIPLIER (genuinely unverifiable, no new qualifying gap).
