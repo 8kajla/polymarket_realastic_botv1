@@ -801,10 +801,43 @@ def side_persistence_for(asset: str, held_side_regime: str) -> float:
 # 10.14pp) -- but the numbers below are still the safer POOLED whole-
 # history values (not post-TWAP-only), since a full per-asset post-TWAP
 # split wasn't computed for all three assets before this was implemented.
+#
+# RECALIBRATED 2026-09-13 (post-halt audit, /loop cycle 9). Unlike almost
+# every other table fixed this session, this one held up well: post-halt
+# rates are within 1-2pp of the old pooled-whole-history values for all
+# 3 assets, not a dramatic level shift. Recalibrated anyway since
+# post-halt-only is strictly better methodology (matches this session's
+# established discipline) and n is solid (BTC 633/687, ETH 476/747, SOL
+# 503/733 after_win/after_loss consecutive pairs, gap<=1h, same causally-
+# clean methodology as the original). Bitcoin/Solana's win-vs-loss
+# DIFFERENCE still clears this file's own |z|>=2.58 trust bar on its own
+# post-halt sample (BTC z=3.478, SOL z=2.999). Ethereum's has weakened to
+# JUST below the bar (z=2.191, was z=-3.28 originally) -- flagged
+# honestly rather than silently kept at the old, more-significant-looking
+# number; direction and rough magnitude still match Bitcoin/Solana
+# (persistence stronger after a loss than after a win), so kept as
+# measured rather than forced back to a flat rate, but treat Ethereum's
+# split here as the weakest-supported of the three going forward.
+#
+# ALSO ATTEMPTED THIS CYCLE: the standing CHEAP-band edge-gap
+# investigation (see cheap-edge-gap-root-cause-persistence-miscalibration
+# in project memory) proposed retargeting this table toward "does
+# persisting predict a WIN" rather than "matches his revealed frequency,"
+# specifically because Ethereum's after-win rate sits below 50% (favors
+# switching). Directly tested that on fresh post-halt CHEAP-only data
+# (does persist-vs-switch predict winning THIS market, for markets
+# landing in CHEAP): BTC edge +2.60pp (z=0.588), ETH edge -1.84pp
+# (z=-0.560), SOL edge +2.64pp (z=0.746) -- all three nowhere near the
+# trust bar, pure noise at this sample size (n=151-295/cell). CONCLUSION:
+# there is no significant win-predicting signal to retarget toward in
+# CHEAP: the proposed fix is not viable with current data, and
+# frequency-matching (this table's actual design) remains the only
+# defensible choice, not a mistake to correct. Closes that memory's
+# recommendation #1 as "attempted, not viable" rather than open-ended.
 CROSS_MARKET_SIDE_PERSISTENCE = {
-    "Bitcoin": {"after_win": 0.5148, "after_loss": 0.6013},
-    "Ethereum": {"after_win": 0.4675, "after_loss": 0.5736},
-    "Solana": {"after_win": 0.4812, "after_loss": 0.6068},
+    "Bitcoin": {"after_win": 0.5182, "after_loss": 0.6128},
+    "Ethereum": {"after_win": 0.4874, "after_loss": 0.5515},
+    "Solana": {"after_win": 0.4990, "after_loss": 0.5853},
 }
 
 

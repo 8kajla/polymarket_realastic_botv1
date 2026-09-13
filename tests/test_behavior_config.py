@@ -186,12 +186,14 @@ class TestCrossMarketSidePersistence:
             assert bc.cross_market_side_persistence(asset) == expected
 
     def test_exact_values_for_the_three_calibrated_assets(self):
-        assert bc.cross_market_side_persistence("Bitcoin", True) == 0.5148
-        assert bc.cross_market_side_persistence("Bitcoin", False) == 0.6013
-        assert bc.cross_market_side_persistence("Ethereum", True) == 0.4675
-        assert bc.cross_market_side_persistence("Ethereum", False) == 0.5736
-        assert bc.cross_market_side_persistence("Solana", True) == 0.4812
-        assert bc.cross_market_side_persistence("Solana", False) == 0.6068
+        # RECALIBRATED 2026-09-13 (post-halt, /loop cycle 9) -- see
+        # CROSS_MARKET_SIDE_PERSISTENCE's docstring.
+        assert bc.cross_market_side_persistence("Bitcoin", True) == 0.5182
+        assert bc.cross_market_side_persistence("Bitcoin", False) == 0.6128
+        assert bc.cross_market_side_persistence("Ethereum", True) == 0.4874
+        assert bc.cross_market_side_persistence("Ethereum", False) == 0.5515
+        assert bc.cross_market_side_persistence("Solana", True) == 0.4990
+        assert bc.cross_market_side_persistence("Solana", False) == 0.5853
 
     def test_persistence_is_stronger_after_a_loss_than_after_a_win(self):
         # The whole finding: NOT hot-hand, NOT gambler's fallacy -- he
