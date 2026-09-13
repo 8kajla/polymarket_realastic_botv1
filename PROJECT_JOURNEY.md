@@ -244,8 +244,13 @@ research pass:
 **One correction to Phase 3/8 above, caught while writing this section**:
 `paperbot-mini`, described above as the permanent frozen control, is no
 longer running as of this pass — only `paperbot` and `paperbot-100` are
-live on the server. When and why it was retired isn't recorded anywhere
-in this project's own notes; flagging honestly rather than guessing.
+live on the server. Its systemd service has been fully removed (not just
+stopped), and its own saved records show its last real settlement was
+**2026-09-11 09:41 UTC** — so it kept running as intended for roughly a
+day after being frozen, then was decommissioned entirely rather than left
+running indefinitely as a clean baseline. Nothing in this project's own
+notes records the *why*; flagging the *when* honestly since it was
+findable, without guessing at the reason.
 
 ## 10. Where things stand right now
 
