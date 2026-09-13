@@ -1714,3 +1714,26 @@ actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
 4 methodology bugs found-and-corrected + 1 infra issue investigated-
 and-confirmed-safe, across 24 /loop cycles.** See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 25): HEDGE_TRIGGER_PROBABILITY re-verified -- confirms cycle 18's assumption held for this table
+
+Tested cycle 18's "large samples unlikely to change materially" claim
+against another foundational pre-loop table. Unlike ENTRY_SIZING_USD/
+REENTRY_FATIGUE (which have position-index dependency and carried the
+deeper real_fill_count bug), HEDGE_TRIGGER_PROBABILITY is a simple
+per-market rate with no index dependency -- only the boundary bug
+could apply. Result: confirms cycle 18's assumption -- well-powered
+cells land within 1-10% of deployed values. Updated 7 cells clearing
+n>=200 (Bitcoin CHEAP/MID/CORE, Ethereum CHEAP/MID, Solana CHEAP/MID).
+
+537/537 tests passing, deployed to all 3 bots, verified healthy.
+
+Key insight for prioritizing remaining pre-loop tables: index-dependent
+tables (position/fill-count keyed) are higher-risk for the deeper bug
+class; simple-rate or continuous-value tables (most of the rest) are
+lower priority given this table held up fine.
+
+**Running tally: 20 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
+4 methodology bugs found-and-corrected + 1 infra issue confirmed-safe,
+across 25 /loop cycles.** See [[full-behavioral-audit-tracker]].

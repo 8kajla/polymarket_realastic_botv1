@@ -7539,3 +7539,72 @@ This cycle is a useful reminder that "keep researching each cause and
 fixing it" sometimes means confirming there's nothing left TO fix in a
 given area after real investigation — a verdict earned by checking,
 not assumed for convenience.
+
+## 2026-09-13: /loop cycle 25 — HEDGE_TRIGGER_PROBABILITY re-verified with corrected boundary, confirms cycle 18's assumption (a useful counterpoint)
+
+After cycles 19-22 found real, meaningful drift once ENTRY_SIZING_USD
+and REENTRY_FATIGUE were actually re-checked with the corrected
+HALT_END boundary — enough to cast real doubt on cycle 18's claim that
+"large-sample tables are unlikely to change materially" — tested that
+claim directly against a third foundational table from the original
+pre-loop cycles: `HEDGE_TRIGGER_PROBABILITY` (items #3/#4, the base
+rate governing whether a hedge fires at all in a given market).
+
+**Key structural difference from the two tables that needed deep
+fixes**: `HEDGE_TRIGGER_PROBABILITY` has NO position-index dependency
+at all — it's a simple per-market rate keyed only on `(asset,
+first-entry regime)`, computed once per market as "did this market
+ever go dual-sided." This means it was never exposed to the
+`real_fill_count` combined-counter bug found in `ENTRY_SIZING_USD` and
+`REENTRY_FATIGUE` — only the `HALT_END` boundary bug (cycle 18) could
+possibly apply here, since there's no index-semantics question to get
+wrong in the first place.
+
+**Result — this time, cycle 18's assumption actually holds up**:
+re-derived with the corrected boundary and found the well-powered
+cells (n=318-1,000 markets) land within roughly 1-10% of what's
+already deployed — a real but modest amount of drift, nothing like the
+12-34% swings and outright trust-bar flips seen in the two
+index-dependent tables. Updated the 7 cells that clear the n>=200
+trust bar anyway, since the modest drift is still real:
+- Bitcoin: CHEAP 0.6936->0.7193 (n=456), MID 0.7319->0.7390 (n=1000),
+  CORE 0.4506->0.4937 (n=318)
+- Ethereum: CHEAP 0.3838->0.4127 (n=790), MID 0.5751->0.5730 (n=651)
+- Solana: CHEAP 0.5178->0.5331 (n=756), MID 0.6626->0.6612 (n=667)
+
+Every other cell's fresh sample stayed below n=200 (as low as n=80)
+and was left unchanged — Solana/HIGH showed what LOOKED like a
+dramatic +27% swing, but at n=113 that's exactly the kind of
+thin-sample noise this project's own trust bar exists to filter out,
+not something to chase.
+
+No test changes needed — grepped for every one of the old literal
+values across both test files and found no hardcoded assertions
+referencing any of them. 537/537 tests passing, deployed to all 3 bots
+(paperbot/paperbot-100/coinbase-bot), verified healthy via journalctl.
+
+**Why this cycle matters as a counterpoint, not just another fix**:
+this is a useful, honest correction to the emerging narrative from
+cycles 19-22 — it would have been easy to conclude "every pre-loop
+table probably needs the same deep treatment," but that's not what
+this check found. The distinguishing factor this cycle identifies is
+principled and generalizable: tables with a POSITION-INDEX dependency
+(reading `real_fill_count` or a similar within-market counter) carry
+real risk of the deeper index-semantics bug; tables that are simple
+per-market rates or continuous-value curves with no index dependency
+(`SIDE_PERSISTENCE`, `HEDGE_SIZE_RATIO`, `ADVERSE_MOVE_SIZE_
+MULTIPLIER`/its continuation variant, `ABSOLUTE_PRICE_HEDGE_SIZE_
+MULTIPLIER`, `CROSS_MARKET_HEDGE_RATE_MULTIPLIER`,
+`CONVICTION_HEDGE_MULTIPLIER`, `FLOOR_LOT_PROBABILITY`, and the
+prior-market-keyed `CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER`/
+`CROSS_MARKET_SIDE_PERSISTENCE`) are lower priority for a deep
+re-derivation, since this cycle's direct test shows the boundary
+correction alone produces only modest movement for that whole class.
+This gives a real basis for prioritizing which of the ~14 remaining
+pre-loop tables are worth the heavier scrutiny versus which can
+reasonably wait.
+
+**Running tally: 20 tables recalibrated or retired, plus 2 confirmed-
+not-actionable, 1 checked-with-insufficient-rigor, 1 architecture gap
+closed, 4 methodology bugs found-and-corrected, and 1 infra issue
+investigated-and-confirmed-safe, across 25 /loop cycles.**
