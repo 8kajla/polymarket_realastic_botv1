@@ -5720,3 +5720,30 @@ staleness problems for those two assets. Bitcoin's hedge sizing has
 aged well. NOT YET FIXED.
 
 Tracker status: 8/28 items verified. Continuing.
+
+## 2026-09-13: Audit item 25 — regime band boundaries confirmed as a reasonable discretization
+
+Checked win rate in narrow 0.02-wide price slices straddling each
+boundary (30d pooled real data). Around 0.30: 25.4% -> 30.8% -> 28.4%
+-> 29.8% -> 32.4% -- a smooth continuum, no sharp kink exactly at the
+boundary. Same pattern at 0.70 and 0.90. Confirms CHEAP/MID/CORE/HIGH
+are a convenient discretization of a smooth price-vs-win-rate
+relationship, not a discovery of how he actually segments his own
+decisions -- reasonable as an engineering approximation (any lookup
+table needs some discretization), and this is exactly why
+WITHIN_BAND_SIZE_SLOPE already exists as a partial correction for the
+resulting edge effects. Not a newly-discovered flaw, but a foundational
+assumption now explicitly verified rather than just inherited.
+
+Tracker status: 9/28 items now carry a real, evidenced verdict:
+- CONFOUNDED: SIDE_PERSISTENCE (1)
+- CONFIRMED but under-calibrated: CROSS_MARKET_SIDE_PERSISTENCE (2)
+- STALE/CRITICAL: HEDGE_TRIGGER_PROBABILITY (3, inherits to 4),
+  ENTRY_SIZING_USD (8)
+- STALE for ETH/SOL only: HEDGE_SIZE_RATIO (15)
+- CONFIRMED sound: HEDGE_CONTINUATION_PROBABILITY (5), hedge=insurance
+  premise (27), regime band boundaries (25)
+- Not decision-relevant: ASSET_REGIME_DISTRIBUTION_PCT (28)
+- Queued, lower priority: FLOOR_LOT_PROBABILITY (9)
+
+19 items remain fully unchecked (6-7, 10-14, 16-24, 26). Continuing.
