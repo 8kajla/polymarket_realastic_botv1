@@ -1878,3 +1878,39 @@ Full writeup: [[paperbot-100-hedge-drag-and-reset]]. Watch for whether
 the same CHEAP/MID hedge drag recurs under today's corrected
 calibration -- if so, it's not a post-halt-staleness problem, it's
 something more fundamental worth a dedicated investigation.
+
+## 2026-09-13: MarketActivityState persistence -- two-bug fix, verified live end-to-end (0f9c000, e8e3386)
+
+`self.activity` (per-market hedge counts, side history, first-entry
+lock fields) was never persisted -- every graceful restart (including
+routine deploy restarts) silently reset it. Confirmed live impact: a
+market with 19 hedge fills, when `MAX_HEDGE_COUNT_PER_MARKET` should
+cap it at 6 -- the cap is enforced against `real_hedge_fill_count`,
+which restarts reset to 0.
+
+Fix part 1 (0f9c000): `save_activity_state`/`load_activity_state`
+added, wired into `__init__` + both existing `ledger.save()` call
+sites.
+
+Fix part 2 (e8e3386), found before part 1 was even confirmed complete:
+`_onboard_markets` did an unconditional `self.activity[cid] =
+MarketActivityState()`. Since `self.markets_by_condition` is ALSO never
+persisted, every already-active market looks "new" to `discovery_tick`
+after a restart, so this fired for every market on every restart --
+completely undoing fix part 1 on the very next tick. Caught via
+noticing `first_entry_side/price/notional` (fields that lock forever on
+a market's first entry) had actually changed across a restart in a
+manual server snapshot check -- impossible if state truly persisted.
+Fixed with `.setdefault()` (preserves existing state, still
+initializes genuinely new markets).
+
+**Both fixes verified live together** via real before/after-restart
+snapshots of `activity_state.json` on the server: for every market
+with prior entries, first-entry-lock fields came back byte-identical,
+counters grew from continued real activity (not reset to 0). 545/545
+tests passing. All 3 services healthy post-deploy.
+
+Removes the hedge-count-cap-bypass component of the Bitcoin hedge-drag
+problem in [[paperbot-100-hedge-drag-and-reset]]; does NOT by itself
+explain the broader CHEAP/MID value-destruction pattern, which stays
+open pending more post-fix data.

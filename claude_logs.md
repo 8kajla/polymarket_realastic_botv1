@@ -7975,3 +7975,79 @@ today's post-halt-freshness work -- worth a dedicated investigation
 the real trader's, the same methodology full-behavioral-audit-tracker
 item #27 already used) if the reset bankroll shows the same pattern
 recurring.
+
+## 2026-09-13: MarketActivityState never persisted across restarts -- two-part bug, both fixed and verified live
+
+While investigating the paperbot-100 drawdown and the Bitcoin hedge
+value-destruction pattern above, found a structural bug independent of
+any calibration table: `PaperBot.__init__` built `self.activity` (the
+dict of per-market `MarketActivityState`, holding `real_fill_count`,
+`real_hedge_fill_count`, `cost_by_side`, `last_side`,
+`first_entry_side/price/notional`, etc.) as a plain empty dict with NO
+reconstruction from disk. Unlike the ledger (`Ledger.save()`/`load()`,
+called every tick), this state only ever lived in memory.
+
+**Consequence**: every restart -- including an ORDINARY graceful
+`systemctl restart` used for every deploy this project does, not just a
+crash -- silently wiped all in-progress per-market state. Concretely,
+`MAX_HEDGE_COUNT_PER_MARKET` (default 6, config.py) is enforced against
+`real_hedge_fill_count`, which reset to 0 on restart, so a market
+already at its cap got a fresh allowance of 6 more hedges the instant
+the bot restarted mid-market. Found a real market in the production
+ledger with 19 separate hedge fills as direct evidence.
+
+**Fix, part 1** (commit 0f9c000): added `save_activity_state()` /
+`load_activity_state()` to `strategy.py` (same shape as `Ledger.save/
+load`: JSON via `dataclasses.asdict`, restored via `MarketActivityState
+(**fields)`), a new `config.ACTIVITY_STATE_PATH`, wired
+`load_activity_state()` into `PaperBot.__init__`, and
+`save_activity_state()` into both `resolution_tick` (after
+`ledger.save()`) and the main loop's shutdown `finally` block (the path
+every graceful SIGTERM restart hits). 6 new tests in
+`TestActivityStatePersistence` (test_strategy.py).
+
+**Fix, part 2 -- found the SAME session, before part 1 had even been
+verified as complete** (commit e8e3386): manual before/after-restart
+snapshots of the new `activity_state.json` on the live server initially
+looked like they showed correct persistence (counters growing), but
+checking the FULL (untruncated) condition_id revealed
+`first_entry_side/price/notional` had actually CHANGED for the same
+market -- impossible if state were truly preserved, since those fields
+lock permanently on a market's first-ever entry. Root cause:
+`self.markets_by_condition` (used by `discovery_tick` to compute
+`new_conditions = set(active) - set(self.markets_by_condition)`) is
+ALSO never persisted across a restart, so every currently-active market
+looks "new" again after any restart -- and `_onboard_markets` did an
+UNCONDITIONAL `self.activity[cid] = MarketActivityState()`, silently
+wiping the state part 1 had just restored, on the very first
+`discovery_tick` after startup. Part 1 alone was completely defeated by
+this. Fixed with `self.activity.setdefault(cid, MarketActivityState())`
+-- a no-op when the key already exists, so a restored market keeps its
+state while a genuinely new market still gets a fresh one. 2 new tests
+in `TestOnboardingPreservesRestoredActivity` (test_bot.py). 545/545
+tests passing after both fixes.
+
+**Live end-to-end verification** (both fixes deployed together,
+restarted all 3 services): took a before/after snapshot of
+`activity_state.json` across the actual restart. For every market that
+already had `entry_count > 0` before the restart, `first_entry_side/
+price/notional` came back byte-for-byte IDENTICAL after the restart,
+while `entry_count`/`real_fill_count`/`real_hedge_fill_count` continued
+growing from real post-restart activity instead of resetting to 0 (one
+market: `real_fill_count` 0->13, `real_hedge_fill_count` 0->8, `entry_
+count` 8->34, with `first_entry_side=Down first_entry_price=0.49
+first_entry_notional=2.45` unchanged both before and after). The one
+market with `entry_count=0` pre-restart correctly got a fresh first
+entry recorded once real activity happened post-restart -- expected,
+not a bug. All 3 services (`paperbot`, `paperbot-100`, `coinbase-bot`)
+active post-restart with no new errors (only pre-existing, pre-restart,
+self-recovering WS reconnect blips, unrelated).
+
+**Why this matters for the open Bitcoin hedge-drag question above**:
+this fix removes the hedge-count-cap-bypass / runaway-laddering
+component of that drag (the 19-hedge-market failure mode is now
+structurally impossible). It does NOT by itself explain the broader
+CHEAP/MID hedge value-destruction pattern -- that remains open, to be
+re-assessed once enough post-fix data accumulates on the freshly-reset
+paperbot-100 and on the main paperbot's Bitcoin hedge P&L going
+forward.
