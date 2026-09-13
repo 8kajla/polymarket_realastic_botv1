@@ -406,6 +406,51 @@ class TestSizingDecision:
             "with the flag off, bankroll-linked sizing must be a strict no-op"
         )
 
+    def test_mid_reentry_fatigue_defaults_to_a_noop_when_not_passed(self):
+        rng_a = random.Random(83)
+        rng_b = random.Random(83)
+        notional_no_arg, _ = decide_size("Ethereum", "MID", "4th_plus", 0.5, rng_a)
+        notional_explicit_none, _ = decide_size("Ethereum", "MID", "4th_plus", 0.5, rng_b,
+                                                 real_fill_count=None)
+        assert notional_no_arg == notional_explicit_none
+
+    def test_mid_reentry_fatigue_dampens_size_at_and_beyond_threshold(self):
+        def avg_notional(real_fill_count, n=400):
+            rng = random.Random(89)
+            total = 0.0
+            for _ in range(n):
+                notional, _ = decide_size("Ethereum", "MID", "4th_plus", 0.5, rng,
+                                           real_fill_count=real_fill_count)
+                total += notional
+            return total / n
+
+        before_threshold = avg_notional(bc.MID_REENTRY_FATIGUE_THRESHOLD - 1)
+        at_threshold = avg_notional(bc.MID_REENTRY_FATIGUE_THRESHOLD)
+        assert at_threshold < before_threshold
+
+    def test_mid_reentry_fatigue_is_a_noop_for_bitcoin(self):
+        # Deliberately excluded, not just uncalibrated -- see
+        # MID_REENTRY_FATIGUE_MULTIPLIER's docstring in behavior_config.py.
+        rng_a = random.Random(97)
+        rng_b = random.Random(97)
+        notional_low, _ = decide_size("Bitcoin", "MID", "4th_plus", 0.5, rng_a,
+                                       real_fill_count=1)
+        notional_high, _ = decide_size("Bitcoin", "MID", "4th_plus", 0.5, rng_b,
+                                        real_fill_count=20)
+        assert notional_low == notional_high
+
+    def test_mid_reentry_fatigue_respects_the_per_instance_feature_flag(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_MID_REENTRY_FATIGUE_DAMPENER", False)
+        rng_a = random.Random(101)
+        rng_b = random.Random(101)
+        notional_low, _ = decide_size("Ethereum", "MID", "4th_plus", 0.5, rng_a,
+                                       real_fill_count=1)
+        notional_high, _ = decide_size("Ethereum", "MID", "4th_plus", 0.5, rng_b,
+                                        real_fill_count=20)
+        assert notional_low == notional_high, (
+            "with the flag off, MID re-entry fatigue must be a strict no-op"
+        )
+
     def test_combined_multiplier_cap_bounds_worst_case_compounding(self, monkeypatch):
         """FIXED 2026-09-12 (bug audit #4): each cross-market/time
         multiplier was fit MARGINALLY and none of them, individually,

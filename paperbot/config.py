@@ -717,6 +717,19 @@ ENABLE_BANKROLL_PNL_SIZE_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for MID_REENTRY_FATIGUE_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-13 (/loop iter 130) -- real,
+# confound-checked, temporally-stable finding that Ethereum/Solana MID-band
+# win rate drops sharply (not gradually) once a market has already had 5+
+# same-side real fills, i.e. the trade about to be placed would be the 6th+
+# addition. Unlike most multipliers here, this doesn't replicate an
+# observed real sizing pattern -- it's a deliberate risk dampener, same
+# spirit as ENABLE_CHEAP_REPRICE_CAP above. Default TRUE everywhere.
+ENABLE_MID_REENTRY_FATIGUE_DAMPENER = os.environ.get(
+    "ENABLE_MID_REENTRY_FATIGUE_DAMPENER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Hard cap on hedge_count. Added 2026-09-09, hours after
 # HEDGE_CONTINUATION_PROBABILITY shipped (behavior_config.py) let
 # decide_hedge fire more than once per market -- CONFIRMED LIVE this

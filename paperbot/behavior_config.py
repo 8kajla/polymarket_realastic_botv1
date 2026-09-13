@@ -1884,3 +1884,65 @@ def scout_probability(asset: str) -> float:
 
 def scout_size_ratio(asset: str) -> float:
     return SCOUT_SIZE_RATIO.get(asset, _DEFAULT_SCOUT_SIZE_RATIO)
+
+
+# ---------------------------------------------------------------------------
+# MID RE-ENTRY FATIGUE. Added 2026-09-13 (/loop iter 130): a market-OUTCOME
+# dose-response finding, not a replicated-sizing finding like every
+# multiplier above -- see the end of this comment for why that distinction
+# matters. In MID band, the more times he's already added to the SAME side
+# within one market, the lower that side's eventual win rate, with a sharp
+# cliff rather than a smooth decline. Real per-trade win rate by live
+# position index (real_fill_count BEFORE the trade about to be placed),
+# MID band only, TWAP-era, cross-asset:
+#   Ethereum: idx1=47.8%, idx2=47.3%, idx3=46.7%, idx4=45.6%, idx5=44.9%,
+#             idx6+=35.7%  (n=2,381/2,262/2,129/1,999/1,866/14,303)
+#   Solana:   idx1=45.0%, idx2=44.3%, idx3=43.3%, idx4=42.1%, idx5=40.3%,
+#             idx6+=31.0%  (n=2,770/2,661/2,527/2,369/2,206/19,907)
+#   Bitcoin:  idx1-5 flat ~48-49%, idx6+=44.3% -- present but far weaker,
+#             and fails the project's temporal-stability bar in its second
+#             half (z=1.96, just short of |z|>=2.58) -- deliberately
+#             excluded here, same treatment (and same underlying reason:
+#             his BTC behavior is tighter/more rule-following, leaving less
+#             room for a cross-cutting effect like this to show cleanly) as
+#             BANKROLL_PNL_SIZE_MULTIPLIER above.
+#
+# Confound-checked (2026-09-13): NOT explained by entry price drifting
+# toward 0.50 as idx grows -- mean distance-from-0.5 is ~identical between
+# high- and low-idx groups (~0.10 both ways), and the partial correlation
+# controlling for it barely moves (ETH -0.182 -> -0.178, SOL -0.213 ->
+# -0.212). Distinct from the retracted "size_vs_own_prior_trade" and
+# "diminishing increments" threads (both were about SIZE, retracted for
+# regime/total-trades-in-market composition reasons that don't apply here,
+# since this is keyed on the LIVE index as the trade is placed, not a
+# post-hoc final total only knowable after the market closed). Temporally
+# stable both halves for Ethereum (z=7.55/8.77) and Solana (z=11.06/9.80).
+#
+# UNLIKE every multiplier above, this isn't calibrated to replicate an
+# observed real sizing pattern -- there's no evidence he actually sizes
+# down at idx6+ himself. This is a deliberate risk-management dampener for
+# the paper bots specifically, in the same spirit as MAX_CHEAP_REPRICES
+# (config.py): both stop leaning further into a zone real outcomes show is
+# reliably worse, rather than mimicking an unobserved real behavior.
+# Multiplier values are the measured idx6+/idx1-5-average win-rate ratio
+# per asset (ETH: 35.7/46.5=0.767, rounded; SOL: 31.0/43.0=0.721, rounded),
+# i.e. scale the stake down roughly in proportion to the demonstrated drop
+# in edge, not an arbitrarily chosen cut.
+MID_REENTRY_FATIGUE_THRESHOLD = 5  # real_fill_count >= this -> about to place idx 6+
+MID_REENTRY_FATIGUE_MULTIPLIER = {
+    "Ethereum": 0.77,
+    "Solana": 0.72,
+}
+
+
+def mid_reentry_fatigue_multiplier(asset: str, regime: str,
+                                    real_fill_count: Optional[int]) -> float:
+    """1.0 (no-op) outside MID band, for Bitcoin/dormant assets, or before
+    the fatigue threshold is reached. See the module-level comment above
+    MID_REENTRY_FATIGUE_MULTIPLIER for the full derivation and why this is
+    a deliberate risk dampener rather than a replicated-sizing curve."""
+    if regime != "MID" or real_fill_count is None:
+        return 1.0
+    if real_fill_count < MID_REENTRY_FATIGUE_THRESHOLD:
+        return 1.0
+    return MID_REENTRY_FATIGUE_MULTIPLIER.get(asset, 1.0)

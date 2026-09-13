@@ -423,7 +423,8 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
                  rng: random.Random, seconds_remaining: Optional[float] = None,
                  hours_since_resumption: Optional[float] = None,
                  size_momentum_residual: Optional[float] = None,
-                 bankroll_pnl_residual: Optional[float] = None) -> tuple[float, bool]:
+                 bankroll_pnl_residual: Optional[float] = None,
+                 real_fill_count: Optional[int] = None) -> tuple[float, bool]:
     """
     Returns (notional_usd, is_floor_lot). Rolls the floor-lot tier first for
     assets where it's modeled (Part 4); falls back to the normal
@@ -431,10 +432,10 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     the confirmed median, since only medians -- not full distributions --
     were measured.
 
-    seconds_remaining, hours_since_resumption, size_momentum_residual, and
-    bankroll_pnl_residual are all Optional (default None -> no-op) so
-    every existing call site/test that doesn't pass them keeps working
-    unchanged.
+    seconds_remaining, hours_since_resumption, size_momentum_residual,
+    bankroll_pnl_residual, and real_fill_count are all Optional (default
+    None -> no-op) so every existing call site/test that doesn't pass them
+    keeps working unchanged.
     """
     floor_p = bc.floor_lot_probability(asset, regime, position_tier)
     if floor_p > 0 and rng.random() < floor_p:
@@ -518,8 +519,18 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # bot-wide, not per-market -- see bot.py's _hours_since_resumption.
     resumption_mult = bc.resumption_size_multiplier(hours_since_resumption) \
         if config.ENABLE_RESUMPTION_SIZE_MULTIPLIER else 1.0
+    # MID RE-ENTRY FATIGUE (2026-09-13 finding): unlike every multiplier
+    # above, this isn't calibrated to replicate observed real sizing -- it's
+    # a deliberate risk dampener once a MID-band market has already had 5+
+    # same-side real fills (the trade about to be placed would be the 6th+
+    # addition), where real outcomes are reliably worse. See
+    # MID_REENTRY_FATIGUE_MULTIPLIER's docstring in behavior_config.py for
+    # the full derivation, confound checks, and why Bitcoin is excluded.
+    reentry_fatigue_mult = bc.mid_reentry_fatigue_multiplier(asset, regime, real_fill_count) \
+        if config.ENABLE_MID_REENTRY_FATIGUE_DAMPENER else 1.0
     # COMBINED-MULTIPLIER SAFETY BOUND (2026-09-12, bug audit #4): each of
-    # within_band/momentum_mult/bankroll_mult/ttc_mult/resumption_mult was
+    # within_band/momentum_mult/bankroll_mult/ttc_mult/resumption_mult/
+    # reentry_fatigue_mult was
     # fit MARGINALLY -- controlling for other already-known variables
     # individually at build time -- but their PRODUCT has never been
     # validated against his real observed size distribution as a joint
@@ -541,7 +552,8 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # cap (each ~3.0x) -- real, uncorrelated effects compounding somewhat
     # is expected and legitimate; this only stops the worst-case scenario
     # of every factor aligning in the same direction at once.
-    combined_signal = within_band * momentum_mult * bankroll_mult * ttc_mult * resumption_mult
+    combined_signal = (within_band * momentum_mult * bankroll_mult * ttc_mult
+                        * resumption_mult * reentry_fatigue_mult)
     cap = config.COMBINED_SIZE_MULTIPLIER_CAP
     combined_signal = max(1.0 / cap, min(cap, combined_signal))
     # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a
@@ -774,13 +786,15 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                                                   seconds_remaining=seconds_remaining,
                                                   hours_since_resumption=hours_since_resumption,
                                                   size_momentum_residual=size_momentum_residual,
-                                                  bankroll_pnl_residual=bankroll_pnl_residual)
+                                                  bankroll_pnl_residual=bankroll_pnl_residual,
+                                                  real_fill_count=activity.real_fill_count)
     else:
         notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
                                               seconds_remaining=seconds_remaining,
                                               hours_since_resumption=hours_since_resumption,
                                               size_momentum_residual=size_momentum_residual,
-                                              bankroll_pnl_residual=bankroll_pnl_residual)
+                                              bankroll_pnl_residual=bankroll_pnl_residual,
+                                              real_fill_count=activity.real_fill_count)
 
     is_scout = False
     if not is_hedge and not is_floor_lot and activity.entry_count == 0:
