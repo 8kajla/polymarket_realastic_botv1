@@ -5284,3 +5284,39 @@ Full investigation requested by the user into whether live spot-price momentum c
 4. **Tested the safer alternative — Polymarket's own contract price momentum** (zero new dependency, matches revealed behavior) using a freshly-fetched, properly-scoped sample (4,949 post-TWAP BTC markets, no price restriction, via `clob.polymarket.com/prices-history`): natural alignment rate CHEAP 17.6%/MID 54.3%; predicts win rate in MID only (z=3.77, borderline temporal stability both halves ~2.5) and NOT in CHEAP (z=1.29, null). Roughly 4x weaker than the external-spot MID effect (z=14-22) and doesn't touch CHEAP at all.
 
 **Decision: do not build.** Every version examined is either too weak to justify a side-selection architecture change (contract price) or requires deliberately replicating a mechanism he doesn't use (external feed) for an edge that STILL wouldn't fix the original CHEAP problem this investigation was trying to solve. This closes the "live momentum wiring" item that was previously left ON HOLD — now it's TESTED AND REJECTED, not just deferred. The original CHEAP first-entry edge gap remains real and still needs a different explanation.
+
+## 2026-09-13 (continued): Item 3 shipped — hedge-propensity-after-a-big-loss
+
+Diagnosed and fixed the 8 remaining test failures left over from wiring
+`after_big_loss` through `decide_hedge`/`build_order_intent`: all 8 were
+mock-lambda/spy-function signature mismatches missed by the first global
+replace (it only caught single-line lambdas with one exact whitespace
+pattern; `def spy_decide_hedge(...)` blocks and a few differently-
+indented multiline lambdas in test_strategy.py and test_bot.py were
+missed). No real bug in the bot.py/strategy.py wiring itself — all 8
+were test-fixture staleness, not production issues.
+
+Added the missing test coverage flagged as pending: TestHedgeTrigger-
+AfterBigLossMultiplier (behavior_config.py), TestDecideHedgeAfterBigLoss-
+Multiplier + a build_order_intent pass-through test (strategy.py), and
+TestIsTopDecileLoss + TestAfterBigLossTracking (bot.py, including the
+resolution_tick end-to-end wiring and the reset-after-a-win case). Full
+suite: 491/491 passing.
+
+Committed (b96dfb8), pushed, deployed. Discovered on deploy that the
+server was still on db22100 (only item 1's commit) — item 2 (0ddbcd8,
+hedge-count-reinforcement tier 2) had never actually been deployed
+despite being committed earlier this session. Both items 2 and 3 landed
+together in this one fast-forward pull. Both paperbot and paperbot-100
+restarted cleanly, verified via journalctl (normal PLACE/BUMP/PNL_SUMMARY
+lines on both, no errors).
+
+All three of the four "build everything" items are now shipped and live:
+1. Hedge-specific TTC/urgency sizing (db22100)
+2. Hedge-count reinforcement, 2-tier (0ddbcd8)
+3. Hedge-propensity after a big loss (b96dfb8)
+
+Remaining: item 4 (cross-asset entry/hedge trigger — architecturally the
+most involved, needs a new sub-100%-baseline attempt-gate design), the
+full multiplier-interaction code audit, and the new standalone "coinbase
+bot" instance. Moving to item 4 next.
