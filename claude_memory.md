@@ -940,3 +940,127 @@ not a build. If ever revisited, the real gap is that the bot
 OVER-clusters vs. the trader (an execution-architecture question — some
 form of deliberate staggering — not a decision-probability one), which
 is a materially different and much larger project than a multiplier.
+
+**ROOT-CAUSE investigation of the standing CHEAP first-entry edge gap
+(2026-09-13, fresh 6-day re-check + new angle).** Re-confirmed the gap is
+real and current, not stale: over the last 6 days, real trader CHEAP
+first-entry edge (won-price) = +0.0239 (n=1684); paperbot = -0.0163
+(n=802); paperbot-100 = -0.0348 (n=637). **Ruled out this pass:**
+(1) price-level composition -- our bots enter CHEAP at a lower average
+price (0.147-0.148 vs his 0.182), but re-testing edge within NARROW
+price buckets (0.05-wide) shows we're still worse than him in nearly
+every bucket, not just in aggregate -- not a composition artifact.
+(2) momentum-alignment difference -- surprising new finding: the real
+trader's CHEAP first-entry side is actually ANTI-aligned with real
+3-min Coinbase spot momentum 93.3% of the time (only 6.7% aligned;
+aligned wins 50.7% vs against 17.0%, replicating the earlier validated
+"aligned wins more" shape) -- i.e. he's NOT more momentum-aligned than
+us (our bots sit near 46-53%, chance-level, as expected from a
+momentum-blind mechanism) -- if anything this cuts the wrong direction
+to explain OUR underperformance, so momentum-alignment differences are
+NOT the driver. (3) execution/reprice adverse-selection -- even
+SINGLE-FILL CHEAP entries (no reprice chase at all) show the same
+negative edge (paperbot -0.0418 n=216, paperbot-100 -0.0255 n=150) --
+rules out reprice-driven adverse selection as the primary cause.
+
+**Most-supported contributing factor found:** CROSS_MARKET_SIDE_
+PERSISTENCE (implemented 06304be) was calibrated to match the trader's
+raw REVEALED FREQUENCY of repeating his previous first-entry side
+(validated via Wald-Wolfowitz runs test as a real behavioral pattern),
+but this was never checked for whether "persisting" actually predicts
+WINNING, specifically within CHEAP. Fresh 30-day check: in CHEAP,
+persisting beats switching in 5 of 6 (asset, after_win/after_loss)
+cells, often by a large margin (ETH after_win: persist 21.6% vs switch
+17.9%; SOL after_loss: persist 23.2% vs switch 18.7%) -- the lone
+exception is Solana after a win (switch 23.8% vs persist 22.2%). But
+the deployed after_win persistence rates are all near a coin flip
+(BTC 51.48%, Solana 48.12%, **Ethereum 46.75% -- actually below 50%,
+favoring switch, the WRONG direction given ETH's own CHEAP data**) --
+meaning our bot forfeits a real, available CHEAP edge by
+switching/persisting at his AGGREGATE frequency instead of at the rate
+that would actually predict a win. Replicating a habit isn't the same
+as replicating an edge: his real switches may be driven by contemporary
+information we don't model, so borrowing only his frequency (not his
+case-by-case reasoning) loses the informative correlation.
+
+**Concrete instrumentation gap blocking full closure**: the bot's own
+ledger (SettlementRecord) has no entry-placement timestamp and no
+TTC-at-entry field, so the TTC-composition hypothesis (does our bot
+enter CHEAP markets at different points in the 5-min window than he
+does, at the same displayed price, which could carry a different true
+win probability) cannot be tested on our own data. Checked what CAN be
+tested -- the real trader's OWN CHEAP edge split by TTC bucket
+(early >150s vs late <=150s remaining) shows no strong, consistent
+within-price-bucket difference, tempering (not ruling out) this
+hypothesis. Recommended next steps: (1) recalibrate CROSS_MARKET_SIDE_
+PERSISTENCE with a CHEAP-specific (or fully regime-split) table target-
+ing "does this choice predict a win" rather than "matches his aggregate
+frequency" -- ETH's after-win rate is the clearest, most actionable fix;
+(2) add a placement timestamp to SettlementRecord (same additive
+pattern as the fills-per-order fix) to finally test TTC composition on
+our own data. Neither implemented yet -- flagged for the user to decide
+whether to proceed. Full methodology (6 scripts) in `claude_logs.md`.
+
+**MAJOR FINDING (2026-09-13): SIDE_PERSISTENCE — one of the EARLIEST,
+most foundational calibration tables (built 2026-09-08, governs every
+2nd+ entry in every market) — was validated with a confounded
+methodology and shows ~ZERO real predictive value once corrected.**
+User explicitly asked to re-audit whether earlier foundational work was
+ever validated correctly, rather than only building on top of it. This
+is the concrete result.
+
+Original build claimed: "TRADER_PROFILE.md section 8 confirmed a real,
+NON-CONFOUNDED win-rate difference by (regime, persist-vs-switch)" --
+keyed by the regime the HELD (previous) side was trading in. Re-derived
+this exact framing fresh (30-day window): raw persist-vs-switch win
+rate differences by HELD-side regime are enormous (e.g. Bitcoin CHEAP:
+persist 17.3% vs switch 83.5%, a 66pp gap; HIGH: persist 96.2% vs
+switch 9.3%, an 87pp gap) -- but this is now confirmed to be a
+textbook CHEAP/HIGH-complementarity confound: switching AWAY from a
+CHEAP-priced held side mechanically lands you near the COMPLEMENTARY
+(roughly 1-price) HIGH-priced side, which wins far more often simply
+because it's priced as the favorite -- nothing to do with persist vs
+switch being a real signal. This is the exact same class of confound
+this project has independently caught and guarded against in many
+LATER multipliers (regime-composition, price-gradient, etc.) -- just
+never applied retroactively to this very first one.
+
+Re-ran PROPERLY controlled (bucketed by the CURRENT/resulting entry's
+own price regime, so persist and switch land in the SAME price band --
+matching the sound methodology used elsewhere in this project): 11 of
+12 (asset, regime) cells show NO significant difference (|z|<2.58,
+mostly |z|<2); the one exception (Ethereum/MID, z=-2.74, switch wins
+4.7pp more) is small and in the OPPOSITE direction SIDE_PERSISTENCE
+currently implements. **Conclusion: persisting vs switching the
+CURRENTLY HELD side carries ~no real predictive value for winning, once
+price is held constant.** SIDE_PERSISTENCE's strong regime-dependent
+probabilities (e.g. 79-96% keep-rates in some cells) accurately
+replicate a REAL, large behavioral FREQUENCY (he really does persist
+that often) -- but this is pure STYLE, not an EDGE. It was built and has
+been trusted for 5 days as if it mattered for win-rate replication
+fidelity; it doesn't (for good or ill -- it's win-rate-neutral, so it
+isn't itself the cause of the CHEAP negative edge, but the project's
+working assumption about it was wrong).
+
+**Distinguish this from the CROSS_MARKET_SIDE_PERSISTENCE finding
+earlier today** (different, later, newer mechanism -- governs only a
+market's FIRST entry when there's no held side yet): that one DOES show
+a real, properly-controlled (by the CURRENT entry's own price band, not
+confounded) signal in CHEAP -- persisting the cross-market side
+genuinely predicts more wins in 5/6 cells -- but our calibration
+under-uses it (ETH's after-win rate is near a coin flip when it should
+favor persist). So of the project's two side-persistence mechanisms:
+the newer cross-market one is REAL but under-calibrated; the original,
+foundational same-market one is a confound with no real signal at all.
+
+**Implication for the "who's the root cause" question**: this doesn't
+directly explain why our CHEAP edge is NEGATIVE (a null/neutral effect
+should average out, not tilt negative) -- but it's hard evidence the
+project's foundational behavioral model was accepted without adequate
+scrutiny, exactly the failure mode the user flagged. A full re-audit of
+every side-selection-relevant foundational assumption (not just sizing
+multipliers, which don't affect win rate) is warranted before trusting
+anything else in decide_side/decide_hedge's core logic. Not yet re-
+calibrated or changed in code -- flagged for explicit user decision on
+how to proceed (recalibrate SIDE_PERSISTENCE toward neutral/50%,
+re-audit decide_hedge's core premise next, or something else).
