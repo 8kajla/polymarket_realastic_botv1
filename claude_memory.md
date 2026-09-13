@@ -1665,3 +1665,24 @@ worth checking each one systematically.
 actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
 4 methodology bugs found-and-corrected, across 22 /loop cycles.** See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 23, same day): closed the real_fill_count index-bug investigation
+
+Checked every consumer of real_fill_count/real_hedge_fill_count in
+strategy.py: position_tier_for_index (HAD the bug, fixed 20-21),
+reentry_fatigue_multiplier (HAD the bug, fixed 22), hedge_attempt_hazard
+(NOT affected -- only called when real_hedge_fill_count==0, so
+real_fill_count trivially equals same-side-count at that point, no
+divergence possible), hedge_count_reinforcement_multiplier (NOT
+affected -- live_hedge_count is a genuinely separate hedge-only
+counter, cycle 11's original methodology already matched it correctly).
+
+No code changes -- a confirmation/closure pass. This closes the
+investigation cycle 21 opened: exactly 2 of 4 consumers were buggy,
+both now fixed; the other 2 are structurally immune, not just
+unchecked.
+
+**Running tally: 19 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
+4 methodology bugs found-and-corrected, across 23 /loop cycles.** See
+[[full-behavioral-audit-tracker]].

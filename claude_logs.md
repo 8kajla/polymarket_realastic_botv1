@@ -7394,3 +7394,64 @@ REINFORCEMENT` (keyed on `live_hedge_count`, a different but related
 counter) and any other real_fill_count/hedge-count-keyed table for the
 same class of mistake, rather than assuming only these two were
 affected.
+
+## 2026-09-13: /loop cycle 23 (same day) — closed the real_fill_count index-bug investigation, no further tables affected
+
+Followed through on cycle 22's own flagged next step: check every
+remaining consumer of `real_fill_count`/`real_hedge_fill_count` in
+`strategy.py` for the same index-semantics bug found in `ENTRY_SIZING_
+USD` (cycle 21) and `REENTRY_FATIGUE` (cycle 22), rather than assuming
+those were the only two affected.
+
+Grepped `strategy.py` for every call site passing either counter into
+a `behavior_config` function and checked each one individually:
+
+- `position_tier_for_index(self.real_fill_count)` — the ENTRY_SIZING_USD
+  consumer. HAD the bug, already fixed (cycles 20-21).
+- `reentry_fatigue_multiplier(asset, regime, real_fill_count)` — HAD
+  the bug, already fixed (cycle 22).
+- `hedge_attempt_hazard(asset, activity.first_entry_regime, activity.
+  real_fill_count)` — checked, confirmed NOT affected. This call site
+  (in `decide_hedge`) only fires when `activity.real_hedge_fill_count
+  == 0` — i.e. no hedge has happened yet anywhere in the market at the
+  moment it's evaluated. Since `real_fill_count` only diverges from a
+  same-side-only count BECAUSE hedge fills also advance it, and there
+  are, by construction, zero hedge fills at this specific decision
+  point, `real_fill_count` and "count of same-side fills so far" are
+  IDENTICAL here — there's no divergence for a bug to hide in. The
+  gating condition makes this call site structurally immune, not just
+  luckily unaffected.
+- `hedge_count_reinforcement_multiplier(asset, regime, live_hedge_count)`
+  where `live_hedge_count = activity.real_hedge_fill_count` — checked,
+  confirmed NOT affected. `real_hedge_fill_count` is a genuinely
+  SEPARATE counter from `real_fill_count` (confirmed in `bot.py`'s
+  `record_real_fill(is_hedge)`: it increments `real_hedge_fill_count`
+  ONLY when `is_hedge=True`, as an addition on top of the unconditional
+  `real_fill_count += 1`). Cycle 11's original recalibration
+  methodology (incrementing its own index only on opposite-side/hedge
+  fills) was already the CORRECT match for what this counter actually
+  measures — there was never an index-semantics bug here, only the
+  separate, already-addressed underpowering question from cycle 18
+  (re-confirmed then, verdict unchanged, not a bug to fix).
+
+**This closes the investigation cycle 21 opened**: of the 4 places
+`real_fill_count`/`real_hedge_fill_count` feed into a calibration
+table, exactly 2 had the bug (both now fixed) and the other 2 are
+confirmed structurally immune — not "not yet gotten to," but verified
+to be safe by the actual mechanics of when they're called or what
+counter they read. No further tables in this family need auditing for
+this specific mistake.
+
+No code changes this cycle — this was a confirmation/closure pass, not
+a fix, and is documented here specifically so this line of
+investigation isn't mistakenly re-opened without new cause in some
+future cycle (the two "not affected" conclusions are backed by a
+structural argument, not just an absence of evidence).
+
+**Running tally: 19 tables recalibrated or retired, plus 2 confirmed-
+not-actionable, 1 checked-with-insufficient-rigor, 1 architecture gap
+closed, and 4 methodology bugs found-and-corrected, across 23 /loop
+cycles** — with this cycle adding a clean closure to the most recent
+bug-class investigation rather than a fifth fix, which is itself a
+useful, honest outcome: not every "check if this bug is more
+widespread" pass has to find something new to be worth doing.
