@@ -8051,3 +8051,54 @@ CHEAP/MID hedge value-destruction pattern -- that remains open, to be
 re-assessed once enough post-fix data accumulates on the freshly-reset
 paperbot-100 and on the main paperbot's Bitcoin hedge P&L going
 forward.
+
+## 2026-09-13: DECISIVENESS_ONSET_MULTIPLIER shipped -- the one survivor of a 3-candidate "build what's 100% sure" pass
+
+User asked to build everything confirmed-real-but-unbuilt, with proper
+research before creating anything. Went through the 3 candidates from
+the accumulated gaps list:
+
+**GRADIENT_BIAS_PCT** -- already known inconclusive from earlier the
+same day (window sweep + spot-price test), excluded.
+
+**Ladder-price-direction (BTC adds to strength, ETH/SOL averages down)**
+-- RETRACTED before building. Split the correlation by whether his held
+side eventually won or lost: every asset shows the IDENTICAL pattern
+(strongly positive in won markets, strongly negative in lost ones) --
+a binary market's price mechanically converges toward 1 or 0 as it
+resolves, regardless of asset. The "asset divergence" in the
+unconditional aggregate was purely each asset's different win rate
+mixing these two mechanical patterns in different proportions. Second
+finding this project has caught as a mechanical-convergence artifact
+(after GRADIENT_BIAS_PCT). Not built.
+
+**Decisiveness-onset gate** -- survived. Refreshed with 35h of dense
+CLOB-book data (up from 19.5h): now well-powered cross-asset (Bitcoin
+n=433, Ethereum n=64 early entries -- Ethereum was too thin before).
+Then ran the ceiling-effect confound check this deserved before
+building (early entries are structurally capped at a smaller max-
+possible delay than late ones, since a crossing must precede the
+entry) -- the effect survives when delay is expressed as a FRACTION of
+time actually available at the crossing, not a raw second count. This
+changed the deployable model from "fixed ~34-92s delay" to "delay
+scales with time remaining," which is what got built.
+
+Implementation: MarketActivityState gained up/down_decisive_crossed_at
+(locks on first crossing like first_entry_price, persisted via the
+already-existing save/load machinery with zero changes needed --
+verified via a direct round-trip test). bot.py's _evaluate_one_market
+updates these every tick. behavior_config.decisiveness_onset_multiplier
+looks up a per-asset bucketed table (density ratio vs a flat null,
+capped [0.5, 2.0]) keyed by fraction-of-remaining-time-consumed, gated
+behind ENABLE_DECISIVENESS_ONSET_MULTIPLIER (default true). Wired into
+decide_size's existing multiplier chain.
+
+25 new tests, 570/570 passing. Deployed to all 3 bots. **Verified live
+on the production server, not just in unit tests**: caught a real
+market (eth-updown-5m-1789321500) recording a genuine crossing
+timestamp (up_decisive_crossed_at=1789321534.71) that persisted
+correctly to disk via the next resolution-triggered save, while a
+different market (btc-updown-5m-1789321200) resolved and was correctly
+removed from tracking in the same window -- both pieces of the
+persistence + retirement machinery from earlier today's fixes working
+together correctly with the new feature.
