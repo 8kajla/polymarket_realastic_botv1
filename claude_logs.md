@@ -7455,3 +7455,87 @@ cycles** — with this cycle adding a clean closure to the most recent
 bug-class investigation rather than a fifth fix, which is itself a
 useful, honest outcome: not every "check if this bug is more
 widespread" pass has to find something new to be worth doing.
+
+## 2026-09-13: /loop cycle 24 — investigated recurring WS "slow consumer" disconnects, confirmed safe (not a code bug), plus a live post-fix sanity check
+
+With today's calibration-table audit leads exhausted (the real_
+fill_count index-bug family closed out in cycle 23), stepped back and
+did a broader operational sanity check on all 3 running bots — not
+just "do the tests pass" but "is the live system actually healthy"
+after today's 4 methodology corrections (cycles 18, 20, 21, 22).
+
+**Found a real, recurring pattern worth investigating**: `websockets.
+exceptions.ConnectionClosedError: received 1013 (try again later)
+slow consumer: send buffer full`, occurring 6-11 times per hour on
+each of the 3 bots, 812 total occurrences visible in the current
+boot's journal, with the earliest instance dating back to 2026-09-10 —
+well before this `/loop` even started, so not something introduced by
+any of today's (or this session's) changes.
+
+**Investigated properly rather than either ignoring it or assuming a
+fix was needed**:
+- First checked whether this failure mode is even handled: found
+  `_ws_supervisor` in `bot.py`, an existing reconnect loop with
+  exponential backoff (1s doubling to a 30s cap). Its own docstring
+  already documents this exact scenario as a deliberately safe
+  degradation path: "A dropped connection halts nothing by itself --
+  book state simply goes stale, which the availability check
+  (spread/depth) will naturally reject." In other words, the system
+  was designed from the start to treat a WS drop as "stop trading on
+  affected markets until data is fresh again," not as a correctness
+  risk.
+- Checked whether the bot's OWN message-handling code could be slow
+  enough to starve the WS reader task of scheduling time (the classic
+  cause of a "slow consumer" disconnect from the client side):
+  `route_message`/`_route_one` in `book.py` do pure, fast, synchronous
+  JSON parsing and in-memory `BookState` updates — no I/O, no blocking
+  calls, not a plausible bottleneck.
+- Checked every OTHER place in `bot.py` that does network I/O
+  (`fetch_active_markets`, `bootstrap_book_state`, `fetch_book_
+  snapshot`, `fetch_market_for_resolution`, `MarketDiscovery.poll()`)
+  and confirmed every single one is correctly wrapped in `asyncio.
+  to_thread(...)` — meaning none of them can block the asyncio event
+  loop (and therefore can't starve the WS reader task either). Found
+  no blocking-call bug anywhere in the codebase that would explain or
+  contribute to this.
+
+**Verdict: confirmed safe as currently designed, not a fixable code
+bug given what this investigation could establish.** The most likely
+explanations are either Polymarket's own CLOB WS gateway applying a
+slow-consumer disconnect policy under real message volume (plausible
+given 3 separate bot processes each maintain their own independent
+connection to the same feed), or ordinary EC2-level scheduling
+variance — neither of which this session can root-cause further
+without either vendor-side visibility into their gateway's own
+thresholds, or much deeper systems-level profiling (thread-pool
+saturation, GC pause timing) that's a different kind of investigation
+entirely from the calibration-table research this session has focused
+on. The EXISTING mitigation (auto-reconnect with backoff, plus
+deliberately safe degradation to stale-book-rejection rather than
+trading on bad data) is sound and already doing the right thing. No
+code change was made — shipping a "fix" for something that turns out
+not to be a code bug on closer inspection would be exactly the kind of
+unforced, unvalidated change this whole session has tried to avoid
+(the same discipline that led cycle 14 to leave ADVERSE_MOVE_HEDGE_
+TRIGGER_MULTIPLIER unchanged rather than ship a possibly-artifactual
+recalibration).
+
+**Also did a live sanity check on order sizes**, specifically because
+today involved 4 separate methodology corrections compounding on top
+of each other across `ENTRY_SIZING_USD` and `REENTRY_FATIGUE` — wanted
+direct evidence, not just an assumption, that nothing had gone
+pathological. Pulled the last 100 `PLACE order` log lines from
+`paperbot` and computed the size distribution: min=5.00, p25=5.00,
+median=5.76, p75=9.18, max=272.96 — a sane, expected-looking spread
+with no runaway or degenerate sizing. Confirmed `NRestarts=0` at the
+systemd level for `paperbot` as well, meaning none of today's changes
+have caused a crash loop or instability at the process level.
+
+**Running tally: 19 tables recalibrated or retired, plus 2 confirmed-
+not-actionable, 1 checked-with-insufficient-rigor, 1 architecture gap
+closed, 4 methodology bugs found-and-corrected, and now 1 infra issue
+properly investigated and confirmed safe, across 24 /loop cycles.**
+This cycle is a useful reminder that "keep researching each cause and
+fixing it" sometimes means confirming there's nothing left TO fix in a
+given area after real investigation — a verdict earned by checking,
+not assumed for convenience.

@@ -1686,3 +1686,31 @@ unchecked.
 actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
 4 methodology bugs found-and-corrected, across 23 /loop cycles.** See
 [[full-behavioral-audit-tracker]].
+
+## 2026-09-13 (loop cycle 24): investigated recurring WS "slow consumer" disconnects -- confirmed safe, not a code bug
+
+Live sanity check on all 3 bots found a recurring pattern: websocket
+"slow consumer: send buffer full" disconnects, 6-11/hour/bot, 812
+occurrences total, dating to Sep 10 (predates this /loop). Investigated
+properly rather than dismissing: confirmed a reconnect-with-backoff
+supervisor already exists and documents this exact failure mode as
+safe-by-design (stale book -> availability check naturally rejects
+trading, not silent bad decisions). Checked the WS message handler
+(fast, no I/O) and every network call in the codebase (all correctly
+wrapped in asyncio.to_thread) -- no blocking-call bug found anywhere.
+
+Verdict: confirmed safe as-is, likely Polymarket's own gateway policy
+or EC2 scheduling variance, not something fixable without vendor-side
+visibility. No code change -- shipping a fix for something that isn't
+actually a code bug would be exactly the unforced change this session
+has tried to avoid.
+
+Also confirmed live order sizes are sane post today's 4 methodology
+fixes (median $5.76, no runaway sizing) and no bot restarts -- today's
+compounding calibration changes haven't destabilized anything.
+
+**Running tally: 19 tables recalibrated/retired + 2 confirmed-not-
+actionable + 1 checked-with-insufficient-rigor + 1 architecture gap +
+4 methodology bugs found-and-corrected + 1 infra issue investigated-
+and-confirmed-safe, across 24 /loop cycles.** See
+[[full-behavioral-audit-tracker]].
