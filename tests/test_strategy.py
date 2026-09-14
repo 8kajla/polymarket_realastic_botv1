@@ -925,16 +925,39 @@ class TestMarketActivityStateHedgeTracking:
         assert activity.cost_by_side["Up"] == 15.0
         assert activity.cost_by_side["Down"] == 2.0
 
-    def test_first_entry_regime_locked_on_first_call_only(self):
+    # CHANGED 2026-09-14: record_entry's first_entry_* capture gate moved
+    # from entry_count == 0 to real_fill_count == 0 (see MarketActivityState's
+    # docstring) -- a market whose first placement never actually fills has
+    # no analogue in the trader's own trade log, so a second record_entry()
+    # call with no real fill in between now correctly RE-captures rather
+    # than locking onto the never-filled attempt. Locking now happens once a
+    # real fill occurs (record_real_fill), not merely once a second
+    # placement is attempted -- see the two tests below for both halves of
+    # that behavior.
+    def test_first_entry_regime_recaptures_until_a_real_fill_happens(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="HIGH")  # placed, never filled
+        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP")  # retry after cancellation
+        assert activity.first_entry_regime == "CHEAP"
+
+    def test_first_entry_regime_locked_once_a_real_fill_happens(self):
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="HIGH")
-        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP")
+        activity.record_real_fill(is_hedge=False)  # the HIGH entry actually filled
+        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP", is_hedge=True)
         assert activity.first_entry_regime == "HIGH"
 
-    def test_first_entry_price_locked_on_first_call_only(self):
+    def test_first_entry_price_recaptures_until_a_real_fill_happens(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="HIGH", price=0.95)  # never fills
+        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP", price=0.05)  # retry
+        assert activity.first_entry_price == 0.05
+
+    def test_first_entry_price_locked_once_a_real_fill_happens(self):
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="HIGH", price=0.95)
-        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP", price=0.05)
+        activity.record_real_fill(is_hedge=False)
+        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP", price=0.05, is_hedge=True)
         assert activity.first_entry_price == 0.95
 
     def test_first_entry_price_defaults_to_none_when_not_passed(self):
@@ -2508,8 +2531,8 @@ class TestBuildOrderIntentScout:
     """SCOUT: a deliberately small, tentative FIRST entry -- the gap
     decide_hedge structurally can never close (dominant_side() needs at
     least one prior entry to exist, so decide_hedge always returns None at
-    entry_count==0). See SCOUT_PROBABILITY/SCOUT_SIZE_RATIO's docstring in
-    behavior_config.py."""
+    real_fill_count==0). See SCOUT_PROBABILITY/SCOUT_SIZE_RATIO's docstring
+    in behavior_config.py."""
 
     def test_forced_scout_shrinks_the_first_entry_below_the_ordinary_curve(self, monkeypatch):
         market = make_market(end_time=1000.0, asset="Bitcoin")
@@ -2541,7 +2564,11 @@ class TestBuildOrderIntentScout:
         up_book = make_liquid_book(price=0.20, token_id="up")
         down_book = make_liquid_book(price=0.79, token_id="down")
         activity = MarketActivityState()
-        activity.record_entry("Up", notional_usd=5.0, regime="CHEAP")  # entry_count now 1
+        # CHANGED 2026-09-14: a REAL fill, not just a placement (see
+        # MarketActivityState's docstring -- the scout gate now reads
+        # real_fill_count, not entry_count). record_filled_entry mirrors
+        # bot.py calling record_real_fill once an order actually fills.
+        record_filled_entry(activity, "Up", notional_usd=5.0, regime="CHEAP")  # real_fill_count now 1
 
         monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: None)
         monkeypatch.setattr(bc, "scout_probability", lambda asset: 1.0)  # would always fire if reachable
@@ -2549,6 +2576,28 @@ class TestBuildOrderIntentScout:
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
         assert intent is not None
         assert intent.is_scout is False
+
+    def test_scout_still_reachable_after_a_placement_that_never_filled(self, monkeypatch):
+        """CHANGED 2026-09-14 (root-cause fix, see MarketActivityState's
+        docstring): a market whose first order was placed and then
+        cancelled/expired unfilled has real_fill_count still 0 -- the
+        trader's own trade log has no record of that attempt at all, so a
+        retry is his true first entry and remains scout-eligible. Under the
+        old entry_count-based gate this retry permanently lost scout
+        eligibility the moment ANYTHING was placed, filled or not."""
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.79, token_id="down")
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=5.0, regime="CHEAP")  # placed, never filled
+        activity.release_unfilled("Up", 5.0)  # cancelled before any fill (entry_count stays 1)
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: None)
+        monkeypatch.setattr(bc, "scout_probability", lambda asset: 1.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+        assert intent is not None
+        assert intent.is_scout is True
 
     def test_scout_does_not_stack_with_a_floor_lot_roll(self, monkeypatch):
         market = make_market(end_time=1000.0, asset="BNB")  # BNB/CHEAP/first has a real floor-lot rate

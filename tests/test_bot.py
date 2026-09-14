@@ -260,13 +260,43 @@ class TestCrossMarketFeedbackTracking:
         assert market.condition_id in bot.resting_order_ids
         assert "Bitcoin" in bot.ewma_size_residual_by_asset
 
-    def test_second_entry_does_not_move_the_size_momentum_ewma(self):
+    def test_second_placement_still_moves_the_ewma_when_the_first_never_filled(self):
+        # CHANGED 2026-09-14 (root-cause fix, see MarketActivityState's
+        # docstring in strategy.py): is_first_entry now reads
+        # real_fill_count, not entry_count. This test never simulates a
+        # fill for the first placement (no manage_orders_tick call), so
+        # real_fill_count stays 0 into the 2nd tick -- is_first_entry is
+        # STILL True, and the EWMA (an is_first_entry-gated update) legally
+        # updates again, matching what should happen for a market whose
+        # first attempt was cancelled/never filled before a retry.
         bot = PaperBot(assets=["Bitcoin"], seed=9)
         market = make_market_for_asset("Bitcoin")
         wire_market(bot, market, bid=0.50, ask=0.51, depth=200.0)
         asyncio.run(bot.strategy_tick(now=1000.0))
         assert market.condition_id in bot.resting_order_ids
         del bot.resting_order_ids[market.condition_id]  # free the market for a 2nd entry
+        activity = bot.activity[market.condition_id]
+        assert activity.real_fill_count == 0  # no fill was ever simulated
+        state_after_first = bot.ewma_size_residual_by_asset["Bitcoin"]
+
+        asyncio.run(bot.strategy_tick(now=1001.0))
+
+        assert bot.ewma_size_residual_by_asset["Bitcoin"] != state_after_first
+        # The 2nd placement's side, not the 1st's, is what got recorded --
+        # confirming the is_first_entry block actually re-ran rather than
+        # coincidentally producing a different EWMA value some other way.
+        assert bot.last_first_entry_side_by_asset["Bitcoin"] == activity.last_side
+
+    def test_second_entry_does_not_move_the_size_momentum_ewma_once_a_real_fill_happened(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=9)
+        market = make_market_for_asset("Bitcoin")
+        wire_market(bot, market, bid=0.50, ask=0.51, depth=200.0)
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        assert market.condition_id in bot.resting_order_ids
+        del bot.resting_order_ids[market.condition_id]  # free the market for a 2nd entry
+        # Simulate the 1st placement actually filling (what manage_orders_
+        # tick would do in production the first time an order gets a fill).
+        bot.activity[market.condition_id].record_real_fill(is_hedge=False)
         state_after_first = bot.ewma_size_residual_by_asset["Bitcoin"]
 
         asyncio.run(bot.strategy_tick(now=1001.0))

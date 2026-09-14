@@ -86,11 +86,39 @@ class MarketActivityState:
     # manage_orders_tick the first time an order gets any fill) -- these,
     # not entry_count/hedge_count, are what every calibration-table lookup
     # keyed by "which numbered entry/hedge" should read. entry_count/
-    # hedge_count themselves are left unchanged and still used for the
-    # placement-time gates that are genuinely about placement, not fill
-    # history (the scout eligibility check, and decide_hedge's initial
-    # "has anything ever been placed" gate) -- see this project's
-    # BUGS_TO_FIX.md #5 for the full reasoning.
+    # hedge_count themselves are left unchanged and still used for
+    # decide_hedge's initial "has anything ever been placed" guard (line
+    # ~419) -- safe to leave placement-based since it's redundant with the
+    # dominant_side()-is-None check just below it: a fully-cancelled first
+    # attempt zeroes cost_by_side back via release_unfilled, so
+    # dominant_side() already returns None regardless of which counter
+    # gates entry.
+    #
+    # CORRECTED 2026-09-14 (root-cause fix for the entry_count-vs-
+    # real_fill_count fidelity-scorecard investigation): the scout
+    # eligibility check, is_first_entry (bot.py), forced_first_entry_side's
+    # gate, and record_entry's own first_entry_* capture gate below were
+    # ALL still entry_count-based until this fix -- WRONGLY grouped with
+    # decide_hedge's guard above in the original 2026-09-12 comment. Unlike
+    # decide_hedge's guard, these have no redundant protection: a market
+    # whose first placement gets cancelled/expires unfilled (which happens
+    # to a large fraction of orders -- see release_unfilled's docstring)
+    # permanently loses "first entry" treatment for the rest of its life
+    # once entry_count leaves 0, even though nothing ever actually filled
+    # and the market is, in every economic sense the trader would
+    # recognize, still awaiting its true first trade. Confirmed live via
+    # bot.py's own fill-rate investigation that a large share of MID/CORE
+    # markets fail their first attempt by cancellation ("price left target
+    # band"), not expiry -- meaning this was live-corrupting SCOUT
+    # eligibility, forced_first_entry_side, CROSS_MARKET_SIDE_PERSISTENCE/
+    # CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER updates, and the captured
+    # first_entry_price/regime/side/notional values themselves (stale,
+    # from a cancelled attempt that the trader's world has no analogue
+    # for) on every affected market. All four now gate on
+    # real_fill_count == 0 instead, matching the "his trade log only has
+    # fills" principle already applied to the calibration-table lookups
+    # above. See this project's BUGS_TO_FIX.md #5 for the original
+    # reasoning this corrects.
     real_fill_count: int = 0
     real_hedge_fill_count: int = 0
     # ADDED 2026-09-13, alongside DECISIVENESS_ONSET_MULTIPLIER: the
@@ -131,11 +159,19 @@ class MarketActivityState:
 
     def record_entry(self, side: str, notional_usd: float = 0.0, regime: Optional[str] = None,
                       is_hedge: bool = False, price: Optional[float] = None) -> None:
-        if self.entry_count == 0 and regime is not None:
+        # CHANGED 2026-09-14 (entry_count -> real_fill_count, see this
+        # dataclass's docstring above): gates on whether a REAL fill has
+        # happened yet, not merely a placement. Without this, a market
+        # whose first placement got cancelled/expired unfilled would lock
+        # in that cancelled attempt's price/regime/side/notional as
+        # "first entry" forever, even once a later attempt actually fills
+        # -- stale metadata the trader's world (fills-only) has no
+        # analogue for.
+        if self.real_fill_count == 0 and regime is not None:
             self.first_entry_regime = regime
-        if self.entry_count == 0 and price is not None:
+        if self.real_fill_count == 0 and price is not None:
             self.first_entry_price = price
-        if self.entry_count == 0:
+        if self.real_fill_count == 0:
             self.first_entry_side = side
             self.first_entry_notional = notional_usd
         self.cost_by_side[side] = self.cost_by_side.get(side, 0.0) + notional_usd
@@ -722,8 +758,9 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     decide_size's own docstrings for what each one feeds.
 
     `forced_first_entry_side` (added 2026-09-13, Coinbase-momentum bot):
-    when set AND this is the market's first entry (activity.entry_count
-    == 0) AND decide_hedge didn't already fire (it structurally never
+    when set AND this is the market's first entry (activity.real_fill_count
+    == 0 -- CHANGED 2026-09-14 from entry_count, see MarketActivityState's
+    docstring) AND decide_hedge didn't already fire (it structurally never
     does on a first entry -- see its own entry_count < 1 guard, so this
     never actually competes with a hedge), this side is used DIRECTLY
     instead of calling decide_side -- every downstream step (regime
@@ -792,11 +829,15 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     is_hedge = hedge_side is not None
     if is_hedge:
         side = hedge_side
-    elif forced_first_entry_side is not None and activity.entry_count == 0:
+    elif forced_first_entry_side is not None and activity.real_fill_count == 0:
         # See forced_first_entry_side's own docstring above -- bypasses
         # decide_side entirely for this one case, everything else below
         # (regime, sizing, scout, floor-lot, exchange-minimum) is
-        # identical to the ordinary path.
+        # identical to the ordinary path. CHANGED 2026-09-14: entry_count
+        # -> real_fill_count, to stay consistent with bot.py's is_first_entry
+        # (which now gates forced_first_entry_side's computation the same
+        # way) -- otherwise a retry after a cancelled first attempt could
+        # compute a forced side here but silently ignore it.
         side = forced_first_entry_side
     else:
         # Regime-dependent persistence needs the CURRENTLY-HELD side's
@@ -982,12 +1023,20 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                                               decisiveness_fraction=decisiveness_fraction)
 
     is_scout = False
-    if not is_hedge and not is_floor_lot and activity.entry_count == 0:
+    if not is_hedge and not is_floor_lot and activity.real_fill_count == 0:
         # SCOUT: a deliberately small, tentative first entry -- see
         # SCOUT_PROBABILITY/SCOUT_SIZE_RATIO's docstring in
-        # behavior_config.py. Only reachable at the market's true first
-        # entry (decide_hedge structurally can never fire this early --
-        # dominant_side() needs at least one prior entry to exist), and
+        # behavior_config.py. CHANGED 2026-09-14: entry_count ->
+        # real_fill_count (see MarketActivityState's docstring) -- a
+        # market whose first placement attempt was cancelled/expired
+        # unfilled still deserves scout eligibility on its next attempt,
+        # since nothing has actually traded yet; entry_count locked this
+        # out after any cancellation, silently under-applying
+        # SCOUT_PROBABILITY exactly in the regimes (MID/CORE) that fail
+        # their first attempt by cancellation most often. Only reachable
+        # at the market's true first entry (decide_hedge structurally can
+        # never fire this early -- dominant_side() needs at least one
+        # prior entry to exist), and
         # never stacks with a floor-lot roll (that's an orthogonal, already
         # -tiny mechanism keyed off share-count minimums, not first-entry
         # tentativeness -- scaling it down further would just inflate its

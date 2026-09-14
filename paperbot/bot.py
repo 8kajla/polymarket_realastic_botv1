@@ -436,7 +436,19 @@ class PaperBot:
         # with them -- not here, since some may still be open at retire
         # time for a few ticks while expiry catches up.)
         activity = self.activity.get(market.condition_id)
-        if activity is not None and activity.entry_count > 0:
+        # CHANGED 2026-09-14: entry_count -> real_fill_count. The old
+        # entry_count > 0 gate let a market that was placed into but NEVER
+        # actually filled (fully cancelled/expired) snapshot a
+        # first_entry_side anyway, which the resolution handler below then
+        # scores as a real win/loss for last_first_entry_won_by_asset --
+        # corrupting rolling_accuracy/ACCURACY_SCOUT_MULTIPLIER with
+        # outcomes of markets that never had any real money on either side.
+        # real_fill_count > 0 requires an actual confirmed fill, consistent
+        # with the real_fill_count-only principle used throughout
+        # MarketActivityState (see its docstring in strategy.py) and with
+        # the ratio guard immediately below, which was already
+        # real_fill_count-gated.
+        if activity is not None and activity.real_fill_count > 0:
             # ADDED 2026-09-11: snapshot the two things this market's
             # eventual resolution needs to feed forward, BEFORE popping
             # activity below -- see last_hedge_rate_by_asset/
@@ -662,7 +674,22 @@ class PaperBot:
         activity.update_decisive_crossings(up_book.best_bid, down_book.best_bid, now,
                                             threshold=config.DECISIVENESS_THRESHOLD)
         hours_since_resumption = self._hours_since_resumption(now)
-        is_first_entry = activity.entry_count == 0  # captured BEFORE record_entry increments it
+        # CHANGED 2026-09-14 (root cause of the fill-rate/fidelity-scorecard
+        # investigation): entry_count -> real_fill_count. entry_count
+        # increments at PLACEMENT time and never reverts on a cancellation
+        # (only cost_by_side gets corrected, via release_unfilled) --
+        # meaning a market whose first order got cancelled/expired unfilled
+        # (a large share of MID/CORE first attempts, confirmed live: they
+        # fail 88-93% by cancellation, "price left target band") would
+        # permanently lose first-entry treatment (forced_first_entry_side,
+        # the circuit breaker, CROSS_MARKET_SIDE_PERSISTENCE/SIZE_MOMENTUM
+        # updates below, and first_entry_* capture in record_entry) even
+        # though nothing had actually traded yet. real_fill_count only
+        # increments on a confirmed fill, matching the trader's own world
+        # (his trade log has no record of an order that never filled) and
+        # the same principle already applied to calibration-table lookups
+        # -- see MarketActivityState's docstring in strategy.py.
+        is_first_entry = activity.real_fill_count == 0  # captured BEFORE record_entry increments entry_count
 
         if is_first_entry and self._new_markets_paused():
             # DRAWDOWN CIRCUIT BREAKER (2026-09-11): only blocks brand-new
