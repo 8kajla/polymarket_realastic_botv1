@@ -673,6 +673,14 @@ class PaperBot:
         # MarketActivityState field.
         activity.update_decisive_crossings(up_book.best_bid, down_book.best_bid, now,
                                             threshold=config.DECISIVENESS_THRESHOLD)
+        # CHEAP-FRESHNESS tracking (2026-09-18): mirror image of the
+        # decisive-crossing tracking above, but for a side dropping BELOW
+        # the CHEAP threshold rather than snapping above the decisive
+        # one. Must also run every tick, before build_order_intent reads
+        # the crossing timestamps this sets. See CHEAP_FRESHNESS_
+        # MULTIPLIER's docstring in behavior_config.py.
+        activity.update_cheap_crossings(up_book.best_bid, down_book.best_bid, now,
+                                         threshold=bc.CHEAP_FRESHNESS_THRESHOLD)
         hours_since_resumption = self._hours_since_resumption(now)
         # CHANGED 2026-09-14 (root cause of the fill-rate/fidelity-scorecard
         # investigation): entry_count -> real_fill_count. entry_count

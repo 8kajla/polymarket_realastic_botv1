@@ -132,6 +132,24 @@ class MarketActivityState:
     # reaction-window survives a deploy without losing its crossing time.
     up_decisive_crossed_at: Optional[float] = None
     down_decisive_crossed_at: Optional[float] = None
+    # ADDED 2026-09-18, alongside CHEAP_FRESHNESS_MULTIPLIER: the mirror-
+    # image tracker to up_decisive_crossed_at/down_decisive_crossed_at
+    # above, but for a side's price dropping BELOW config.CHEAP_
+    # FRESHNESS_THRESHOLD (0.30, the CHEAP regime's own upper bound)
+    # rather than snapping ABOVE DECISIVENESS_THRESHOLD (0.70). Needed
+    # because build_order_intent's own decisiveness_fraction computation
+    # only ever reads the >=0.70 crossing fields above -- there was no
+    # tracking anywhere of when a side actually BECAME cheap, which is
+    # exactly what CHEAP_FRESHNESS_MULTIPLIER needs (see its own
+    # docstring in behavior_config.py for the full derivation: the real
+    # trader's willingness to take a CHEAP crossing decays sharply with
+    # how long it's been sitting there, and this bot had no equivalent
+    # staleness-awareness at all). Same one-shot locking semantics as the
+    # decisive-crossing fields (never reset once set, since the finding
+    # measures delay from the FIRST moment a side became cheap, not from
+    # any later moment it happens to still be there).
+    up_cheap_crossed_at: Optional[float] = None
+    down_cheap_crossed_at: Optional[float] = None
 
     def position_tier(self) -> str:
         return bc.position_tier_for_index(self.real_fill_count)
@@ -148,6 +166,18 @@ class MarketActivityState:
             self.up_decisive_crossed_at = now
         if self.down_decisive_crossed_at is None and down_price is not None and down_price >= threshold:
             self.down_decisive_crossed_at = now
+
+    def update_cheap_crossings(self, up_price: Optional[float], down_price: Optional[float],
+                                now: float, threshold: float = 0.30) -> None:
+        """Mirror image of update_decisive_crossings above: records the
+        first time each side's price DROPS BELOW `threshold` (the CHEAP
+        band's own upper bound). Same call-every-tick, one-shot-lock
+        discipline -- see up_cheap_crossed_at's own docstring for why
+        this exists."""
+        if self.up_cheap_crossed_at is None and up_price is not None and up_price < threshold:
+            self.up_cheap_crossed_at = now
+        if self.down_cheap_crossed_at is None and down_price is not None and down_price < threshold:
+            self.down_cheap_crossed_at = now
 
     def dominant_side(self) -> Optional[str]:
         """The side with more cumulative $ committed so far, or None if
@@ -908,6 +938,34 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         if deep_longshot_mult < 1.0 and rng.random() > deep_longshot_mult:
             logger.info("SKIP asset=%s regime=%s price=%.4f: deep-longshot dampener (mult=%.2f)",
                         market.asset, regime, price, deep_longshot_mult)
+            return None
+
+    # CHEAP-FRESHNESS entry dampener (2026-09-18): the real trader's
+    # willingness to take a first CHEAP entry decays sharply with how
+    # long this side has already been sitting below the CHEAP threshold
+    # -- see bc.cheap_freshness_multiplier's docstring for the full
+    # equal-width hazard-rate derivation and the honest caveat on why
+    # this is deliberately softer than a literal per-tick inversion.
+    # Gated to first entries only (not hedges, whose side is forced to
+    # the opposite of the dominant side, not a fresh preference), same
+    # scoping as the deep-longshot dampener above. `now` may be None in
+    # some test/CLI call sites (same pattern as decisiveness_fraction
+    # just above) -- no-ops cleanly via seconds_since_cheap_crossing
+    # staying None in that case.
+    if (config.ENABLE_CHEAP_FRESHNESS_DAMPENER and not is_hedge
+            and activity.real_fill_count == 0 and regime == "CHEAP"):
+        seconds_since_cheap_crossing: Optional[float] = None
+        if now is not None:
+            cheap_crossed_at = (activity.up_cheap_crossed_at if side == "Up"
+                                 else activity.down_cheap_crossed_at)
+            if cheap_crossed_at is not None:
+                seconds_since_cheap_crossing = now - cheap_crossed_at
+        freshness_mult = bc.cheap_freshness_multiplier(market.asset, seconds_since_cheap_crossing)
+        if freshness_mult < 1.0 and rng.random() > freshness_mult:
+            logger.info(
+                "SKIP asset=%s regime=%s price=%.4f: cheap-freshness dampener "
+                "(seconds_since_crossing=%s, mult=%.2f)",
+                market.asset, regime, price, seconds_since_cheap_crossing, freshness_mult)
             return None
 
     position_tier = activity.position_tier()

@@ -981,3 +981,15 @@ ENABLE_DECISIVENESS_ONSET_MULTIPLIER = os.environ.get(
 ENABLE_DEEP_LONGSHOT_DAMPENER = os.environ.get(
     "ENABLE_DEEP_LONGSHOT_DAMPENER", "true"
 ).strip().lower() not in ("false", "0", "no")
+
+# Feature flag for CHEAP_FRESHNESS_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-18 -- the real trader's willingness
+# to take a first CHEAP entry decays sharply with how long that side has
+# already been sitting below the CHEAP threshold, which this bot had no
+# equivalent tracking for at all. Deliberately softer than a literal
+# per-tick hazard inversion (see the docstring's caveat on compounding
+# with decide_side's own persistence gate) -- a monitored change, not a
+# precisely-fit one. Default TRUE everywhere.
+ENABLE_CHEAP_FRESHNESS_DAMPENER = os.environ.get(
+    "ENABLE_CHEAP_FRESHNESS_DAMPENER", "true"
+).strip().lower() not in ("false", "0", "no")

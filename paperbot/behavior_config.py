@@ -730,6 +730,90 @@ def deep_longshot_entry_multiplier(asset: str, price: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# CHEAP-FRESHNESS entry dampener. Added 2026-09-18, closing the
+# [[cheap-edge-gap-root-cause-persistence-miscalibration]] investigation
+# thread: the real trader's willingness to take a first CHEAP entry on a
+# specific (market, side) decays sharply with how long that side has
+# already been sitting below the CHEAP threshold -- he isn't reacting to
+# "is this cheap" as a static fact, he's reacting to a market recently
+# BECOMING cheap, and mostly gives up on a crossing that's gone stale
+# without being caught. This bot had NO equivalent staleness-awareness
+# at all for CHEAP (the existing DECISIVENESS_ONSET_MULTIPLIER machinery
+# only ever tracks crossings ABOVE DECISIVENESS_THRESHOLD, never below
+# CHEAP_FRESHNESS_THRESHOLD).
+#
+# Derivation: real, equal-width (60s) hazard-rate buckets -- of crossings
+# still untaken going into a bucket, what fraction get taken during it --
+# using `price_history_dense.jsonl` (the live CLOB-book collector,
+# covers every market regardless of who traded it, 6 days of history) to
+# find each market's own actual first-crossing moment, matched against
+# the real trader's own first-entry timestamps from trades.jsonl:
+#   Bitcoin:  9.81% (0-60s) -> 1.44% (60-120s) -> 0.45% (120-180s) -> 0.16% (180s+)
+#   Ethereum: 7.70% -> 2.07% -> 0.98% -> 0.24%
+#   Solana:   10.95% -> 2.02% -> 0.85% -> 0.25%
+# All three assets show the same shape: a steep (~80-85%) drop from the
+# first to second bucket, then a long, thin, near-zero tail. Table below
+# expresses each bucket's rate RELATIVE to the first bucket (normalized,
+# not the raw hazard value) -- see the honest caveat further down for
+# why a literal per-tick inversion was deliberately NOT used.
+#
+# CRITICAL CAVEAT, more important than usual for a multiplier in this
+# file: this is NOT fit to reproduce the bot's own OBSERVED hazard curve
+# (which, once measured with the same equal-width methodology, already
+# declines too -- an earlier same-day analysis briefly and wrongly
+# concluded the bot's hazard INCREASES with staleness before a bucket-
+# width bug in that analysis was caught and retracted). This multiplier
+# targets the TRADER's revealed shape as the replication goal, applied
+# ADDITIONALLY on top of the bot's existing mechanisms (decide_side's
+# own persistence/switch stochastic gate, availability_check, the
+# deep-longshot dampener above). Because decide_side's persistence
+# already provides SOME independent reluctance to jump onto a newly-
+# favored side, stacking a second, precisely-inverted per-tick
+# probability on top risks compounding into much stronger suppression
+# than either mechanism alone would produce -- there is no clean way to
+# separate the two effects without live monitoring. Deliberately using
+# SOFTER, bucket-relative multipliers (not a literal per-tick hazard
+# inversion) for this reason -- treat as a monitored change, same
+# discipline as QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME/BY_ASSET: re-run
+# the same equal-width hazard comparison after this has been live a
+# while, and soften or sharpen the tail multipliers if the bot's own
+# resulting curve over- or under-shoots the trader's.
+#
+# Scope: same as DEEP_LONGSHOT_ENTRY_MULTIPLIER -- first entries only
+# (real_fill_count == 0 at the call site), not hedges (a hedge's side is
+# forced to the opposite of the dominant side, not a fresh preference,
+# so "how long has this side been cheap" isn't the same kind of decision
+# for it).
+CHEAP_FRESHNESS_THRESHOLD = 0.30
+CHEAP_FRESHNESS_MULTIPLIER = {
+    "Bitcoin":  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.15), (120.0, 180.0, 0.05), (180.0, math.inf, 0.02)],
+    "Ethereum": [(0.0, 60.0, 1.00), (60.0, 120.0, 0.27), (120.0, 180.0, 0.13), (180.0, math.inf, 0.03)],
+    "Solana":   [(0.0, 60.0, 1.00), (60.0, 120.0, 0.18), (120.0, 180.0, 0.08), (180.0, math.inf, 0.02)],
+}
+
+
+def cheap_freshness_multiplier(asset: str, seconds_since_cheap_crossing: Optional[float]) -> float:
+    """1.0 (no-op) when there's no recorded crossing yet (seconds_since_
+    cheap_crossing is None -- e.g. a market that opened already-cheap
+    with no pre-crossing tick captured) or for any asset with no
+    calibration -- otherwise the bucket this elapsed time falls into,
+    applied as a skip-probability at the call site (see
+    build_order_intent), same pattern as deep_longshot_entry_multiplier
+    above. A negative value (defensive: crossing timestamp somehow after
+    `now`) falls back to the first (no-op) bucket rather than raising."""
+    if seconds_since_cheap_crossing is None:
+        return 1.0
+    buckets = CHEAP_FRESHNESS_MULTIPLIER.get(asset)
+    if buckets is None:
+        return 1.0
+    elapsed = max(0.0, seconds_since_cheap_crossing)
+    for lo, hi, mult in buckets:
+        if lo <= elapsed < hi:
+            return mult
+    return 1.0
+
+
+# ---------------------------------------------------------------------------
 # DECISIVENESS-ONSET size scaling. Added 2026-09-13: a market's price
 # snapping into a decisive band (>=0.70) is a distinct event from just
 # "having a decisive price" -- the trader reacts to the SNAP, not the

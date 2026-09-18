@@ -2823,3 +2823,202 @@ class TestDeepLongshotDampener:
 
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
         assert intent is not None  # flag off -- must not skip even though the multiplier says to
+
+
+class TestCheapFreshnessDampener:
+    """CHEAP_FRESHNESS_MULTIPLIER (2026-09-18): a first CHEAP entry gets
+    probabilistically skipped based on how long this side has already
+    been sitting below the CHEAP threshold, mirroring the real trader's
+    confirmed sharp hazard decay. See its docstring in
+    behavior_config.py."""
+
+    def test_multiplier_is_a_noop_within_the_first_bucket(self):
+        assert bc.cheap_freshness_multiplier("Bitcoin", 0.0) == 1.0
+        assert bc.cheap_freshness_multiplier("Bitcoin", 59.9) == 1.0
+
+    def test_multiplier_applies_the_calibrated_value_in_later_buckets(self):
+        assert bc.cheap_freshness_multiplier("Bitcoin", 90.0) == pytest.approx(0.15)
+        assert bc.cheap_freshness_multiplier("Bitcoin", 150.0) == pytest.approx(0.05)
+        assert bc.cheap_freshness_multiplier("Bitcoin", 300.0) == pytest.approx(0.02)
+        assert bc.cheap_freshness_multiplier("Ethereum", 90.0) == pytest.approx(0.27)
+        assert bc.cheap_freshness_multiplier("Solana", 90.0) == pytest.approx(0.18)
+
+    def test_multiplier_defaults_to_noop_for_an_uncalibrated_asset(self):
+        assert bc.cheap_freshness_multiplier("Dogecoin", 300.0) == 1.0
+
+    def test_multiplier_is_a_noop_when_no_crossing_recorded(self):
+        assert bc.cheap_freshness_multiplier("Bitcoin", None) == 1.0
+
+    def test_multiplier_treats_a_negative_elapsed_as_the_first_bucket(self):
+        # Defensive: a crossing timestamp somehow after `now` shouldn't crash.
+        assert bc.cheap_freshness_multiplier("Bitcoin", -5.0) == 1.0
+
+    def test_dampener_can_skip_a_stale_cheap_first_entry(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.10, token_id="up")
+        down_book = make_liquid_book(price=0.90, token_id="down")
+        activity = MarketActivityState()
+        activity.up_cheap_crossed_at = 0.0  # crossed at t=0
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "cheap_freshness_multiplier", lambda asset, elapsed: 0.0)  # always skip
+
+        # now=200.0 -- 200s after the crossing, well into the stale tail
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=200.0)
+        assert intent is None
+
+    def test_dampener_never_fires_when_freshly_crossed(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.10, token_id="up")
+        down_book = make_liquid_book(price=0.90, token_id="down")
+        activity = MarketActivityState()
+        activity.up_cheap_crossed_at = 0.0
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+
+        # now=1.0 -- only 1s since the crossing, squarely in the no-op first bucket
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=1.0)
+        assert intent is not None
+
+    def test_dampener_never_fires_with_no_recorded_crossing(self, monkeypatch):
+        # activity.up_cheap_crossed_at left at its default None (e.g. a
+        # market that opened already-cheap with no pre-crossing tick
+        # captured) -- must not skip.
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.10, token_id="up")
+        down_book = make_liquid_book(price=0.90, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        # Deliberately NOT monkeypatching cheap_freshness_multiplier here --
+        # the real function's own None-handling (elapsed=None -> 1.0 no-op)
+        # is exactly what this test verifies.
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=200.0)
+        assert intent is not None  # no crossing recorded -- multiplier no-ops on None, never skips
+
+    def test_dampener_does_not_apply_to_hedges(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.10, token_id="up")
+        down_book = make_liquid_book(price=0.90, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Down", notional_usd=100.0, regime="HIGH", price=0.90)
+        activity.up_cheap_crossed_at = 0.0
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: "Up")
+        monkeypatch.setattr(bc, "cheap_freshness_multiplier", lambda asset, elapsed: 0.0)  # would always skip a first entry
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=200.0)
+        assert intent is not None
+        assert intent.is_hedge is True
+
+    def test_dampener_does_not_apply_once_a_real_fill_has_happened(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.10, token_id="up")
+        down_book = make_liquid_book(price=0.90, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=5.0, regime="CHEAP", price=0.10)
+        activity.up_cheap_crossed_at = 0.0
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "cheap_freshness_multiplier", lambda asset, elapsed: 0.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=200.0)
+        assert intent is not None  # real_fill_count > 0 -- dampener is scoped to first entries only
+
+    def test_dampener_does_not_apply_outside_cheap_regime(self, monkeypatch):
+        # Even if a (misconfigured) crossing timestamp were present, a
+        # MID-band price must never trigger this dampener.
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+        activity.up_cheap_crossed_at = 0.0
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "cheap_freshness_multiplier", lambda asset, elapsed: 0.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=200.0)
+        assert intent is not None  # regime is MID, not CHEAP -- dampener call site is never reached
+
+    def test_feature_flag_disables_the_dampener(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.10, token_id="up")
+        down_book = make_liquid_book(price=0.90, token_id="down")
+        activity = MarketActivityState()
+        activity.up_cheap_crossed_at = 0.0
+
+        monkeypatch.setattr(config, "ENABLE_CHEAP_FRESHNESS_DAMPENER", False)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "cheap_freshness_multiplier", lambda asset, elapsed: 0.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=200.0)
+        assert intent is not None  # flag off -- must not skip even though the multiplier says to
+
+
+class TestUpdateCheapCrossings:
+    """MarketActivityState.update_cheap_crossings (2026-09-18): mirror
+    image of update_decisive_crossings, latching the first time each
+    side's price drops below the CHEAP threshold."""
+
+    def test_latches_up_side_below_threshold(self):
+        activity = MarketActivityState()
+        activity.update_cheap_crossings(up_price=0.25, down_price=0.75, now=100.0)
+        assert activity.up_cheap_crossed_at == 100.0
+        assert activity.down_cheap_crossed_at is None
+
+    def test_latches_down_side_below_threshold(self):
+        activity = MarketActivityState()
+        activity.update_cheap_crossings(up_price=0.75, down_price=0.25, now=100.0)
+        assert activity.down_cheap_crossed_at == 100.0
+        assert activity.up_cheap_crossed_at is None
+
+    def test_does_not_latch_at_or_above_threshold(self):
+        activity = MarketActivityState()
+        activity.update_cheap_crossings(up_price=0.30, down_price=0.70, now=100.0)
+        assert activity.up_cheap_crossed_at is None
+        assert activity.down_cheap_crossed_at is None
+
+    def test_is_a_one_shot_lock_not_overwritten_on_later_ticks(self):
+        activity = MarketActivityState()
+        activity.update_cheap_crossings(up_price=0.25, down_price=0.75, now=100.0)
+        activity.update_cheap_crossings(up_price=0.10, down_price=0.90, now=200.0)
+        assert activity.up_cheap_crossed_at == 100.0  # unchanged, not reset to 200.0
+
+    def test_handles_none_prices_without_crashing(self):
+        activity = MarketActivityState()
+        activity.update_cheap_crossings(up_price=None, down_price=None, now=100.0)
+        assert activity.up_cheap_crossed_at is None
+        assert activity.down_cheap_crossed_at is None
+
+    def test_respects_a_custom_threshold(self):
+        activity = MarketActivityState()
+        activity.update_cheap_crossings(up_price=0.45, down_price=0.55, now=100.0, threshold=0.50)
+        assert activity.up_cheap_crossed_at == 100.0
+        assert activity.down_cheap_crossed_at is None
