@@ -56,6 +56,50 @@ class Market:
         now = now if now is not None else time.time()
         return self.end_time - now
 
+    def window_start(self) -> Optional[float]:
+        """The epoch second this market's own 5-minute window OPENS at,
+        parsed directly from its own slug (e.g. "btc-updown-5m-1789668000"
+        -> 1789668000.0) -- the same convention this module's own
+        BUCKET_SECONDS comment documents. Not stored as a separate field:
+        computing it on demand from the immutable slug avoids a second
+        source of truth that could drift from it. None if the slug
+        doesn't end in a bare integer (shouldn't happen for any of the
+        six tracked assets, but this is a defensive parse, not an
+        assumption).
+
+        ADDED 2026-09-18, alongside strategy.timing_ok's open-side check:
+        fetch_active_markets() deliberately onboards the NEXT 5-minute
+        bucket early, before its window has actually opened ("the next
+        window already exists and is worth onboarding early" -- a real,
+        intentional readiness optimization). Nothing previously checked
+        whether a market's window had STARTED before letting it be
+        traded, only whether there was enough time left before it
+        CLOSED -- confirmed live, this let the bot rest real orders on a
+        market up to ~5 minutes before its window opened (median 278s
+        early), heavily concentrated in MID (a not-yet-open market's
+        frozen placeholder price sits near 0.5). The real trader has
+        ZERO trades before a window's own start across his entire
+        882,355-trade history -- see
+        mid-fill-delay-anomaly-and-chase-confound.md for the full
+        derivation.
+        """
+        tail = self.slug.rsplit("-", 1)[-1]
+        if not tail.isdigit():
+            return None
+        return float(tail)
+
+    def seconds_until_start(self, now: Optional[float] = None) -> Optional[float]:
+        """Positive while the window hasn't opened yet, zero or negative
+        once it has. None if window_start() couldn't be parsed from the
+        slug -- callers should treat that as "assume it's fine to trade"
+        (the pre-2026-09-18 behavior) rather than blocking on a parse
+        failure for an otherwise-valid market."""
+        ws = self.window_start()
+        if ws is None:
+            return None
+        now = now if now is not None else time.time()
+        return ws - now
+
 
 def _asset_for_slug(slug: str) -> Optional[str]:
     for asset, prefix in config.ASSET_SLUG_PREFIXES.items():

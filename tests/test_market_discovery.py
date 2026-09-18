@@ -64,6 +64,21 @@ class TestParseMarket:
         assert hype.asset == "Hyperliquid"
 
 
+class TestMarketWindowStart:
+    """Market.window_start()/seconds_until_start() (2026-09-18, the
+    pre-window order-placement fix): parses the window's own open time
+    directly from a real, Gamma-parsed market's slug."""
+
+    def test_window_start_matches_the_real_slug_convention(self):
+        market = parse_market(gamma_market_raw(slug="btc-updown-5m-1780138200"))
+        assert market.window_start() == 1780138200.0
+
+    def test_seconds_until_start_before_and_after_open(self):
+        market = parse_market(gamma_market_raw(slug="btc-updown-5m-1780138200"))
+        assert market.seconds_until_start(now=1780138100.0) == 100.0
+        assert market.seconds_until_start(now=1780138300.0) == -100.0
+
+
 class TestCandidateSlugs:
     def test_slugs_align_to_the_300_second_grid(self):
         # 1786127401 is one second into a bucket that starts at 1786127400.

@@ -570,6 +570,28 @@ def availability_check(book: BookState) -> tuple[bool, str]:
 
 
 def timing_ok(market: Market, now: Optional[float] = None) -> bool:
+    """True iff this market's window has both STARTED and not yet hit
+    its own closing cutoff.
+
+    FIXED 2026-09-18: added the open-side check (previously only the
+    close-side `seconds_remaining >= MIN_SECONDS_BEFORE_CLOSE` existed).
+    market_discovery.fetch_active_markets() deliberately onboards the
+    NEXT 5-minute bucket early, for readiness -- but nothing downstream
+    ever checked whether a market's window had actually opened before
+    build_order_intent was allowed to trade it. Confirmed live: 36.83%
+    of all MID-regime orders were being placed on a market before its
+    window even started (median 278s early) -- Gamma/CLOB apparently
+    still returns a live, if frozen and untraded, order book for a
+    not-yet-open window. Confirmed as a genuine departure from the real
+    trader's behavior, not a legitimate feature: zero of his 882,355
+    real trades ever land before their own window's start. See
+    mid-fill-delay-anomaly-and-chase-confound.md for the full
+    derivation. `seconds_until_start` returning None (slug didn't parse)
+    falls back to the pre-fix behavior -- don't block an otherwise-valid
+    market over a parse failure."""
+    seconds_until_start = market.seconds_until_start(now)
+    if seconds_until_start is not None and seconds_until_start > 0:
+        return False
     return market.seconds_remaining(now) >= config.MIN_SECONDS_BEFORE_CLOSE
 
 

@@ -20,10 +20,14 @@ from paperbot.strategy import (
 )
 
 
-def make_market(end_time, asset="Bitcoin", condition_id="c1", order_min_size=None):
+def make_market(end_time, asset="Bitcoin", condition_id="c1", order_min_size=None, slug=None):
+    # slug's embedded window_start defaults to 0 -- every existing test's
+    # `now` is >= 0, so the window always reads as "already started",
+    # preserving pre-2026-09-18 behavior. Pass an explicit slug to test
+    # the open-side timing_ok check itself (see TestTimingOkWindowStart).
     return Market(
-        condition_id=condition_id, slug="btc-updown-5m-1000", question="q",
-        asset=asset, end_time=end_time, token_id_up="up", token_id_down="down",
+        condition_id=condition_id, slug=slug if slug is not None else "btc-updown-5m-0",
+        question="q", asset=asset, end_time=end_time, token_id_up="up", token_id_down="down",
         order_min_size=order_min_size, order_min_tick_size=0.01,
     )
 
@@ -63,6 +67,58 @@ class TestTimingGate:
     def test_allows_with_plenty_of_time(self):
         market = make_market(end_time=1000.0)
         assert timing_ok(market, now=0.0) is True
+
+    # -- open-side check, added 2026-09-18 (pre-window order-placement fix) --
+
+    def test_skips_before_the_window_has_opened(self):
+        # slug's embedded window_start is 1789668000 -- now is 300s before it
+        market = make_market(end_time=1789668900.0, slug="btc-updown-5m-1789668000")
+        assert timing_ok(market, now=1789667700.0) is False
+
+    def test_allows_exactly_at_window_open(self):
+        market = make_market(end_time=1789668900.0, slug="btc-updown-5m-1789668000")
+        assert timing_ok(market, now=1789668000.0) is True
+
+    def test_allows_after_window_open_with_plenty_of_time_left(self):
+        market = make_market(end_time=1789668900.0, slug="btc-updown-5m-1789668000")
+        assert timing_ok(market, now=1789668100.0) is True
+
+    def test_still_respects_the_close_side_cutoff_after_a_valid_open(self):
+        market = make_market(end_time=1789668900.0, slug="btc-updown-5m-1789668000")
+        just_under_cutoff = 1789668900.0 - (config.MIN_SECONDS_BEFORE_CLOSE - 1)
+        assert timing_ok(market, now=just_under_cutoff) is False
+
+    def test_falls_back_to_old_behavior_when_slug_does_not_parse(self):
+        # A slug that doesn't end in a bare integer -- window_start() is
+        # None, so the open-side check must no-op rather than block.
+        market = make_market(end_time=1000.0, slug="not-a-real-slug")
+        assert timing_ok(market, now=0.0) is True
+
+
+class TestMarketWindowStart:
+    """Market.window_start()/seconds_until_start() (2026-09-18): parses
+    the window's own open time directly from the slug, the same
+    convention market_discovery.BUCKET_SECONDS documents."""
+
+    def test_window_start_parses_the_slug_suffix(self):
+        market = make_market(end_time=1000.0, slug="btc-updown-5m-1789668000")
+        assert market.window_start() == 1789668000.0
+
+    def test_window_start_is_none_for_a_non_numeric_slug(self):
+        market = make_market(end_time=1000.0, slug="not-a-real-slug")
+        assert market.window_start() is None
+
+    def test_seconds_until_start_is_positive_before_open(self):
+        market = make_market(end_time=1000.0, slug="btc-updown-5m-1789668000")
+        assert market.seconds_until_start(now=1789667700.0) == pytest.approx(300.0)
+
+    def test_seconds_until_start_is_non_positive_after_open(self):
+        market = make_market(end_time=1000.0, slug="btc-updown-5m-1789668000")
+        assert market.seconds_until_start(now=1789668100.0) == pytest.approx(-100.0)
+
+    def test_seconds_until_start_is_none_when_slug_does_not_parse(self):
+        market = make_market(end_time=1000.0, slug="not-a-real-slug")
+        assert market.seconds_until_start(now=0.0) is None
 
 
 class TestAvailabilityCheck:
@@ -741,6 +797,18 @@ class TestBuildOrderIntent:
         down_book = make_liquid_book(price=0.79, token_id="down")
         activity = MarketActivityState()
         intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+        assert intent is None
+
+    def test_returns_none_before_the_window_has_opened(self):
+        # Reproduces the confirmed live bug (2026-09-18): market_discovery
+        # onboards the NEXT window early, and this market's window hasn't
+        # opened yet even though there's plenty of time before it closes.
+        market = make_market(end_time=1789668900.0, slug="btc-updown-5m-1789668000")
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.79, token_id="down")
+        activity = MarketActivityState()
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0),
+                                     now=1789667700.0)  # 300s before window_start
         assert intent is None
 
     def test_returns_none_on_illiquid_book(self):
