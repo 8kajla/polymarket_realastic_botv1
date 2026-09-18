@@ -893,6 +893,23 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         logger.info("SKIP asset=%s regime=%s: %s", market.asset, regime, reason)
         return None
 
+    # DEEP-LONGSHOT entry dampener (2026-09-18): the real trader
+    # specifically avoids the deepest-cheap sub-band of CHEAP (price <
+    # bc.DEEP_LONGSHOT_PRICE_THRESHOLD) on first entries far more than a
+    # uniform-within-CHEAP model predicts -- see
+    # bc.deep_longshot_entry_multiplier's docstring for the full
+    # occupancy-normalized derivation. Gated to first entries only (not
+    # hedges, whose price is wherever the dominant side already sits,
+    # not a fresh preference) and checked before sizing, same SKIP
+    # pattern as availability_check just above.
+    if (config.ENABLE_DEEP_LONGSHOT_DAMPENER and not is_hedge
+            and activity.real_fill_count == 0):
+        deep_longshot_mult = bc.deep_longshot_entry_multiplier(market.asset, price)
+        if deep_longshot_mult < 1.0 and rng.random() > deep_longshot_mult:
+            logger.info("SKIP asset=%s regime=%s price=%.4f: deep-longshot dampener (mult=%.2f)",
+                        market.asset, regime, price, deep_longshot_mult)
+            return None
+
     position_tier = activity.position_tier()
 
     min_size = market.order_min_size

@@ -662,6 +662,74 @@ def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# CHEAP DEEP-LONGSHOT entry dampener. Added 2026-09-18: the bot's CHEAP
+# first-entry price distribution was found to be dramatically cheaper
+# than the real trader's (median 0.12 vs his 0.19, on the 0.00-0.30
+# band, n=12,345 bot / 7,807 trader) -- this had sat as a previously-
+# unexplained mismatch (see favorite-longshot-bias-rejected.md's
+# "CHEAP mismatch still unexplained"). CHEAP-specific: the same check
+# in MID/CORE/HIGH showed only 2-3pp gaps.
+#
+# Root-caused with an occupancy-normalized analysis: raw entry SHARE by
+# price bucket conflates "he avoids this price" with "this price just
+# doesn't come up as often", so his entry RATE was measured PER UNIT OF
+# OBSERVED OPPORTUNITY instead -- using price_history_dense.jsonl (every
+# up/down book-price poll across ALL current-era markets, not just ones
+# he traded, 2026-09-12 through 2026-09-18) as an unbiased occupancy
+# baseline, matched against his real trades.jsonl entries in that SAME
+# calendar window (avoiding a temporal-composition confound -- his
+# entries are otherwise drawn from the whole TWAP era, a much longer
+# and differently-composed period than the 6-day occupancy sample).
+#
+# Result: NOT a smooth within-band gradient the way WITHIN_BAND_SIZE_
+# SLOPE models CORE/HIGH/CHEAP/MID (this was checked and rejected --
+# his entry-rate-per-opportunity across 0.05-0.30 is roughly flat to
+# rising, not declining). It's a sharp, specific avoidance of the
+# DEEPEST longshots only (price < 0.05): his entry rate there, relative
+# to his rate across the rest of CHEAP (0.05-0.30, pooled for a more
+# stable reference than any single sub-bucket), is a fraction of normal
+# -- confirmed in the SAME direction for all three assets:
+#   Bitcoin:  54 entries / 5,512 opportunities in <0.05 vs 606/18,586
+#             in 0.05-0.30  -> relative rate 0.30
+#   Ethereum: 90/5,724 vs 789/18,193 -> relative rate 0.36
+#   Solana:   65/5,673 vs 815/18,499 -> relative rate 0.26
+#
+# Scope: measured on FIRST entries only (one observation per market
+# decision, matching this whole project's raw-trade-fragmentation
+# discipline) -- applies only when is_first_entry (real_fill_count==0
+# at the call site), NOT hedges (a hedge's price is wherever the
+# dominant side already sits, not a fresh preference, so out of scope
+# for this measurement) and NOT excluding scout/floor-lot -- his own
+# raw trade log has no such distinction, his measured avoidance covers
+# every one of his first entries regardless of what the bot would size
+# it as, unlike MAX_CHEAP_REPRICES's scout/hedge exclusion (that
+# finding's own methodology specifically excluded them).
+#
+# Calibration limitation, stated plainly: the occupancy baseline only
+# covers a 6-day window (price_history_dense.jsonl's start date), much
+# shorter than this project's calibrations usually rest on -- kept
+# deliberately matched to his entries' SAME window rather than pooling
+# his whole TWAP-era history against a baseline that doesn't cover it.
+# Revisit and re-derive once more occupancy history has accumulated.
+DEEP_LONGSHOT_PRICE_THRESHOLD = 0.05
+DEEP_LONGSHOT_ENTRY_MULTIPLIER = {
+    "Bitcoin": 0.30,
+    "Ethereum": 0.36,
+    "Solana": 0.26,
+}
+
+
+def deep_longshot_entry_multiplier(asset: str, price: float) -> float:
+    """1.0 (no-op) at or above DEEP_LONGSHOT_PRICE_THRESHOLD, or for any
+    asset with no calibration (e.g. a dormant/future asset) -- otherwise
+    this asset's calibrated dampener, applied as a skip-probability at
+    the call site (see build_order_intent)."""
+    if price >= DEEP_LONGSHOT_PRICE_THRESHOLD:
+        return 1.0
+    return DEEP_LONGSHOT_ENTRY_MULTIPLIER.get(asset, 1.0)
+
+
+# ---------------------------------------------------------------------------
 # DECISIVENESS-ONSET size scaling. Added 2026-09-13: a market's price
 # snapping into a decisive band (>=0.70) is a distinct event from just
 # "having a decisive price" -- the trader reacts to the SNAP, not the

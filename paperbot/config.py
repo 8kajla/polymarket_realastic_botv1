@@ -968,3 +968,16 @@ DECISIVENESS_THRESHOLD = float(os.environ.get("DECISIVENESS_THRESHOLD", "0.70"))
 ENABLE_DECISIVENESS_ONSET_MULTIPLIER = os.environ.get(
     "ENABLE_DECISIVENESS_ONSET_MULTIPLIER", "true"
 ).strip().lower() not in ("false", "0", "no")
+
+# Feature flag for DEEP_LONGSHOT_ENTRY_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-18 -- real, cross-asset-confirmed
+# avoidance of the deepest CHEAP longshots (price < 0.05) on first
+# entries, found via an occupancy-normalized analysis (entry rate per
+# unit of observed opportunity, not raw entry share) after his CHEAP
+# first-entry price distribution turned out to be dramatically cheaper
+# than the bot's (median 0.19 vs 0.12). Calibration is based on a
+# shorter (6-day) window than usual -- see the docstring for why.
+# Default TRUE everywhere.
+ENABLE_DEEP_LONGSHOT_DAMPENER = os.environ.get(
+    "ENABLE_DEEP_LONGSHOT_DAMPENER", "true"
+).strip().lower() not in ("false", "0", "no")
