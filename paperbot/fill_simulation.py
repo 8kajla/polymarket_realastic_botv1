@@ -95,6 +95,18 @@ class SimulatedOrder:
     # time value), and never touched again by any reprice.
     original_placed_at: Optional[float] = None
 
+    # ADDED 2026-09-19: intent.reason was only ever logged at PLACE time
+    # (see place_order() below), never carried onto the order itself --
+    # so settle_order() had no way to persist it onto SettlementRecord,
+    # and every retroactive ledger analysis (e.g. isolating
+    # MID_CONTRARIAN_BIAS_PROBABILITY-fired trades from ordinary
+    # decide_side ones) was impossible without grepping live logs, which
+    # only cover whatever window happens to still be retained. Optional/
+    # None default, same backward-compatible pattern as original_placed_at
+    # above -- existing SimulatedOrder construction sites that don't pass
+    # this keep working.
+    reason: Optional[str] = None
+
     # None means "not yet initialized -- default to original_size" (see
     # __post_init__). This is deliberately NOT 0.0: a caller must be able
     # to construct an order that is already fully filled (remaining_size
@@ -208,6 +220,7 @@ class FillSimulator:
             is_floor_lot=intent.is_floor_lot,
             is_hedge=intent.is_hedge,
             is_scout=intent.is_scout,
+            reason=intent.reason,
             placed_at=now,
             remaining_size=intent.size_shares,
             queue_ahead_raw=raw_queue,

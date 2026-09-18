@@ -85,6 +85,19 @@ class SettlementRecord:
     # ledger.json predating this field still loads cleanly via
     # SettlementRecord(**raw).
     placed_at: Optional[float] = None
+    # ADDED 2026-09-19: source order.reason (the decision-path label
+    # computed in build_order_intent -- e.g. "hedge", "scout_entry",
+    # "floor_lot", "mid_contrarian", "entry_curve") straight onto the
+    # settlement record. Previously this was only ever logged on the
+    # PLACE line (see fill_simulation.place_order) and never persisted,
+    # so isolating e.g. MID_CONTRARIAN_BIAS_PROBABILITY-fired trades from
+    # the ledger after the fact was impossible -- confirmed live 2026-09-
+    # 18/19 while trying to verify that mechanism's win-rate effect in
+    # isolation and having to fall back on a live-log grep instead.
+    # Optional/None default, same backward-compatible pattern as
+    # placed_at above -- existing ledger.json files predating this field
+    # still load cleanly via SettlementRecord(**raw).
+    reason: Optional[str] = None
 
     def pnl_with_rebate(self) -> float:
         return self.pnl + self.rebate_usd
@@ -168,6 +181,7 @@ class Ledger:
             rebate_usd=rebate_usd,
             fills=[{"size": f.size, "price": f.price, "ts": f.ts} for f in order.fills],
             placed_at=order.original_placed_at,
+            reason=order.reason,
         )
         self.records.append(record)
         self._settled_order_ids.add(order.order_id)
