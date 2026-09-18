@@ -15,6 +15,7 @@ from paperbot.strategy import (
     decide_side,
     decide_size,
     load_activity_state,
+    mid_contrarian_first_entry_side,
     save_activity_state,
     timing_ok,
 )
@@ -3090,3 +3091,231 @@ class TestUpdateCheapCrossings:
         activity.update_cheap_crossings(up_price=0.45, down_price=0.55, now=100.0, threshold=0.50)
         assert activity.up_cheap_crossed_at == 100.0
         assert activity.down_cheap_crossed_at is None
+
+
+class TestUpdateFirstPrices:
+    """MarketActivityState.update_first_prices (2026-09-18): plain
+    first-observation latch, no threshold, for the MID contrarian
+    side-selection signal."""
+
+    def test_latches_the_first_observed_price_each_side(self):
+        activity = MarketActivityState()
+        activity.update_first_prices(up_price=0.45, down_price=0.55)
+        assert activity.up_first_price == 0.45
+        assert activity.down_first_price == 0.55
+
+    def test_is_a_one_shot_lock(self):
+        activity = MarketActivityState()
+        activity.update_first_prices(up_price=0.45, down_price=0.55)
+        activity.update_first_prices(up_price=0.30, down_price=0.70)
+        assert activity.up_first_price == 0.45
+        assert activity.down_first_price == 0.55
+
+    def test_handles_none_prices_without_crashing(self):
+        activity = MarketActivityState()
+        activity.update_first_prices(up_price=None, down_price=None)
+        assert activity.up_first_price is None
+        assert activity.down_first_price is None
+
+    def test_can_latch_one_side_before_the_other(self):
+        activity = MarketActivityState()
+        activity.update_first_prices(up_price=0.45, down_price=None)
+        activity.update_first_prices(up_price=0.30, down_price=0.55)
+        assert activity.up_first_price == 0.45  # unchanged
+        assert activity.down_first_price == 0.55  # first time it was available
+
+
+class TestMidContrarianFirstEntrySide:
+    """bc.MID_CONTRARIAN_BIAS_PROBABILITY / mid_contrarian_first_entry_side
+    (2026-09-18): the real trader's MID first-entry side genuinely favors
+    whichever side has lost value since window-open. See
+    behavior_config.py's docstring for the full derivation."""
+
+    def test_bias_probability_lookup_by_tercile(self):
+        assert bc.mid_contrarian_bias_probability("Bitcoin", 0.01) == pytest.approx(0.5946)
+        assert bc.mid_contrarian_bias_probability("Bitcoin", 0.08) == pytest.approx(0.6596)
+        assert bc.mid_contrarian_bias_probability("Bitcoin", 0.20) == pytest.approx(0.7037)
+
+    def test_bias_probability_is_zero_for_an_uncalibrated_asset(self):
+        assert bc.mid_contrarian_bias_probability("Dogecoin", 0.10) == 0.0
+
+    def test_no_signal_when_a_side_already_established(self):
+        activity = MarketActivityState()
+        activity.up_first_price = 0.50
+        activity.down_first_price = 0.50
+        activity.last_side = "Up"  # not a true first entry anymore
+        up_book = make_liquid_book(price=0.30, token_id="up")
+        down_book = make_liquid_book(price=0.70, token_id="down")
+        result = mid_contrarian_first_entry_side("Bitcoin", activity, up_book, down_book, random.Random(0))
+        assert result is None
+
+    def test_no_signal_outside_mid_band(self):
+        activity = MarketActivityState()
+        activity.up_first_price = 0.50
+        activity.down_first_price = 0.50
+        up_book = make_liquid_book(price=0.20, token_id="up")  # CHEAP, not MID
+        down_book = make_liquid_book(price=0.80, token_id="down")
+        result = mid_contrarian_first_entry_side("Bitcoin", activity, up_book, down_book, random.Random(0))
+        assert result is None
+
+    def test_no_signal_when_first_price_not_yet_recorded(self):
+        activity = MarketActivityState()  # up_first_price/down_first_price both None
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        result = mid_contrarian_first_entry_side("Bitcoin", activity, up_book, down_book, random.Random(0))
+        assert result is None
+
+    def test_no_signal_at_zero_magnitude(self):
+        # Regression test for the bug caught before shipping: a market's
+        # very first tick has first_price == current price (both latched
+        # the same tick), giving velocity exactly 0 -- must NOT be
+        # treated as "smallest tercile" and fire anyway.
+        activity = MarketActivityState()
+        activity.up_first_price = 0.40
+        activity.down_first_price = 0.60
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        result = mid_contrarian_first_entry_side("Bitcoin", activity, up_book, down_book, random.Random(0))
+        assert result is None
+
+    def test_fires_and_picks_the_side_that_lost_value(self):
+        activity = MarketActivityState()
+        activity.up_first_price = 0.60   # Up started at 0.60
+        activity.down_first_price = 0.40  # Down started at 0.40
+        up_book = make_liquid_book(price=0.40, token_id="up")   # Up dropped 0.20 -- the "dip"
+        down_book = make_liquid_book(price=0.60, token_id="down")  # Down rose 0.20
+        # rng.random() always returns < any real probability -> forces a fire
+        result = mid_contrarian_first_entry_side(
+            "Bitcoin", activity, up_book, down_book,
+            type("AlwaysFire", (), {"random": staticmethod(lambda: 0.0)})())
+        assert result == "Up"
+
+    def test_can_pick_down_when_down_lost_value(self):
+        activity = MarketActivityState()
+        activity.up_first_price = 0.40
+        activity.down_first_price = 0.60
+        up_book = make_liquid_book(price=0.60, token_id="up")     # Up rose
+        down_book = make_liquid_book(price=0.40, token_id="down")  # Down dropped -- the "dip"
+        result = mid_contrarian_first_entry_side(
+            "Bitcoin", activity, up_book, down_book,
+            type("AlwaysFire", (), {"random": staticmethod(lambda: 0.0)})())
+        assert result == "Down"
+
+    def test_does_not_fire_when_roll_exceeds_probability(self):
+        activity = MarketActivityState()
+        activity.up_first_price = 0.60
+        activity.down_first_price = 0.40
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        result = mid_contrarian_first_entry_side(
+            "Bitcoin", activity, up_book, down_book,
+            type("NeverFire", (), {"random": staticmethod(lambda: 0.9999)})())
+        assert result is None
+
+
+class TestBuildOrderIntentMidContrarian:
+    """Integration tests: the contrarian override wired into
+    build_order_intent's decision chain."""
+
+    def test_contrarian_override_picks_the_losing_side(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        activity = MarketActivityState()
+        activity.up_first_price = 0.60
+        activity.down_first_price = 0.40
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(bc, "mid_contrarian_bias_probability", lambda asset, magnitude: 1.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+        assert intent is not None
+        assert intent.side == "Up"
+        assert intent.reason == "mid_contrarian"
+
+    def test_does_not_override_a_hedge(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Down", notional_usd=100.0, regime="MID", price=0.60)
+        activity.up_first_price = 0.60
+        activity.down_first_price = 0.40
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: "Up")
+        monkeypatch.setattr(bc, "mid_contrarian_bias_probability", lambda asset, magnitude: 1.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+        assert intent is not None
+        assert intent.is_hedge is True
+
+    def test_does_not_override_forced_first_entry_side(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        activity = MarketActivityState()
+        activity.up_first_price = 0.60
+        activity.down_first_price = 0.40
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(bc, "mid_contrarian_bias_probability", lambda asset, magnitude: 1.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0,
+                                     forced_first_entry_side="Down")
+        assert intent is not None
+        assert intent.side == "Down"
+        assert intent.reason != "mid_contrarian"
+
+    def test_size_dampener_applies_to_contrarian_entries(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        activity_contrarian = MarketActivityState()
+        activity_contrarian.up_first_price = 0.60
+        activity_contrarian.down_first_price = 0.40
+        activity_ordinary = MarketActivityState()  # no first_price set -- can't trigger contrarian
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "mid_contrarian_bias_probability", lambda asset, magnitude: 1.0)
+        monkeypatch.setattr(config, "ENABLE_ACCURACY_SCOUT_MULTIPLIER", False)
+
+        contrarian_intent = build_order_intent(market, up_book, down_book, activity_contrarian,
+                                                random.Random(0), now=0.0)
+        ordinary_intent = build_order_intent(market, up_book, down_book, activity_ordinary,
+                                              random.Random(0), now=0.0)
+        assert contrarian_intent is not None and ordinary_intent is not None
+        assert contrarian_intent.reason == "mid_contrarian"
+        assert ordinary_intent.reason != "mid_contrarian"
+        # Same price/regime -- the only difference should be the ~0.72x dampener
+        assert contrarian_intent.notional_usd < ordinary_intent.notional_usd
+
+    def test_feature_flag_disables_the_override(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        activity = MarketActivityState()
+        activity.up_first_price = 0.60
+        activity.down_first_price = 0.40
+
+        monkeypatch.setattr(config, "ENABLE_MID_CONTRARIAN_BIAS", False)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Down")
+        monkeypatch.setattr(bc, "mid_contrarian_bias_probability", lambda asset, magnitude: 1.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+        assert intent is not None
+        assert intent.side == "Down"  # decide_side's answer, not the contrarian override
+        assert intent.reason != "mid_contrarian"

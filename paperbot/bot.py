@@ -681,6 +681,11 @@ class PaperBot:
         # MULTIPLIER's docstring in behavior_config.py.
         activity.update_cheap_crossings(up_book.best_bid, down_book.best_bid, now,
                                          threshold=bc.CHEAP_FRESHNESS_THRESHOLD)
+        # FIRST-PRICE tracking (2026-09-18): plain "first observation"
+        # latch (no threshold), needed for the MID-band contrarian
+        # first-entry side-selection signal. See MID_CONTRARIAN_BIAS_
+        # PROBABILITY's docstring in behavior_config.py.
+        activity.update_first_prices(up_book.best_bid, down_book.best_bid)
         hours_since_resumption = self._hours_since_resumption(now)
         # CHANGED 2026-09-14 (root cause of the fill-rate/fidelity-scorecard
         # investigation): entry_count -> real_fill_count. entry_count

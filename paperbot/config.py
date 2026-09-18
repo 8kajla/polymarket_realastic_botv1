@@ -993,3 +993,17 @@ ENABLE_DEEP_LONGSHOT_DAMPENER = os.environ.get(
 ENABLE_CHEAP_FRESHNESS_DAMPENER = os.environ.get(
     "ENABLE_CHEAP_FRESHNESS_DAMPENER", "true"
 ).strip().lower() not in ("false", "0", "no")
+
+# Feature flag for MID_CONTRARIAN_BIAS_PROBABILITY (see its docstring in
+# behavior_config.py). Added 2026-09-18 -- the real trader's MID
+# first-entry side genuinely favors whichever side has lost value since
+# window-open, confirmed cross-asset/magnitude-graded/significance-
+# tested. HONEST CAVEAT, unlike every other flag in this file: this is a
+# deliberate behavioral-fidelity build that makes the bot's own paper
+# win rate WORSE, not better -- shipped per explicit instruction that
+# replication fidelity is the current priority, not paper P&L. Default
+# TRUE everywhere; set false to fall back to pre-2026-09-18 first-entry
+# side selection (uniform-random / cross-market persistence only).
+ENABLE_MID_CONTRARIAN_BIAS = os.environ.get(
+    "ENABLE_MID_CONTRARIAN_BIAS", "true"
+).strip().lower() not in ("false", "0", "no")

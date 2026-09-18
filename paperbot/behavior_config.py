@@ -814,6 +814,104 @@ def cheap_freshness_multiplier(asset: str, seconds_since_cheap_crossing: Optiona
 
 
 # ---------------------------------------------------------------------------
+# MID-BAND CONTRARIAN FIRST-ENTRY SIDE SELECTION. Added 2026-09-18: the
+# real trader's first-entry side choice in MID genuinely favors whichever
+# side has LOST value since the window opened -- not a coin flip, and not
+# explained by anything already modeled (cross-market persistence,
+# hedging, or the bot's own reprice mechanics). See
+# external-bot-strategies-loop-progress.md's 2026-09-18 entries for the
+# full derivation; summary of what was checked before trusting this:
+#
+# - Cross-asset: Bitcoin 62.2%, Ethereum 66.7%, Solana 70.5% (SWITCH
+#   decisions, i.e. not explained by persistence) all independently
+#   clear the 50% no-preference baseline.
+# - Hedges REJECTED as the cause: hedge-shaped trades skew POSITIVE
+#   (+0.02 mean velocity), the negative skew lives in ordinary entries.
+# - Cross-market persistence REJECTED as the sole cause: PERSIST
+#   decisions (69.6%) and SWITCH decisions (65.5%) show the same
+#   pattern -- present regardless of whether he carried over his prior
+#   side.
+# - Side-choice base-rate REJECTED as a confound: he picks Up/Down
+#   almost exactly 50/50, BOTH sides independently show the effect
+#   (Up-choices 64.4%, Down-choices 71.4%), and the underlying market's
+#   own Up-vs-Down price drift is essentially perfectly symmetric across
+#   all 5,542 markets checked (50.1% vs 49.9%) -- ruling out "the market
+#   trended one way during this window" as an alternative explanation.
+# - Temporal-ordering integrity: 0/1,116 rows had the reference price
+#   recorded AFTER his trade (no reversed-causality contamination).
+# - Time-in-window: a real, SEPARATE effect (74.7% early -> 59.7% late,
+#   strongest for fast/early moves) that does not explain away the
+#   magnitude-graded pattern below.
+# - Formal significance: every per-asset magnitude tercile clears
+#   z>=1.94, all but one clear z>=2.57 (Bitcoin/Solana small-move
+#   terciles and every medium/large tercile clear comfortably;
+#   Ethereum's smallest-magnitude tercile is the one under-powered cell,
+#   z=1.94, n=86 -- calibrated conservatively below rather than trusted
+#   at face value).
+#
+# HONEST FRAMING, more important here than for any other table in this
+# file: replicating this makes the bot's OWN paper win rate WORSE, not
+# better (negative velocity correlates with lower win rate for both
+# populations) -- this is a deliberate behavioral-fidelity build, not a
+# performance one, per explicit instruction. Scoped to MID only (the
+# ONLY regime where this is even measurable -- CHEAP/CORE/HIGH's own
+# price boundaries mechanically force the sign of velocity for any
+# market that reaches them, so there's no uninformed baseline to compare
+# against there; this is not evidence the effect doesn't apply, just
+# that those regimes can't test it).
+#
+# Applied as a PRIORITY override before decide_side's own persistence/
+# random logic (same architectural pattern as forced_first_entry_side),
+# not a blend -- the real mechanism (how this signal actually combines
+# with cross-market persistence in his own decision process) isn't
+# known; this is the simplest defensible first implementation, flagged
+# for refinement if a future thread jointly models both signals.
+#
+# Magnitude tercile boundaries, per asset, in price units (|velocity|):
+MID_CONTRARIAN_MAGNITUDE_TERCILES = {
+    "Bitcoin":  (0.045, 0.125),
+    "Ethereum": (0.075, 0.150),
+    "Solana":   (0.080, 0.165),
+}
+# P(pick the side that has lost value since window-open), per asset per
+# magnitude tercile (small, medium, large). Ethereum's small-move value
+# is pulled toward Bitcoin/Solana's small-move average (60.6%) rather
+# than its own raw 60.47% reading -- negligible difference in this case
+# since the raw value already agrees closely, but documented as the
+# deliberate, conservative treatment for that one under-powered cell.
+MID_CONTRARIAN_BIAS_PROBABILITY = {
+    "Bitcoin":  (0.5946, 0.6596, 0.7037),
+    "Ethereum": (0.6060, 0.6744, 0.8276),
+    "Solana":   (0.6082, 0.6809, 0.8200),
+}
+# Contrarian first entries are sized smaller -- a real, ~28% gap found
+# the same day ($1.87 mean vs $2.61 mean for momentum-following first
+# entries), consistent with treating a contrarian pick as a tentative,
+# lower-conviction bet rather than a confident directional one. One
+# flat ratio (not per-asset/tercile -- the size finding wasn't broken
+# down that granularly), applied multiplicatively to the ordinary
+# entry-curve notional.
+MID_CONTRARIAN_SIZE_RATIO = 0.72
+
+
+def mid_contrarian_bias_probability(asset: str, velocity_magnitude: float) -> float:
+    """P(the contrarian first-entry override should fire) for this
+    asset and this side's |velocity| since window-open. 0.0 (no-op --
+    never fires) for an asset with no calibration, matching this file's
+    usual pattern for uncalibrated/dormant assets."""
+    terciles = MID_CONTRARIAN_MAGNITUDE_TERCILES.get(asset)
+    probs = MID_CONTRARIAN_BIAS_PROBABILITY.get(asset)
+    if terciles is None or probs is None:
+        return 0.0
+    lo, hi = terciles
+    if velocity_magnitude < lo:
+        return probs[0]
+    if velocity_magnitude < hi:
+        return probs[1]
+    return probs[2]
+
+
+# ---------------------------------------------------------------------------
 # DECISIVENESS-ONSET size scaling. Added 2026-09-13: a market's price
 # snapping into a decisive band (>=0.70) is a distinct event from just
 # "having a decisive price" -- the trader reacts to the SNAP, not the

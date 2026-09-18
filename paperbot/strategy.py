@@ -150,6 +150,30 @@ class MarketActivityState:
     # any later moment it happens to still be there).
     up_cheap_crossed_at: Optional[float] = None
     down_cheap_crossed_at: Optional[float] = None
+    # ADDED 2026-09-18, alongside MID_CONTRARIAN_BIAS_PROBABILITY: the
+    # first-ever recorded book price for each side once this market
+    # starts being tracked -- NOT a threshold crossing like the fields
+    # above, just a plain "first observation" latch. Needed for the
+    # MID-band contrarian side-selection finding: the real trader's
+    # first-entry side choice in MID genuinely favors whichever side has
+    # LOST value since the window opened (confirmed cross-asset,
+    # magnitude-graded, survives persist/switch and time-in-window
+    # confound checks -- see external-bot-strategies-loop-progress.md's
+    # 2026-09-18 entries for the full derivation). This requires knowing
+    # each side's price AT WINDOW OPEN as a reference point, which
+    # nothing previously tracked.
+    up_first_price: Optional[float] = None
+    down_first_price: Optional[float] = None
+
+    def update_first_prices(self, up_price: Optional[float], down_price: Optional[float]) -> None:
+        """Latches the first non-None price seen for each side. Called
+        every tick, same discipline as update_decisive_crossings/
+        update_cheap_crossings -- a no-op once a side's first price is
+        already recorded."""
+        if self.up_first_price is None and up_price is not None:
+            self.up_first_price = up_price
+        if self.down_first_price is None and down_price is not None:
+            self.down_first_price = down_price
 
     def position_tier(self) -> str:
         return bc.position_tier_for_index(self.real_fill_count)
@@ -536,6 +560,67 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
     return None
 
 
+def mid_contrarian_first_entry_side(asset: str, activity: MarketActivityState,
+                                     up_book: BookState, down_book: BookState,
+                                     rng: random.Random) -> Optional[str]:
+    """Returns the contrarian side ("Up"/"Down") if the MID-band
+    first-entry contrarian override should fire this tick, or None if
+    not (in which case the caller falls through to the ordinary
+    decide_side flow). See bc.MID_CONTRARIAN_BIAS_PROBABILITY's
+    docstring for the full derivation and confound checks.
+
+    Only meaningful for a market's TRUE first entry (activity.last_side
+    is None -- mirrors decide_side's own first-entry branch exactly,
+    since this is a priority override for that same branch, not a
+    replacement for the persistence logic that applies once a side is
+    established) and only when both sides currently sit in MID
+    (0.30 <= price < 0.70) -- checking either side is sufficient since
+    Up + Down ~= 1 makes the band symmetric (if Up is in MID, Down is
+    too). Returns None gracefully whenever either side's first-observed
+    price hasn't been recorded yet (a market just onboarded this same
+    tick), matching this file's usual defensive-None handling for a
+    signal that isn't available yet rather than raising.
+
+    BUG CAUGHT LIVE (2026-09-18, before this ever shipped): a market
+    evaluated for the first time has its first_price fields latched by
+    bot.py's update_first_prices call THIS SAME TICK, before
+    build_order_intent runs -- meaning velocity is exactly 0.0 on that
+    very first tick, not "a small move." The original version treated
+    magnitude==0 as the smallest tercile and still fired at that
+    tercile's full probability (~60%) with literally zero underlying
+    signal. Guarded explicitly below: zero (or near-zero, to absorb
+    float noise) magnitude never fires, regardless of what an asset's
+    calibrated small-move tercile probability says -- there has to be
+    an actual observed move to be contrarian about.
+    """
+    if activity.last_side is not None:
+        return None
+    up_price = up_book.best_bid
+    down_price = down_book.best_bid
+    if up_price is None or down_price is None:
+        return None
+    if not (0.30 <= up_price < 0.70):
+        return None
+    if activity.up_first_price is None or activity.down_first_price is None:
+        return None
+    up_velocity = up_price - activity.up_first_price
+    down_velocity = down_price - activity.down_first_price
+    # Whichever side has LOST value since window-open is the contrarian
+    # pick -- by construction (Up + Down ~= 1 at all times) these two
+    # velocities are approximately opposite in sign, so exactly one side
+    # is "the dip" in the ordinary case.
+    if up_velocity <= down_velocity:
+        contrarian_side, magnitude = "Up", abs(up_velocity)
+    else:
+        contrarian_side, magnitude = "Down", abs(down_velocity)
+    if magnitude < 1e-9:
+        return None  # no observed move yet -- nothing to be contrarian about
+    p = bc.mid_contrarian_bias_probability(asset, magnitude)
+    if p > 0 and rng.random() < p:
+        return contrarian_side
+    return None
+
+
 def gradient_score(asset: str, regime: str, recent_price_delta: Optional[float]) -> float:
     """
     Soft tiebreak score in [0, 1] for how well a candidate opportunity
@@ -879,6 +964,7 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         is_weekend=is_weekend, dominant_current_price=dominant_current_price,
         prev_hedge_rate=prev_hedge_rate, after_big_loss=after_big_loss)
     is_hedge = hedge_side is not None
+    is_contrarian = False
     if is_hedge:
         side = hedge_side
     elif forced_first_entry_side is not None and activity.real_fill_count == 0:
@@ -891,6 +977,17 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # way) -- otherwise a retry after a cancelled first attempt could
         # compute a forced side here but silently ignore it.
         side = forced_first_entry_side
+    elif (config.ENABLE_MID_CONTRARIAN_BIAS
+          and (mid_contrarian_side := mid_contrarian_first_entry_side(
+              market.asset, activity, up_book, down_book, rng)) is not None):
+        # MID-BAND CONTRARIAN first-entry override (2026-09-18): see
+        # bc.MID_CONTRARIAN_BIAS_PROBABILITY's docstring for the full
+        # derivation. Priority override ahead of decide_side, same
+        # architectural slot as forced_first_entry_side above -- fires
+        # probabilistically (most of the time, for a large MID move) and
+        # falls through to the ordinary decide_side path otherwise.
+        side = mid_contrarian_side
+        is_contrarian = True
     else:
         # Regime-dependent persistence needs the CURRENTLY-HELD side's
         # live price, not a stale one -- both books are already available
@@ -1118,9 +1215,20 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                                               real_fill_count=activity.real_fill_count,
                                               live_hedge_count=activity.real_hedge_fill_count,
                                               decisiveness_fraction=decisiveness_fraction)
+        if is_contrarian and not is_floor_lot:
+            # MID-CONTRARIAN size dampener (2026-09-18): a real, ~28%
+            # size gap found the same day as the side-selection bias
+            # above -- he treats a contrarian first entry as a
+            # tentative, lower-conviction bet, not a confident
+            # directional one. See MID_CONTRARIAN_SIZE_RATIO's docstring
+            # in behavior_config.py. Not applied to the floor-lot tier,
+            # same precedent as every other size multiplier in this
+            # function (floor-lot's whole point is an already-tiny,
+            # separately-calibrated notional).
+            notional *= bc.MID_CONTRARIAN_SIZE_RATIO
 
     is_scout = False
-    if not is_hedge and not is_floor_lot and activity.real_fill_count == 0:
+    if not is_hedge and not is_floor_lot and not is_contrarian and activity.real_fill_count == 0:
         # SCOUT: a deliberately small, tentative first entry -- see
         # SCOUT_PROBABILITY/SCOUT_SIZE_RATIO's docstring in
         # behavior_config.py. CHANGED 2026-09-14: entry_count ->
@@ -1138,6 +1246,17 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # -tiny mechanism keyed off share-count minimums, not first-entry
         # tentativeness -- scaling it down further would just inflate its
         # already-expected skip rate for no modeling benefit).
+        #
+        # EXCLUDED 2026-09-18: also never stacks with a MID-contrarian
+        # pick -- unlike floor-lot, this isn't structurally orthogonal
+        # (SCOUT_PROBABILITY's own original calibration was measured
+        # across ALL first entries, including contrarian-shaped ones,
+        # before this signal was even known to exist), so applying both
+        # dampeners to the same order would risk an unvalidated,
+        # double-counted size reduction beyond what either finding
+        # individually supports. MID_CONTRARIAN_SIZE_RATIO already
+        # covers the "this is a tentative bet" adjustment for these
+        # entries on its own.
         #
         # ACCURACY-conditioned (2026-09-11): scout_probability's base rate
         # is scaled by bc.accuracy_scout_multiplier(rolling_accuracy) --
@@ -1226,6 +1345,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         reason = "scout_entry"
     elif is_floor_lot:
         reason = "floor_lot"
+    elif is_contrarian:
+        reason = "mid_contrarian"
     else:
         reason = "entry_curve"
 
