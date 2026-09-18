@@ -216,10 +216,10 @@ class FillSimulator:
         self.orders[order.order_id] = order
         logger.info(
             "PLACE order=%d asset=%s regime=%s pos=%s side=%s price=%.4f size=%.6f "
-            "floor_lot=%s hedge=%s scout=%s queue_ahead_raw=%.4f queue_ahead_discounted=%.4f (factor=%.3f)",
+            "floor_lot=%s hedge=%s scout=%s reason=%s queue_ahead_raw=%.4f queue_ahead_discounted=%.4f (factor=%.3f)",
             order.order_id, order.asset, order.regime, order.position_tier, order.side,
             order.price, order.original_size, order.is_floor_lot, order.is_hedge, order.is_scout,
-            raw_queue, discounted_queue, factor,
+            intent.reason, raw_queue, discounted_queue, factor,
         )
         return order
 
