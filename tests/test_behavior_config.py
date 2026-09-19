@@ -742,6 +742,115 @@ class TestFavorableMoveHedgeTriggerMultiplier:
             assert max(curve.values()) < bc._FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP
 
 
+class TestAdverseMoveTtcInteractionMultiplier:
+    """Added 2026-09-20 after a code audit found decide_hedge had zero
+    time-to-close awareness for the TRIGGER decision (only for sizing).
+    Avellaneda-Stoikov-derived: his sensitivity to a given adverse move
+    scales with time REMAINING until close, confound-checked (GTD ~60s
+    cutoff, freshly-opened-window dip both excluded) and bootstrap-
+    confirmed. Bitcoin/Solana, CHEAP/MID/CORE only."""
+
+    def test_neutral_outside_the_confirmed_assets(self):
+        assert bc.adverse_move_ttc_interaction_multiplier("Ethereum", "CHEAP", 0.2, 150.0) == 1.0
+        assert bc.adverse_move_ttc_interaction_multiplier("Dogecoin", "CHEAP", 0.2, 150.0) == 1.0
+
+    def test_neutral_outside_the_confirmed_regimes(self):
+        # HIGH was confirmed ABSENT (z=-0.76, wrong sign, n.s.) -- strict no-op.
+        assert bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "HIGH", 0.2, 150.0) == 1.0
+
+    def test_neutral_when_inputs_unavailable(self):
+        assert bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", None, 150.0) == 1.0
+        assert bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, None) == 1.0
+
+    def test_neutral_for_favorable_moves(self):
+        # Out of scope -- the favorable side's own time-interaction was never tested.
+        assert bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", -0.1, 150.0) == 1.0
+
+    def test_noop_at_ttc_center(self):
+        # Mean-neutral by construction: exp(0)==1.0 at the center of the
+        # tested window (150s remaining), regardless of adverse_move.
+        assert bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, 150.0) == pytest.approx(1.0)
+        assert bc.adverse_move_ttc_interaction_multiplier("Solana", "CORE", 0.05, 150.0) == pytest.approx(1.0)
+
+    def test_more_time_remaining_amplifies_a_given_adverse_move(self):
+        # The confirmed direction: MORE time remaining -> MORE eager to
+        # hedge for the same adverse move (multiplier > 1), LESS time
+        # remaining -> LESS eager (multiplier < 1).
+        for asset in ("Bitcoin", "Solana"):
+            for regime in ("CHEAP", "MID", "CORE"):
+                high_ttc = bc.adverse_move_ttc_interaction_multiplier(asset, regime, 0.2, 240.0)
+                low_ttc = bc.adverse_move_ttc_interaction_multiplier(asset, regime, 0.2, 60.0)
+                assert high_ttc > 1.0, f"{asset}/{regime}: expected >1.0 at high ttc, got {high_ttc}"
+                assert low_ttc < 1.0, f"{asset}/{regime}: expected <1.0 at low ttc, got {low_ttc}"
+                assert high_ttc > low_ttc
+
+    def test_flat_beyond_the_confound_clean_range_no_extrapolation(self):
+        # Confound-clean tested range is [60,240]s -- flat beyond it.
+        at_hi = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, 240.0)
+        above_hi = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, 299.0)
+        assert at_hi == above_hi
+        at_lo = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, 60.0)
+        below_lo = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, 0.0)
+        assert at_lo == below_lo
+
+    def test_cap_bounds_the_result(self):
+        # Even at the most extreme clamped inputs, stays within the cap.
+        extreme = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 10.0, 240.0)
+        assert extreme <= bc._ADVERSE_MOVE_TTC_INTERACTION_CAP
+        extreme_low = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 10.0, 60.0)
+        assert extreme_low >= 1.0 / bc._ADVERSE_MOVE_TTC_INTERACTION_CAP
+
+
+class TestCheapTtcSelectivityMultiplier:
+    """Added 2026-09-20, the entry-side half of the same code-audit gap
+    -- first-entry price selectivity had no time-to-close awareness.
+    Avellaneda-Stoikov spread-widening prediction, confirmed after
+    fixing a self-caught confound (raw price vs ttc looked like a
+    rejection but was really the mechanical price-drift-over-window-
+    time effect; the occupancy-normalized percentile version confirms
+    the correct direction for Ethereum/Solana). Bitcoin excluded."""
+
+    def test_neutral_outside_the_confirmed_assets(self):
+        assert bc.cheap_ttc_selectivity_multiplier("Bitcoin", 0.20, 250.0) == 1.0
+        assert bc.cheap_ttc_selectivity_multiplier("Dogecoin", 0.20, 250.0) == 1.0
+
+    def test_neutral_when_seconds_remaining_unavailable(self):
+        assert bc.cheap_ttc_selectivity_multiplier("Ethereum", 0.20, None) == 1.0
+
+    def test_neutral_when_price_is_at_or_below_the_reference(self):
+        # A price at or below what's typically available right now is
+        # never dampened -- nothing to be selective about.
+        ref = bc.CHEAP_TTC_SELECTIVITY_REFERENCE_PRICE["Ethereum"][3][2]  # the (180,240) bucket's reference
+        assert bc.cheap_ttc_selectivity_multiplier("Ethereum", ref, 200.0) == 1.0
+        assert bc.cheap_ttc_selectivity_multiplier("Ethereum", ref - 0.01, 200.0) == 1.0
+
+    def test_worse_than_reference_price_gets_dampened(self):
+        ref = bc.CHEAP_TTC_SELECTIVITY_REFERENCE_PRICE["Ethereum"][3][2]
+        mult = bc.cheap_ttc_selectivity_multiplier("Ethereum", ref + 0.05, 200.0)
+        assert mult < 1.0
+
+    def test_more_time_remaining_dampens_a_worse_price_more(self):
+        # The confirmed direction: MORE time remaining -> MORE selective
+        # (a worse-than-reference price is dampened harder). Uses a
+        # single fixed price that's worse than EVERY bucket's own
+        # reference (reference itself rises with more time remaining,
+        # by construction -- the same mechanical drift this whole
+        # mechanism exists to see past), so the comparison isn't
+        # confounded by which bucket's reference happens to apply.
+        for asset in ("Ethereum", "Solana"):
+            worse_price = 0.29  # worse than every bucket's reference for both assets
+            high_ttc_mult = bc.cheap_ttc_selectivity_multiplier(asset, worse_price, 290.0)
+            low_ttc_mult = bc.cheap_ttc_selectivity_multiplier(asset, worse_price, 10.0)
+            assert high_ttc_mult < low_ttc_mult, \
+                f"{asset}: expected more dampening (lower mult) with more time remaining"
+
+    def test_floor_bounds_the_result(self):
+        for asset in ("Ethereum", "Solana"):
+            ref = bc.CHEAP_TTC_SELECTIVITY_REFERENCE_PRICE[asset][0][2]
+            extreme = bc.cheap_ttc_selectivity_multiplier(asset, ref + 10.0, 300.0)
+            assert extreme >= bc._CHEAP_TTC_SELECTIVITY_FLOOR
+
+
 class TestWeekendHedgeMultiplier:
     """Weekend-conditioned first-hedge trigger, added 2026-09-10 --
     real, well-powered (z=9.9, n=10,183/3,902) finding that his

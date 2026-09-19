@@ -437,7 +437,8 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
                   is_weekend: Optional[bool] = None,
                   dominant_current_price: Optional[float] = None,
                   prev_hedge_rate: Optional[float] = None,
-                  after_big_loss: Optional[bool] = None) -> Optional[str]:
+                  after_big_loss: Optional[bool] = None,
+                  seconds_remaining: Optional[float] = None) -> Optional[str]:
     """
     Returns the hedge side ("Up"/"Down") if THIS entry should be a
     deliberate insurance leg on the opposite side from the first entry,
@@ -614,6 +615,20 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
                     and activity.first_entry_regime == "CHEAP"):
                 favorable_mult = bc.favorable_move_hedge_trigger_multiplier(asset, adverse_move)
                 p = max(0.0, min(1.0, p * favorable_mult))
+            # ADVERSE-MOVE x TIME-REMAINING interaction (2026-09-20): a
+            # refinement ON TOP OF adverse_move_hedge_trigger_multiplier
+            # above, not instead of it -- see
+            # bc.adverse_move_ttc_interaction_multiplier's docstring for
+            # the full Avellaneda-Stoikov-derived rationale (his
+            # sensitivity to a given adverse move genuinely scales with
+            # how much time remains, real in CHEAP/MID/CORE for
+            # Bitcoin/Solana, absent in HIGH and for Ethereum). No-ops
+            # cleanly (1.0) outside those cells or when seconds_remaining
+            # is unavailable.
+            if config.ENABLE_ADVERSE_MOVE_TTC_INTERACTION:
+                ttc_interaction_mult = bc.adverse_move_ttc_interaction_multiplier(
+                    asset, activity.first_entry_regime, adverse_move, seconds_remaining)
+                p = max(0.0, min(1.0, p * ttc_interaction_mult))
         if config.ENABLE_CROSS_MARKET_HEDGE_RATE_MULTIPLIER and prev_hedge_rate is not None:
             rate_mult = bc.cross_market_hedge_rate_multiplier(asset, prev_hedge_rate)
             p = max(0.0, min(1.0, p * rate_mult))
@@ -1111,7 +1126,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     hedge_side = decide_hedge(
         market.asset, activity, rng, liquidity=market.liquidity,
         is_weekend=is_weekend, dominant_current_price=dominant_current_price,
-        prev_hedge_rate=prev_hedge_rate, after_big_loss=after_big_loss)
+        prev_hedge_rate=prev_hedge_rate, after_big_loss=after_big_loss,
+        seconds_remaining=seconds_remaining)
     is_hedge = hedge_side is not None
     is_contrarian = False
     is_cross_asset_carryover = False
@@ -1239,6 +1255,22 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                 "(seconds_since_crossing=%s, mult=%.2f)",
                 market.asset, regime, price, seconds_since_cheap_crossing, joint_mult)
             return None
+        # CHEAP TTC-selectivity dampener (2026-09-20): a SEPARATE axis
+        # from the joint dampener just above -- time UNTIL close, not
+        # time SINCE crossing. See bc.cheap_ttc_selectivity_multiplier's
+        # docstring for the full Avellaneda-Stoikov-derived rationale
+        # (Ethereum/Solana only, Bitcoin showed no effect). Only
+        # dampens a price that's WORSE than what's typically available
+        # at this point in the window -- a good price is never skipped
+        # by this mechanism.
+        if config.ENABLE_CHEAP_TTC_SELECTIVITY:
+            ttc_selectivity_mult = bc.cheap_ttc_selectivity_multiplier(market.asset, price, seconds_remaining)
+            if ttc_selectivity_mult < 1.0 and rng.random() > ttc_selectivity_mult:
+                logger.info(
+                    "SKIP asset=%s regime=%s price=%.4f: cheap-ttc-selectivity dampener "
+                    "(seconds_remaining=%s, mult=%.2f)",
+                    market.asset, regime, price, seconds_remaining, ttc_selectivity_mult)
+                return None
 
     position_tier = activity.position_tier()
 

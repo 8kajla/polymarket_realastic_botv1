@@ -144,7 +144,8 @@ class TestCrossMarketSideTracking:
         monkeypatch.setattr(stratmod, "decide_side", spy_decide_side)
         monkeypatch.setattr(stratmod, "decide_hedge",
                              lambda asset, activity, rng, liquidity=None, is_weekend=None,
-                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: None)
+                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None,
+                             seconds_remaining=None: None)
 
         market2 = make_market_for_asset("Bitcoin", condition_id="cond-2", end_time=3000.0)
         wire_market(bot, market2, bid=0.30, ask=0.31, depth=200.0)
@@ -197,7 +198,8 @@ class TestCrossAssetCarryoverTracking:
         monkeypatch.setattr(stratmod, "cross_asset_carryover_side", spy_cross_asset_carryover_side)
         monkeypatch.setattr(stratmod, "decide_hedge",
                              lambda asset, activity, rng, liquidity=None, is_weekend=None,
-                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: None)
+                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None,
+                             seconds_remaining=None: None)
 
         market2 = make_market_for_asset("Ethereum", condition_id="cond-2", end_time=3000.0)
         wire_market(bot, market2, bid=0.30, ask=0.31, depth=200.0)
@@ -568,7 +570,8 @@ class TestForcedFirstEntrySideHook:
                              lambda *a, **kw: called.append(True) or "Down")
         monkeypatch.setattr(stratmod, "decide_hedge",
                              lambda asset, activity, rng, liquidity=None, is_weekend=None,
-                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: None)
+                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None,
+                             seconds_remaining=None: None)
 
         bot._evaluate_one_market(market, now=1000.0)
 
@@ -605,7 +608,7 @@ class TestHedgeLegEndToEnd:
         monkeypatch.setattr(
             stratmod, "decide_hedge",
             lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None,
-            prev_hedge_rate=None, after_big_loss=None: "Down" if activity.dominant_side() == "Up" else "Up")
+            prev_hedge_rate=None, after_big_loss=None, seconds_remaining=None: "Down" if activity.dominant_side() == "Up" else "Up")
 
         asyncio.run(bot.strategy_tick(now=1001.0))
 

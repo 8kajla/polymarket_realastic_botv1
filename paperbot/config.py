@@ -730,6 +730,28 @@ ENABLE_FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for ADVERSE_MOVE_TTC_INTERACTION_COEF (see its docstring in
+# behavior_config.py). Added 2026-09-20 after a code audit found this file
+# had extensive time-to-close awareness for SIZING but none for the hedge
+# TRIGGER decision -- an Avellaneda-Stoikov-derived, confound-checked,
+# bootstrap-confirmed interaction (his sensitivity to a given adverse move
+# scales with time remaining until close) closes that gap. Bitcoin/Solana,
+# CHEAP/MID/CORE only. Default TRUE everywhere.
+ENABLE_ADVERSE_MOVE_TTC_INTERACTION = os.environ.get(
+    "ENABLE_ADVERSE_MOVE_TTC_INTERACTION", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for CHEAP_TTC_SELECTIVITY_REFERENCE_PRICE (see its
+# docstring in behavior_config.py). Added 2026-09-20, the entry-side half
+# of the same code-audit gap -- first-entry price selectivity had no
+# time-to-close awareness at all. Ethereum/Solana only, CHEAP only.
+# Default TRUE everywhere.
+ENABLE_CHEAP_TTC_SELECTIVITY = os.environ.get(
+    "ENABLE_CHEAP_TTC_SELECTIVITY", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Feature flag for CROSS_MARKET_SIDE_PERSISTENCE (see its docstring in
 # behavior_config.py). Added 2026-09-11 -- default TRUE everywhere,
 # explicit FALSE for paperbot-mini (the $100 control instance).

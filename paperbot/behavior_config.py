@@ -846,6 +846,108 @@ def cheap_joint_entry_multiplier(asset: str, price: float,
 
 
 # ---------------------------------------------------------------------------
+# CHEAP ENTRY-SELECTIVITY vs TIME-TO-CLOSE. Added 2026-09-20, closing the
+# other half of the same code-audit gap ADVERSE_MOVE_TTC_INTERACTION_COEF
+# closes on the hedge side: this file has extensive TTC-aware SIZING but
+# nothing that makes first-entry price SELECTIVITY depend on how much
+# time remains -- cheap_joint_entry_multiplier above only ever sees
+# seconds_since_cheap_crossing (time SINCE the crossing), never
+# seconds_remaining (time UNTIL close).
+#
+# Derivation: Avellaneda-Stoikov's OTHER core formula (optimal spread
+# widens with time remaining -- more time left means more risk, so a
+# market maker demands a better price before committing) predicts he
+# should be MORE selective (get a relatively cheaper fill) early in a
+# window and LESS selective (accept whatever's available) as it nears
+# close. A naive test of this (raw entry price vs time-to-close-at-entry)
+# found a huge effect in the WRONG direction -- but that was confounded
+# by the already-known mechanical fact that price drifts downward over a
+# 5-minute window regardless of any deliberate choice (the same
+# price/freshness collinearity found elsewhere in this file). Fixed by
+# comparing his entry price's PERCENTILE within the distribution of
+# prices actually available at that same time-to-close (occupancy-
+# normalized against price_history_dense.jsonl, same trusted method as
+# CHEAP_JOINT_ENTRY_MULTIPLIER's own original derivation) instead of the
+# raw price level -- this isolates selectivity from the mechanical
+# drift. Once corrected: Ethereum (t=-4.72) and Solana (t=-4.78) both
+# show the predicted direction, bootstrap-confirmed (300 resamples,
+# 100% negative i.e. more-selective-with-more-time, both 90% CIs
+# entirely on the predicted side). Bitcoin shows nothing (t=-0.95) --
+# excluded.
+#
+# Implementation, deliberately conservative: rather than reproduce the
+# live percentile computation (needs the full occupancy distribution,
+# not practical to carry at runtime), CHEAP_TTC_SELECTIVITY_REFERENCE_
+# PRICE is a STATIC snapshot of the median available CHEAP price per
+# (asset, time-to-close bucket) from the same derivation. At decision
+# time, only a price ABOVE that bucket's reference (i.e. worse than
+# typical for this point in the window) is dampened, scaled by how much
+# time remains (more time left -> more willing to wait for better,
+# matching the confirmed direction) and by how far above reference the
+# price is. A price AT OR BELOW the reference is never dampened -- it's
+# already as good or better than typical, nothing to be selective about.
+# Uses the ABSOLUTE price difference from the reference, deliberately
+# NOT a ratio -- the reference price itself scales roughly with ttc by
+# construction (the same mechanical drift this mechanism exists to see
+# past), so a ratio-based excess would largely self-cancel against the
+# (ttc/300) scaling term (a shrinking reference inflates the ratio at
+# low ttc, roughly offsetting the smaller ttc factor) -- caught in
+# testing, before shipping, by a wiring test that initially showed no
+# detectable effect. Explicitly a first-pass, monitored calibration
+# (the coefficient below is chosen conservatively, not fit to a
+# specific target magnitude) -- same discipline CHEAP_FRESHNESS_
+# MULTIPLIER's own docstring already uses for a similarly soft,
+# not-precisely-fit multiplier.
+#
+# Scope: CHEAP first entries only (real_fill_count==0 at the call site),
+# not hedges, same gating as CHEAP_JOINT_ENTRY_MULTIPLIER.
+CHEAP_TTC_SELECTIVITY_ASSETS = {"Ethereum", "Solana"}  # Bitcoin excluded, t=-0.95 n.s.
+CHEAP_TTC_SELECTIVITY_REFERENCE_PRICE = {
+    "Ethereum": [(0.0, 60.0, 0.0350), (60.0, 120.0, 0.0650), (120.0, 180.0, 0.1250),
+                 (180.0, 240.0, 0.1750), (240.0, 300.0, 0.2250)],
+    "Solana":   [(0.0, 60.0, 0.0500), (60.0, 120.0, 0.0650), (120.0, 180.0, 0.1150),
+                 (180.0, 240.0, 0.1750), (240.0, 300.0, 0.2350)],
+}
+CHEAP_TTC_SELECTIVITY_COEF = 2.0
+_CHEAP_TTC_SELECTIVITY_PRICE_DIFF_CAP = 0.15   # cap how much one extreme outlier price can suppress
+_CHEAP_TTC_SELECTIVITY_FLOOR = 0.3             # never suppress harder than this from this mechanism alone
+
+
+def cheap_ttc_selectivity_multiplier(asset: str, price: float, seconds_remaining: Optional[float]) -> float:
+    """1.0 (no-op) for any asset outside CHEAP_TTC_SELECTIVITY_ASSETS,
+    when seconds_remaining is unavailable, or when price is at or below
+    the reference price for this (asset, time-to-close) bucket -- only a
+    worse-than-typical price gets dampened, and only proportionally to
+    how much time remains (more time left -> more selective), applied
+    as a skip-probability at the call site alongside
+    cheap_joint_entry_multiplier."""
+    if asset not in CHEAP_TTC_SELECTIVITY_ASSETS or seconds_remaining is None:
+        return 1.0
+    buckets = CHEAP_TTC_SELECTIVITY_REFERENCE_PRICE.get(asset)
+    if buckets is None:
+        return 1.0
+    ttc = max(0.0, min(300.0, seconds_remaining))
+    reference = None
+    for lo, hi, ref_price in buckets:
+        if lo <= ttc < hi:
+            reference = ref_price
+            break
+    if reference is None or reference <= 0 or price <= reference:
+        return 1.0
+    # ABSOLUTE price difference, deliberately NOT a ratio to the
+    # reference: the reference price itself scales roughly with ttc by
+    # construction (the same mechanical drift this whole mechanism
+    # exists to see past), so a RATIO-based excess would largely
+    # cancel against the (ttc/300) term below (shrinking reference ->
+    # inflated ratio at low ttc, roughly offsetting the smaller ttc
+    # factor) -- caught in testing before shipping. Absolute price
+    # difference doesn't have this self-cancellation.
+    price_diff = min(price - reference, _CHEAP_TTC_SELECTIVITY_PRICE_DIFF_CAP)
+    result = 1.0 - CHEAP_TTC_SELECTIVITY_COEF * (ttc / 300.0) * price_diff
+    return max(_CHEAP_TTC_SELECTIVITY_FLOOR, min(1.0, result))
+
+
+# ---------------------------------------------------------------------------
 # MID-BAND CONTRARIAN FIRST-ENTRY SIDE SELECTION. Added 2026-09-18: the
 # real trader's first-entry side choice in MID genuinely favors whichever
 # side has LOST value since the window opened -- not a coin flip, and not
@@ -2405,6 +2507,96 @@ def adverse_move_hedge_trigger_multiplier(asset: str, adverse_move: Optional[flo
             result = p_val + frac * (q_val - p_val)
             break
     cap = _ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
+
+
+# ---------------------------------------------------------------------------
+# ADVERSE-MOVE x TIME-REMAINING interaction. Added 2026-09-20, closing a
+# real structural gap found by a code audit: this whole file has extensive
+# time-to-close (TTC) awareness for SIZING (TTC_SIZE_MULTIPLIER,
+# HEDGE_TTC_SIZE_MULTIPLIER) but ZERO for the hedge TRIGGER decision --
+# adverse_move_hedge_trigger_multiplier above is a pure function of
+# adverse_move alone, with no time-to-close input at all.
+#
+# Derivation: fitting the trader's hedge-decision data against
+# Avellaneda-Stoikov's reservation-price formula (r = mid - q*gamma*
+# sigma^2*(T-t) -- the inventory-risk skew scales with time REMAINING
+# until the horizon, not time since taking the position) found a real
+# interaction: for a given adverse move, he's MORE eager to hedge when
+# MORE time remains until the market resolves (more risk still ahead),
+# not less. This is a genuinely different axis from everything else
+# hedge-related in this file, which uses time SINCE entry/crossing.
+#
+# Checked hard before trusting it -- two real confounds ruled out:
+#   - Hedge rate crashes to ~0 in the final 60s before close (almost
+#     certainly the Polymarket GTD ~60s auto-expiry mechanic, not a risk
+#     choice) and is ALSO lower right when a window just opens (a hump,
+#     not the clean monotonic rise A-S predicts on its own).
+#   - Re-fit EXCLUDING both regions (ttc_remaining outside [60,240]),
+#     keeping only the clean middle of the window: the interaction
+#     SURVIVES, strongly -- coef=1.12, pooled across CHEAP/MID/CORE,
+#     n=7,647. Bootstrap-confirmed (300 resamples): 100% of replicates
+#     positive, 90% CI=[0.49,1.59] entirely above zero.
+#   - Extended to A-S's other two predictions for completeness: NO
+#     volatility/sigma^2 modulation found (interaction strength ~equal
+#     in low- vs high-realized-vol halves), and hedge SIZE (not just
+#     trigger) does NOT show the same interaction (t=0.80, n.s.) --
+#     this is specifically a WHETHER-to-hedge effect, not a
+#     HOW-MUCH-to-hedge one, which is exactly how it's scoped below.
+#
+# Per-regime breakdown: real in CHEAP (z=3.89), MID (z=2.81), CORE
+# (z=2.09) -- genuinely ABSENT in HIGH (z=-0.76, wrong sign, n.s.),
+# sensible since HIGH positions are already near-certain, leaving less
+# real uncertainty for "more time left" to matter against. Per-asset
+# breakdown: clearest for Solana (z=2.04) and Bitcoin (z=1.75,
+# borderline), genuinely ABSENT for Ethereum (z=0.58, n.s.) when pooled
+# across regimes. A joint per-(regime,asset) refit wasn't done (would
+# fragment into very thin cells) -- gated on the intersection of both
+# independent breakdowns (Bitcoin/Solana x CHEAP/MID/CORE) using the
+# single pooled coefficient as the effect size, honestly short of a
+# fully independent per-cell calibration.
+#
+# Scope: same as adverse_move_hedge_trigger_multiplier -- adverse_move
+# >= 0 only (the favorable side's own time-interaction was never
+# tested), first hedge only (same call-site gating as its sibling).
+# Applied AFTER adverse_move_hedge_trigger_multiplier, not instead of
+# it -- this is a refinement on top of that base curve, not a
+# replacement (mean-neutral: exp(0)=1.0 at ttc_remaining=150s, the
+# center of the tested window, so it doesn't shift the baseline the
+# sibling multiplier was itself calibrated against).
+ADVERSE_MOVE_TTC_INTERACTION_COEF = 1.1179
+ADVERSE_MOVE_TTC_INTERACTION_ASSETS = {"Bitcoin", "Solana"}  # Ethereum excluded, z=0.58 n.s.
+ADVERSE_MOVE_TTC_INTERACTION_REGIMES = {"CHEAP", "MID", "CORE"}  # HIGH excluded, z=-0.76 n.s.
+_ADVERSE_MOVE_TTC_INTERACTION_MOVE_CAP = 0.30  # same clamp range as adverse_move_hedge_trigger_multiplier's own table
+_ADVERSE_MOVE_TTC_INTERACTION_TTC_LO = 60.0    # confound-clean tested floor (GTD ~60s cutoff excluded below this)
+_ADVERSE_MOVE_TTC_INTERACTION_TTC_HI = 240.0   # confound-clean tested ceiling (freshly-opened-window dip excluded above this)
+_ADVERSE_MOVE_TTC_INTERACTION_TTC_CENTER = 150.0
+_ADVERSE_MOVE_TTC_INTERACTION_TTC_SCALE = 60.0
+_ADVERSE_MOVE_TTC_INTERACTION_CAP = 3.0
+
+
+def adverse_move_ttc_interaction_multiplier(asset: str, regime: str, adverse_move: Optional[float],
+                                             seconds_remaining: Optional[float]) -> float:
+    """1.0 (no-op) for any asset/regime outside the confirmed cells
+    (ADVERSE_MOVE_TTC_INTERACTION_ASSETS x _REGIMES), when adverse_move
+    or seconds_remaining is unavailable, or when adverse_move < 0 (the
+    favorable side is out of scope, see this section's docstring).
+    Otherwise exp(COEF * move * ttc_z), both move and seconds_remaining
+    clamped to the confound-clean measured range -- flat beyond it, no
+    extrapolation, same discipline as every other multiplier here.
+    Applied ON TOP OF adverse_move_hedge_trigger_multiplier, not instead
+    of it."""
+    if (asset not in ADVERSE_MOVE_TTC_INTERACTION_ASSETS
+            or regime not in ADVERSE_MOVE_TTC_INTERACTION_REGIMES):
+        return 1.0
+    if adverse_move is None or adverse_move < 0 or seconds_remaining is None:
+        return 1.0
+    move = max(0.0, min(_ADVERSE_MOVE_TTC_INTERACTION_MOVE_CAP, adverse_move))
+    ttc = max(_ADVERSE_MOVE_TTC_INTERACTION_TTC_LO,
+              min(_ADVERSE_MOVE_TTC_INTERACTION_TTC_HI, seconds_remaining))
+    ttc_z = (ttc - _ADVERSE_MOVE_TTC_INTERACTION_TTC_CENTER) / _ADVERSE_MOVE_TTC_INTERACTION_TTC_SCALE
+    result = math.exp(ADVERSE_MOVE_TTC_INTERACTION_COEF * move * ttc_z)
+    cap = _ADVERSE_MOVE_TTC_INTERACTION_CAP
     return max(1.0 / cap, min(cap, result))
 
 
