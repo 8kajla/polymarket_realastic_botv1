@@ -2164,21 +2164,45 @@ def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) ->
 # thinner than every other calibrated cell in this file -- a single
 # additional or missing dual-sided market would swing the ratio by
 # ~12pp, so these are left uncalibrated (1.0 no-op) rather than guessed
-# at. MID is excluded entirely: its shift is a CHARACTER change
-# (flipped from majority profit-locking to majority defensive), not a
-# frequency change, so a flat multiplier is the wrong shape of fix --
-# not yet modeled by any mechanism.
+# at.
+#
+# MID ADDED same day, RETRACTING an earlier same-day claim that "MID's
+# shift is a character change, not a frequency change, so a flat
+# multiplier is the wrong shape of fix". That claim was measured on the
+# wrong population: ALL hedge events (including HEDGE_CONTINUATION_
+# PROBABILITY's separate 2nd+ hedges), classified by the HEDGE SIDE's
+# own regime -- a real, valid characterization of "what a MID hedge
+# looks like when it fires" (and it does still show a real favorable-
+# to-defensive composition shift at that level, unexplained, possibly
+# living in the untouched continuation mechanism instead), but NOT the
+# population HEDGE_TRIGGER_PROBABILITY/hedge_attempt_hazard actually
+# governs. Redone with the CORRECT scope (first-entry regime, FIRST
+# hedge only, "ever went dual-sided" -- identical methodology to every
+# other cell in this table): MID's favorable-first-hedge rate (ratio
+# 0.419) and adverse-first-hedge rate (ratio 0.516) dropped by similar
+# magnitudes, not divergent ones -- MID's first-hedge TRIGGER fits the
+# same simple frequency-drop pattern as everything else:
+#
+#   MID      Bitcoin  n= 41 rate=34.15% vs shipped 73.90% -> ratio 0.462
+#   MID      Ethereum n= 15 rate=20.00% vs shipped 57.30% -> ratio 0.349 (thin)
+#   MID      Solana   n= 13 rate=23.08% vs shipped 66.12% -> ratio 0.349 (thin)
+#
+# Ethereum/Solana MID are thinner than every other calibrated cell
+# except CORE/Bitcoin -- direction is unambiguous and consistent with
+# Bitcoin's own well-powered result, but treat these two ratios as the
+# least-certain calibrated values in this table.
 #
 # HONEST CAVEAT (applies to every calibrated cell): based on ~33 hours
 # of post-shift data. The SIGN and MAGNITUDE of the shift are not in
-# doubt at the sample sizes actually used (a drop from 40-72% to
-# 10-14% is nowhere close to explainable by noise), but exact ratios
+# doubt at the sample sizes actually used (a drop from 40-74% to
+# 10-34% is nowhere close to explainable by noise), but exact ratios
 # should be re-derived once more days accumulate, and the presently-
 # uncalibrated cells (CORE Ethereum/Solana) should be revisited then
 # too. Feature-flagged so this can be cleanly disabled if the shift
 # ever reverts.
 REGIME_HEDGE_POST_SHIFT_MULTIPLIER = {
     "CHEAP": {"Bitcoin": 0.151, "Ethereum": 0.233, "Solana": 0.232},
+    "MID": {"Bitcoin": 0.462, "Ethereum": 0.349, "Solana": 0.349},
     "CORE": {"Bitcoin": 0.270},
     "HIGH": {"Bitcoin": 0.378, "Ethereum": 0.260},
 }
@@ -2187,9 +2211,8 @@ REGIME_HEDGE_POST_SHIFT_MULTIPLIER = {
 def regime_hedge_post_shift_multiplier(asset: str, regime: str) -> float:
     """1.0 (no-op) for any (regime, asset) not calibrated above --
     matching this file's usual pattern for an uncalibrated/dormant
-    cell. Callers apply this only for regime in (CHEAP, CORE, HIGH);
-    it says nothing about MID, which shifted in CHARACTER, not
-    frequency, and needs a different mechanism entirely."""
+    cell (e.g. Ethereum/Solana CORE, too thin to trust; Solana HIGH,
+    genuinely didn't shift)."""
     return REGIME_HEDGE_POST_SHIFT_MULTIPLIER.get(regime, {}).get(asset, 1.0)
 
 

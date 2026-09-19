@@ -1754,6 +1754,9 @@ class TestDecideHedgeWeekendMultiplier:
         assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "CHEAP") == pytest.approx(0.151)
         assert bc.regime_hedge_post_shift_multiplier("Ethereum", "CHEAP") == pytest.approx(0.233)
         assert bc.regime_hedge_post_shift_multiplier("Solana", "CHEAP") == pytest.approx(0.232)
+        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "MID") == pytest.approx(0.462)
+        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "MID") == pytest.approx(0.349)
+        assert bc.regime_hedge_post_shift_multiplier("Solana", "MID") == pytest.approx(0.349)
         assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "CORE") == pytest.approx(0.270)
         assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "HIGH") == pytest.approx(0.378)
         assert bc.regime_hedge_post_shift_multiplier("Ethereum", "HIGH") == pytest.approx(0.260)
@@ -1768,15 +1771,11 @@ class TestDecideHedgeWeekendMultiplier:
         # Deliberately left uncalibrated: Solana's own HIGH-band rate
         # showed no real drop.
         assert bc.regime_hedge_post_shift_multiplier("Solana", "HIGH") == 1.0
-        # MID is never calibrated here at all -- its shift is a
-        # character change, not a frequency change.
-        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "MID") == 1.0
 
     def test_regime_hedge_dampener_fires_less_often_than_mid(self):
         # Same asset, same attempt index -- CHEAP should hedge less
-        # often than MID purely because of the post-shift dampener
-        # (both start from their own calibrated hedge_attempt_hazard,
-        # but only CHEAP gets scaled down further).
+        # often than MID: both are now dampened, but CHEAP's dampener
+        # is much stronger (0.151 vs MID's 0.462 for Bitcoin).
         activity_cheap = MarketActivityState()
         record_filled_entry(activity_cheap, "Up", notional_usd=10.0, regime="CHEAP")
         activity_mid = MarketActivityState()
