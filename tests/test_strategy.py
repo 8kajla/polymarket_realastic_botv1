@@ -1417,8 +1417,15 @@ class TestDecideHedge:
         at this one specific input, not whether the base cumulative-
         probability model still reproduces its calibrated target. See
         TestConvictionHedgeMultiplierIntegration below for dedicated
-        coverage of the conviction mechanism itself."""
+        coverage of the conviction mechanism itself.
+
+        REGIME_HEDGE_POST_SHIFT_MULTIPLIER disabled here (added
+        2026-09-19): Bitcoin/HIGH is one of the newly-calibrated cells
+        (ratio 0.378) -- this test is about the base cumulative-
+        probability model reproducing HEDGE_TRIGGER_PROBABILITY's
+        target, not the post-shift dampener layered on top of it."""
         monkeypatch.setattr(config, "ENABLE_CONVICTION_HEDGE_MULTIPLIER", False)
+        monkeypatch.setattr(config, "ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER", False)
         n = 2000
         triggered = 0
         for seed in range(n):
@@ -1617,11 +1624,19 @@ class TestDecideHedgeAdverseMoveTriggerMultiplier:
         )
         assert n_baseline == n_favorable
 
-    def test_move_at_zero_is_lower_than_the_unmultiplied_baseline(self):
+    def test_move_at_zero_is_lower_than_the_unmultiplied_baseline(self, monkeypatch):
         # The curve's own first breakpoint (move==0.0) is a REAL,
         # measured value below 1.0 for Bitcoin -- not a no-op. Confirms
         # the documented discontinuity is actually wired up, not silently
         # smoothed away.
+        #
+        # REGIME_HEDGE_POST_SHIFT_MULTIPLIER disabled here (added
+        # 2026-09-19): Bitcoin/CORE is a newly-calibrated cell (ratio
+        # 0.270) -- without disabling it, both counts shrink toward the
+        # same small absolute values and this test loses the power to
+        # distinguish the (much smaller) adverse-move effect it's
+        # actually testing.
+        monkeypatch.setattr(config, "ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER", False)
         activity = MarketActivityState()
         record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE", price=0.80)
         n = 500
@@ -1735,15 +1750,29 @@ class TestDecideHedgeWeekendMultiplier:
         )
         assert n_weekday == n_weekend, "with the flag off, is_weekend must be a strict no-op"
 
-    def test_cheap_hedge_dampener_lookup(self):
-        assert bc.cheap_hedge_post_shift_multiplier("Bitcoin") == pytest.approx(0.151)
-        assert bc.cheap_hedge_post_shift_multiplier("Ethereum") == pytest.approx(0.233)
-        assert bc.cheap_hedge_post_shift_multiplier("Solana") == pytest.approx(0.232)
+    def test_regime_hedge_dampener_lookup(self):
+        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "CHEAP") == pytest.approx(0.151)
+        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "CHEAP") == pytest.approx(0.233)
+        assert bc.regime_hedge_post_shift_multiplier("Solana", "CHEAP") == pytest.approx(0.232)
+        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "CORE") == pytest.approx(0.270)
+        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "HIGH") == pytest.approx(0.378)
+        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "HIGH") == pytest.approx(0.260)
 
-    def test_cheap_hedge_dampener_is_noop_for_uncalibrated_asset(self):
-        assert bc.cheap_hedge_post_shift_multiplier("Dogecoin") == 1.0
+    def test_regime_hedge_dampener_is_noop_for_uncalibrated_cells(self):
+        # Uncalibrated asset entirely.
+        assert bc.regime_hedge_post_shift_multiplier("Dogecoin", "CHEAP") == 1.0
+        # Deliberately left uncalibrated: too-thin post-shift sample
+        # (n=8) for Ethereum/Solana CORE.
+        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "CORE") == 1.0
+        assert bc.regime_hedge_post_shift_multiplier("Solana", "CORE") == 1.0
+        # Deliberately left uncalibrated: Solana's own HIGH-band rate
+        # showed no real drop.
+        assert bc.regime_hedge_post_shift_multiplier("Solana", "HIGH") == 1.0
+        # MID is never calibrated here at all -- its shift is a
+        # character change, not a frequency change.
+        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "MID") == 1.0
 
-    def test_cheap_hedge_dampener_fires_less_often_than_mid(self):
+    def test_regime_hedge_dampener_fires_less_often_than_mid(self):
         # Same asset, same attempt index -- CHEAP should hedge less
         # often than MID purely because of the post-shift dampener
         # (both start from their own calibrated hedge_attempt_hazard,
@@ -1763,9 +1792,35 @@ class TestDecideHedgeWeekendMultiplier:
         )
         assert n_cheap < n_mid
 
-    def test_cheap_hedge_dampener_respects_feature_flag(self, monkeypatch):
-        monkeypatch.setattr(config, "ENABLE_CHEAP_HEDGE_POST_SHIFT_DAMPENER", False)
-        monkeypatch.setattr(bc, "cheap_hedge_post_shift_multiplier", lambda asset: 0.0)
+    def test_regime_hedge_dampener_fires_less_often_in_core_and_high_too(self, monkeypatch):
+        activity_core = MarketActivityState()
+        record_filled_entry(activity_core, "Up", notional_usd=10.0, regime="CORE")
+        activity_high = MarketActivityState()
+        record_filled_entry(activity_high, "Up", notional_usd=10.0, regime="HIGH")
+        n = 1000
+        with_dampener_core = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity_core, random.Random(seed)) is not None
+        )
+        with_dampener_high = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity_high, random.Random(seed)) is not None
+        )
+        monkeypatch.setattr(bc, "regime_hedge_post_shift_multiplier", lambda asset, regime: 1.0)
+        without_dampener_core = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity_core, random.Random(seed)) is not None
+        )
+        without_dampener_high = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity_high, random.Random(seed)) is not None
+        )
+        assert with_dampener_core < without_dampener_core
+        assert with_dampener_high < without_dampener_high
+
+    def test_regime_hedge_dampener_respects_feature_flag(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER", False)
+        monkeypatch.setattr(bc, "regime_hedge_post_shift_multiplier", lambda asset, regime: 0.0)
         activity = MarketActivityState()
         record_filled_entry(activity, "Up", notional_usd=10.0, regime="CHEAP")
         n = 200

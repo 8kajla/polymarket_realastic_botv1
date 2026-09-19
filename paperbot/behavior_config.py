@@ -2128,58 +2128,69 @@ def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) ->
 
 
 # ---------------------------------------------------------------------------
-# CHEAP-BAND POST-SHIFT HEDGE DAMPENER. Added 2026-09-19, in direct
-# response to a live PnL investigation: the bot's paper P&L cratered in
-# a ~3.4h window specifically because hedges accounted for 76% of its
-# CHEAP-band loss (-$233 of -$305) -- driven by the bot dual-siding
-# ~6x more often than the real trader currently is (61% vs 10.5%, same
-# window). See hedge-rate-secular-decline.md for the full derivation:
-# his overall dual-siding rate crashed at a sharp, discrete boundary
-# (~2026-09-18 03:00 UTC), holding cleanly for 33+ hours and TIGHTENING
-# (not reverting) on every re-check since. HEDGE_TRIGGER_PROBABILITY
-# above is fit on the old, pre-shift regime (778k-trade historical
-# dataset) and is now stale specifically for CHEAP.
+# REGIME POST-SHIFT HEDGE DAMPENER. Added 2026-09-19 (CHEAP only), in
+# direct response to a live PnL investigation: the bot's paper P&L
+# cratered in a ~3.4h window specifically because hedges accounted for
+# 76% of its CHEAP-band loss (-$233 of -$305) -- driven by the bot
+# dual-siding ~6x more often than the real trader currently is (61% vs
+# 10.5%, same window). See hedge-rate-secular-decline.md for the full
+# derivation: his overall dual-siding rate crashed at a sharp, discrete
+# boundary (~2026-09-18 03:00 UTC), holding cleanly for 33+ hours and
+# TIGHTENING (not reverting) on every re-check since. HEDGE_TRIGGER_
+# PROBABILITY above is fit on the old, pre-shift regime (778k-trade
+# historical dataset) and is now stale for several regime cells.
 #
-# Re-measured "does this CHEAP-first-entry market EVER go dual-sided"
-# (the exact same definition HEDGE_TRIGGER_PROBABILITY itself uses),
-# post-boundary only, per asset:
+# EXTENDED same day to CORE/HIGH: re-measured "does this first-entry
+# market EVER go dual-sided" (the exact same definition HEDGE_TRIGGER_
+# PROBABILITY itself uses) post-boundary only, per (regime, asset) --
+# found the same signature (character unchanged, pure frequency drop)
+# in CORE and HIGH too, just not always well-powered enough to trust:
 #
-#   Bitcoin:  n=138 post-shift rate=10.87% vs shipped 71.93% -> ratio 0.151
-#   Ethereum: n=125 post-shift rate= 9.60% vs shipped 41.27% -> ratio 0.233
-#   Solana:   n= 97 post-shift rate=12.37% vs shipped 53.31% -> ratio 0.232
+#   CHEAP    Bitcoin  n=138 rate=10.87% vs shipped 71.93% -> ratio 0.151
+#   CHEAP    Ethereum n=125 rate= 9.60% vs shipped 41.27% -> ratio 0.233
+#   CHEAP    Solana   n= 97 rate=12.37% vs shipped 53.31% -> ratio 0.232
+#   CORE     Bitcoin  n= 30 rate=13.33% vs shipped 49.37% -> ratio 0.270
+#   CORE     Ethereum n=  8 rate=12.50% vs shipped 44.60% -- TOO THIN, not calibrated (left at 1.0)
+#   CORE     Solana   n=  8 rate= 0.00% vs shipped 39.67% -- TOO THIN, not calibrated (left at 1.0)
+#   HIGH     Bitcoin  n= 48 rate=10.42% vs shipped 27.54% -> ratio 0.378
+#   HIGH     Ethereum n= 53 rate= 5.66% vs shipped 21.79% -> ratio 0.260
+#   HIGH     Solana   n= 56 rate=14.29% vs shipped 12.50% -- NO drop (ratio 1.14, left at 1.0)
 #
-# NOT a uniform per-asset drop -- Bitcoin fell to roughly 2/3 the
-# relative level Ethereum/Solana did, preserved below rather than
-# smoothed to a single flat multiplier. Confirmed this is a pure
-# FREQUENCY change, not a character change (unlike MID, which flipped
-# from majority profit-locking to majority defensive the same
-# boundary): CHEAP hedges that still fire are still ~87-93% favorable/
-# profit-locking, same as before the shift -- so a flat multiplier on
-# the existing hedge_attempt_hazard is the correct, minimal fix, not a
-# new hazard shape or trigger-condition change.
+# Two real asymmetries preserved rather than smoothed over: (1) Solana's
+# HIGH-band hedge rate did NOT drop at all (post-shift rate is actually
+# slightly ABOVE the shipped baseline) -- applying a dampener there
+# would be actively wrong, not just imprecise; (2) Ethereum/Solana CORE
+# have only n=8 post-shift observations each, an order of magnitude
+# thinner than every other calibrated cell in this file -- a single
+# additional or missing dual-sided market would swing the ratio by
+# ~12pp, so these are left uncalibrated (1.0 no-op) rather than guessed
+# at. MID is excluded entirely: its shift is a CHARACTER change
+# (flipped from majority profit-locking to majority defensive), not a
+# frequency change, so a flat multiplier is the wrong shape of fix --
+# not yet modeled by any mechanism.
 #
-# HONEST CAVEAT: calibrated on only ~33 hours of post-shift data
-# (n=97-138 per asset) -- the SIGN and MAGNITUDE of the shift are not
-# in doubt (a drop from 40-72% to 10-12% is nowhere close to
-# explainable by sampling noise at this n), but the exact ratio values
-# should be re-derived once more days of post-shift data accumulate.
-# Feature-flagged so this can be cleanly disabled if the shift ever
-# reverts.
-CHEAP_HEDGE_POST_SHIFT_MULTIPLIER = {
-    "Bitcoin": 0.151,
-    "Ethereum": 0.233,
-    "Solana": 0.232,
+# HONEST CAVEAT (applies to every calibrated cell): based on ~33 hours
+# of post-shift data. The SIGN and MAGNITUDE of the shift are not in
+# doubt at the sample sizes actually used (a drop from 40-72% to
+# 10-14% is nowhere close to explainable by noise), but exact ratios
+# should be re-derived once more days accumulate, and the presently-
+# uncalibrated cells (CORE Ethereum/Solana) should be revisited then
+# too. Feature-flagged so this can be cleanly disabled if the shift
+# ever reverts.
+REGIME_HEDGE_POST_SHIFT_MULTIPLIER = {
+    "CHEAP": {"Bitcoin": 0.151, "Ethereum": 0.233, "Solana": 0.232},
+    "CORE": {"Bitcoin": 0.270},
+    "HIGH": {"Bitcoin": 0.378, "Ethereum": 0.260},
 }
 
 
-def cheap_hedge_post_shift_multiplier(asset: str) -> float:
-    """1.0 (no-op) for any asset not in CHEAP_HEDGE_POST_SHIFT_MULTIPLIER
-    -- matching this file's usual pattern for an uncalibrated/dormant
-    asset. Callers apply this ONLY when first_entry_regime == "CHEAP";
-    it says nothing about MID/CORE/HIGH, which either didn't shift
-    (CORE/HIGH) or shifted in CHARACTER not just frequency (MID, not
-    yet modeled by a simple multiplier)."""
-    return CHEAP_HEDGE_POST_SHIFT_MULTIPLIER.get(asset, 1.0)
+def regime_hedge_post_shift_multiplier(asset: str, regime: str) -> float:
+    """1.0 (no-op) for any (regime, asset) not calibrated above --
+    matching this file's usual pattern for an uncalibrated/dormant
+    cell. Callers apply this only for regime in (CHEAP, CORE, HIGH);
+    it says nothing about MID, which shifted in CHARACTER, not
+    frequency, and needs a different mechanism entirely."""
+    return REGIME_HEDGE_POST_SHIFT_MULTIPLIER.get(regime, {}).get(asset, 1.0)
 
 
 # ---------------------------------------------------------------------------

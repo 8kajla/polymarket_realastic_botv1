@@ -1025,19 +1025,21 @@ ENABLE_CROSS_ASSET_CARRYOVER = os.environ.get(
     "ENABLE_CROSS_ASSET_CARRYOVER", "true"
 ).strip().lower() not in ("false", "0", "no")
 
-# Feature flag for CHEAP_HEDGE_POST_SHIFT_MULTIPLIER (see its docstring
-# in behavior_config.py). Added 2026-09-19 -- the real trader's CHEAP-
-# band hedge-trigger rate crashed to ~10-12% of its old level at a
-# sharp, discrete boundary (~2026-09-18 03:00 UTC, held 33+ hours and
-# tightening on every re-check), while HEDGE_TRIGGER_PROBABILITY is
-# still calibrated on the old, pre-shift regime -- confirmed live to be
-# directly costing paper P&L (hedges were 76% of a CHEAP-band loss in
-# one checked window, driven by the bot dual-siding ~6x more than the
-# trader currently does). HONEST CAVEAT: calibrated on only ~33h of
-# post-shift data (n=97-138 per asset) -- default TRUE since the shift
-# is well past any reasonable noise explanation, but set false to
-# revert to the un-dampened historical rate if this turns out to
-# reverse.
-ENABLE_CHEAP_HEDGE_POST_SHIFT_DAMPENER = os.environ.get(
-    "ENABLE_CHEAP_HEDGE_POST_SHIFT_DAMPENER", "true"
+# Feature flag for REGIME_HEDGE_POST_SHIFT_MULTIPLIER (see its
+# docstring in behavior_config.py). Added 2026-09-19 as
+# ENABLE_CHEAP_HEDGE_POST_SHIFT_DAMPENER (CHEAP only), renamed same day
+# when extended to CORE/HIGH -- the real trader's hedge-trigger rate
+# crashed to a fraction of its old level in several (regime, asset)
+# cells at a sharp, discrete boundary (~2026-09-18 03:00 UTC, held 33+
+# hours and tightening on every re-check), while HEDGE_TRIGGER_
+# PROBABILITY is still calibrated on the old, pre-shift regime --
+# confirmed live to be directly costing paper P&L (hedges were 76% of a
+# CHEAP-band loss in one checked window, driven by the bot dual-siding
+# ~6x more than the trader currently does). HONEST CAVEAT: calibrated
+# on only ~33h of post-shift data -- default TRUE since the shift is
+# well past any reasonable noise explanation in every CALIBRATED cell,
+# but set false to revert to the un-dampened historical rate if this
+# turns out to reverse.
+ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER = os.environ.get(
+    "ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER", "true"
 ).strip().lower() not in ("false", "0", "no")
