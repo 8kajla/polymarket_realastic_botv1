@@ -30,7 +30,14 @@ class MarketActivityState:
     side-persistence, AND hedge-leg purposes. One instance per
     condition_id."""
     entry_count: int = 0
-    last_side: Optional[str] = None  # "Up" or "Down"
+    # "Up" or "Down" -- the standing CONVICTION side, i.e. the side an
+    # ORDINARY (non-hedge) entry last landed on. FIXED 2026-09-19: a
+    # hedge fill used to move this too, making it read the transient
+    # hedge side instead -- see record_entry's own comment for the full
+    # derivation and the confirmed-unfixable, separate problem
+    # (recalibrating SIDE_PERSISTENCE's table from raw trader data) this
+    # is NOT the same as.
+    last_side: Optional[str] = None
     last_price_seen: Optional[float] = None
     first_entry_regime: Optional[str] = None
     # ADDED 2026-09-10, alongside ADVERSE_MOVE_SIZE_MULTIPLIER: the price
@@ -230,8 +237,33 @@ class MarketActivityState:
             self.first_entry_notional = notional_usd
         self.cost_by_side[side] = self.cost_by_side.get(side, 0.0) + notional_usd
         self.entry_count += 1
-        self.last_side = side
-        if is_hedge:
+        # FIXED 2026-09-19 (last_side-vs-dominant_side() divergence): a
+        # hedge fill used to overwrite last_side unconditionally, same as
+        # any ordinary entry -- meaning decide_side's own persist-or-
+        # switch roll (SIDE_PERSISTENCE) would read the TRANSIENT hedge
+        # side as "the currently held side" for the market's NEXT
+        # decision, not the standing conviction side SIDE_PERSISTENCE was
+        # actually calibrated to measure. Quantified live (2026-09-18):
+        # of 1,874 dual-sided markets, 85.5% hit at least one moment
+        # where last_side and dominant_side() disagreed, and the two
+        # disagreed on 35.3% of all fill events in those markets --
+        # mechanically expected, since a hedge fill flips last_side to
+        # the hedge side while dominant_side() (computed separately from
+        # cost_by_side) usually stays on the original, larger side. This
+        # is a fixable BOT-STATE bug, distinct from and NOT reopening
+        # the separately-investigated, confirmed-unsolvable problem of
+        # recalibrating SIDE_PERSISTENCE's own TABLE from raw trader
+        # data (three independent disambiguation heuristics -- size,
+        # timing, combined -- all failed to beat a naive baseline there,
+        # see last-side-vs-dominant-side-divergence.md; that dead end is
+        # about classifying RAW trades with no ground truth, this fix is
+        # about the bot's OWN internal state, which has perfect ground
+        # truth via is_hedge). A hedge fill no longer moves last_side --
+        # it still updates cost_by_side/dominant_side() and hedge_count
+        # exactly as before.
+        if not is_hedge:
+            self.last_side = side
+        else:
             self.hedge_count += 1
 
     def record_real_fill(self, is_hedge: bool) -> None:

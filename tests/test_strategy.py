@@ -1059,6 +1059,31 @@ class TestMarketActivityStateHedgeTracking:
         activity.record_entry("Down", notional_usd=1.0, regime="CHEAP", is_hedge=True)
         assert activity.hedge_count == 2
 
+    def test_ordinary_entry_updates_last_side(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        assert activity.last_side == "Up"
+
+    def test_hedge_does_not_move_last_side(self):
+        # FIXED 2026-09-19 (last-side-vs-dominant-side-divergence.md): a
+        # hedge fill must NOT overwrite last_side -- decide_side's own
+        # persist-or-switch roll should keep reading the standing
+        # conviction side across a hedge, not the transient hedge side.
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP", is_hedge=True)
+        assert activity.last_side == "Up"
+        # dominant_side() is unaffected either way -- it's computed
+        # separately from cost_by_side, not from last_side.
+        assert activity.dominant_side() == "Up"
+
+    def test_last_side_still_updates_after_a_hedge_on_the_next_ordinary_entry(self):
+        activity = MarketActivityState()
+        activity.record_entry("Up", notional_usd=10.0, regime="MID")
+        activity.record_entry("Down", notional_usd=2.0, regime="CHEAP", is_hedge=True)
+        activity.record_entry("Down", notional_usd=5.0, regime="MID", is_hedge=False)
+        assert activity.last_side == "Down"
+
     def test_release_unfilled_reverses_a_fully_cancelled_placement(self):
         activity = MarketActivityState()
         activity.record_entry("Up", notional_usd=10.0, regime="MID")
