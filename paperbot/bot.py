@@ -691,14 +691,14 @@ class PaperBot:
         # MarketActivityState field.
         activity.update_decisive_crossings(up_book.best_bid, down_book.best_bid, now,
                                             threshold=config.DECISIVENESS_THRESHOLD)
-        # CHEAP-FRESHNESS tracking (2026-09-18): mirror image of the
+        # CHEAP-crossing tracking (2026-09-18): mirror image of the
         # decisive-crossing tracking above, but for a side dropping BELOW
         # the CHEAP threshold rather than snapping above the decisive
         # one. Must also run every tick, before build_order_intent reads
-        # the crossing timestamps this sets. See CHEAP_FRESHNESS_
-        # MULTIPLIER's docstring in behavior_config.py.
+        # the crossing timestamps this sets. See
+        # CHEAP_JOINT_ENTRY_MULTIPLIER's docstring in behavior_config.py.
         activity.update_cheap_crossings(up_book.best_bid, down_book.best_bid, now,
-                                         threshold=bc.CHEAP_FRESHNESS_THRESHOLD)
+                                         threshold=bc.CHEAP_JOINT_CROSSING_THRESHOLD)
         # FIRST-PRICE tracking (2026-09-18): plain "first observation"
         # latch (no threshold), needed for the MID-band contrarian
         # first-entry side-selection signal. See MID_CONTRARIAN_BIAS_

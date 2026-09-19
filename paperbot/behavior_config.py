@@ -662,192 +662,125 @@ def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# CHEAP DEEP-LONGSHOT entry dampener. Added 2026-09-18: the bot's CHEAP
-# first-entry price distribution was found to be dramatically cheaper
-# than the real trader's (median 0.12 vs his 0.19, on the 0.00-0.30
-# band, n=12,345 bot / 7,807 trader) -- this had sat as a previously-
-# unexplained mismatch (see favorite-longshot-bias-rejected.md's
-# "CHEAP mismatch still unexplained"). CHEAP-specific: the same check
-# in MID/CORE/HIGH showed only 2-3pp gaps.
+# CHEAP JOINT entry dampener (price-band x freshness-bucket). Formerly
+# two SEPARATE mechanisms -- DEEP_LONGSHOT_ENTRY_MULTIPLIER (price only)
+# and CHEAP_FRESHNESS_MULTIPLIER (time-since-crossing only), each fit
+# independently and applied as two sequential multiplicative skip gates
+# on the same first-entry decision -- MERGED 2026-09-19 after a joint
+# logistic-regression model of the trader's CHEAP first-entry hazard
+# (price, freshness, asset, boundary-era, momentum, time-to-close and
+# cross-asset-recency all fit SIMULTANEOUSLY instead of one univariate
+# table at a time, n=18,440 crossing-bucket rows) found a strong,
+# highly significant is_deep x freshness-bucket interaction (coef=-0.79,
+# SE=0.15, p<1e-7) -- being both deep-priced AND stale is NOT
+# independent of being either alone, so multiplying two separately-fit
+# 1D tables cannot represent it.
 #
-# Root-caused with an occupancy-normalized analysis: raw entry SHARE by
-# price bucket conflates "he avoids this price" with "this price just
-# doesn't come up as often", so his entry RATE was measured PER UNIT OF
-# OBSERVED OPPORTUNITY instead -- using price_history_dense.jsonl (every
-# up/down book-price poll across ALL current-era markets, not just ones
-# he traded, 2026-09-12 through 2026-09-18) as an unbiased occupancy
-# baseline, matched against his real trades.jsonl entries in that SAME
-# calendar window (avoiding a temporal-composition confound -- his
-# entries are otherwise drawn from the whole TWAP era, a much longer
-# and differently-composed period than the 6-day occupancy sample).
+# Quantified how wrong that independence assumption was: comparing the
+# OLD architecture's prediction (rest-band bucket-0 empirical rate x the
+# old DEEP_LONGSHOT ratio x the old CHEAP_FRESHNESS bucket ratio) against
+# the TRUE empirical joint rate in the same (deep, bucket) cells,
+# pre-boundary, in the best-populated buckets (1-3, n=160-412/cell,
+# bucket 0's deep row is too thin at n=29-30 to trust):
+#   Bitcoin:  actual/predicted = 2.40x, 3.30x, 2.40x (buckets 1,2,3)
+#   Ethereum: actual/predicted = 0.84x, 2.68x, 4.20x
+#   Solana:   actual/predicted = 1.15x, 6.54x, 7.33x
+# The old two-independently-multiplied-tables design systematically
+# OVER-suppressed deep+stale entries relative to reality, by as much as
+# 7x in the best-powered cells, consistently across all three assets.
 #
-# Result: NOT a smooth within-band gradient the way WITHIN_BAND_SIZE_
-# SLOPE models CORE/HIGH/CHEAP/MID (this was checked and rejected --
-# his entry-rate-per-opportunity across 0.05-0.30 is roughly flat to
-# rising, not declining). It's a sharp, specific avoidance of the
-# DEEPEST longshots only (price < 0.05): his entry rate there, relative
-# to his rate across the rest of CHEAP (0.05-0.30, pooled for a more
-# stable reference than any single sub-bucket), is a fraction of normal
-# -- confirmed in the SAME direction for all three assets:
-#   Bitcoin:  54 entries / 5,512 opportunities in <0.05 vs 606/18,586
-#             in 0.05-0.30  -> relative rate 0.30
-#   Ethereum: 90/5,724 vs 789/18,193 -> relative rate 0.36
-#   Solana:   65/5,673 vs 815/18,499 -> relative rate 0.26
+# CURRENT VALUES DELIBERATELY LEFT IDENTICAL TO LIVE BEHAVIOR, NOT
+# RECALIBRATED TO THE ABOVE: DEEP_LONGSHOT suppression was independently
+# found to have fully REVERSED post-~2026-09-18-boundary (see
+# hedge-rate-secular-decline.md) and is currently disabled (1.0 no-op,
+# asset-heterogeneous reversion still resolving, Bitcoin possibly headed
+# back toward needing it re-enabled). Because that factor is already
+# 1.0, a deep-priced first entry today experiences ONLY the freshness
+# dampener, at the exact same per-bucket rate as a shallow one -- so
+# both rows of the table below (`is_deep=True` and `is_deep=False`) are
+# populated with the SAME per-asset freshness buckets as the old
+# CHEAP_FRESHNESS_MULTIPLIER, on purpose. This merge changes NOTHING
+# about today's live output; it only fixes the architecture so that
+# whenever DEEP_LONGSHOT suppression is eventually re-enabled for any
+# asset, it can be done as a real joint cell instead of resurrecting the
+# proven double-penalty bug via two independent multipliers again.
 #
-# Scope: measured on FIRST entries only (one observation per market
-# decision, matching this whole project's raw-trade-fragmentation
-# discipline) -- applies only when is_first_entry (real_fill_count==0
-# at the call site), NOT hedges (a hedge's price is wherever the
-# dominant side already sits, not a fresh preference, so out of scope
-# for this measurement) and NOT excluding scout/floor-lot -- his own
-# raw trade log has no such distinction, his measured avoidance covers
-# every one of his first entries regardless of what the bot would size
-# it as, unlike MAX_CHEAP_REPRICES's scout/hedge exclusion (that
-# finding's own methodology specifically excluded them).
+# Original derivations, preserved for context:
 #
-# Calibration limitation, stated plainly: the occupancy baseline only
-# covers a 6-day window (price_history_dense.jsonl's start date), much
-# shorter than this project's calibrations usually rest on -- kept
-# deliberately matched to his entries' SAME window rather than pooling
-# his whole TWAP-era history against a baseline that doesn't cover it.
-# Revisit and re-derive once more occupancy history has accumulated.
-DEEP_LONGSHOT_PRICE_THRESHOLD = 0.05
-
-# DISABLED 2026-09-19 -- a MAJOR reversal found, not just a stale
-# calibration. Re-derived the same occupancy-normalized ratio this
-# table was originally built from (price_history_dense.jsonl occupancy
-# vs trades.jsonl first entries, same methodology, same 0.00-0.05 vs
-# 0.05-0.30 definition) and split it at the already-known ~2026-09-18
-# 03:00 UTC regime-shift boundary (see hedge-rate-secular-decline.md):
+# DEEP_LONGSHOT (price axis), occupancy-normalized: his CHEAP first-entry
+# price distribution was found to be dramatically cheaper than the bot's
+# (median 0.12 vs his 0.19) -- root-caused via entry RATE PER UNIT OF
+# OBSERVED OPPORTUNITY (price_history_dense.jsonl book-price polls as an
+# unbiased occupancy baseline, matched against trades.jsonl entries in
+# the SAME calendar window), a sharp, specific avoidance of price<0.05
+# only (not a smooth gradient across 0.05-0.30, that shape was checked
+# and rejected): Bitcoin 0.30x, Ethereum 0.36x, Solana 0.26x relative to
+# the rest of CHEAP. Scope: first entries only (real_fill_count==0), not
+# hedges (a hedge's price is wherever the dominant side sits, not a
+# fresh preference) and not excluding scout/floor-lot (his own raw trade
+# log has no such distinction).
 #
-#             pre-boundary ratio   post-boundary ratio   (old, shipped)
-#   Bitcoin        0.446                 2.067                0.30
-#   Ethereum       0.446                 1.751                0.36
-#   Solana         0.328                 2.355                0.26
-#
-# Pre-boundary values roughly confirm the original derivation (0.33-
-# 0.45, in the same ballpark as 0.26-0.36 -- consistent with genuine,
-# if modest, upward drift over time). POST-boundary, all three ratios
-# jump ABOVE 1.0 -- a full reversal, not a weakening: he now enters the
-# DEEPEST longshot band (<0.05) at 1.75-2.36x the rate of the rest of
-# CHEAP, relative to opportunity, instead of avoiding it. Same
-# boundary, same direction, same consistency-across-all-three-assets
-# signature as the hedge-rate collapse and the MID hedge-character
-# flip found the same day -- a third independent dimension of his
-# behavior changing at once, not an isolated quirk.
-#
-# This mechanism's whole architecture (a SKIP-probability dampener) can
-# only ever suppress toward 1.0 (no-op) -- it has no way to express a
-# BOOST above the neutral rate, which is what the post-shift reality
-# now calls for. Rather than force a "boost" number out of ~30 hours of
-# post-boundary data (n=45-65 per asset -- thin, though the DIRECTION
-# is not in doubt given the consistency across all three assets),
-# disabled outright: continuing to suppress a preference that's
-# reversed would be actively counterproductive, but guessing a
-# specific boost magnitude this early would just replace one
-# unjustified number with another. Revisit once enough post-boundary
-# data accumulates to properly calibrate a boost mechanism (a genuinely
-# new architecture, not a value swap, since nothing in this codebase
-# currently models "enters MORE than a neutral baseline would predict"
-# for this dimension).
-DEEP_LONGSHOT_ENTRY_MULTIPLIER = {
-    "Bitcoin": 1.0,
-    "Ethereum": 1.0,
-    "Solana": 1.0,
-}
-
-
-def deep_longshot_entry_multiplier(asset: str, price: float) -> float:
-    """1.0 (no-op) at or above DEEP_LONGSHOT_PRICE_THRESHOLD, or for any
-    asset with no calibration (e.g. a dormant/future asset) -- otherwise
-    this asset's calibrated dampener, applied as a skip-probability at
-    the call site (see build_order_intent). Currently 1.0 (no-op) for
-    every calibrated asset too -- see DEEP_LONGSHOT_ENTRY_MULTIPLIER's
-    docstring for why this was disabled rather than recalibrated."""
-    if price >= DEEP_LONGSHOT_PRICE_THRESHOLD:
-        return 1.0
-    return DEEP_LONGSHOT_ENTRY_MULTIPLIER.get(asset, 1.0)
-
-
-# ---------------------------------------------------------------------------
-# CHEAP-FRESHNESS entry dampener. Added 2026-09-18, closing the
-# [[cheap-edge-gap-root-cause-persistence-miscalibration]] investigation
-# thread: the real trader's willingness to take a first CHEAP entry on a
-# specific (market, side) decays sharply with how long that side has
-# already been sitting below the CHEAP threshold -- he isn't reacting to
-# "is this cheap" as a static fact, he's reacting to a market recently
-# BECOMING cheap, and mostly gives up on a crossing that's gone stale
-# without being caught. This bot had NO equivalent staleness-awareness
-# at all for CHEAP (the existing DECISIVENESS_ONSET_MULTIPLIER machinery
-# only ever tracks crossings ABOVE DECISIVENESS_THRESHOLD, never below
-# CHEAP_FRESHNESS_THRESHOLD).
-#
-# Derivation: real, equal-width (60s) hazard-rate buckets -- of crossings
-# still untaken going into a bucket, what fraction get taken during it --
-# using `price_history_dense.jsonl` (the live CLOB-book collector,
-# covers every market regardless of who traded it, 6 days of history) to
-# find each market's own actual first-crossing moment, matched against
-# the real trader's own first-entry timestamps from trades.jsonl:
+# CHEAP_FRESHNESS (time axis): real, equal-width (60s) hazard-rate
+# buckets (of crossings still untaken going into a bucket, what fraction
+# get taken during it), same price_history_dense.jsonl crossing-detection
+# matched against trades.jsonl first-entry timestamps:
 #   Bitcoin:  9.81% (0-60s) -> 1.44% (60-120s) -> 0.45% (120-180s) -> 0.16% (180s+)
 #   Ethereum: 7.70% -> 2.07% -> 0.98% -> 0.24%
 #   Solana:   10.95% -> 2.02% -> 0.85% -> 0.25%
-# All three assets show the same shape: a steep (~80-85%) drop from the
-# first to second bucket, then a long, thin, near-zero tail. Table below
-# expresses each bucket's rate RELATIVE to the first bucket (normalized,
-# not the raw hazard value) -- see the honest caveat further down for
-# why a literal per-tick inversion was deliberately NOT used.
-#
-# CRITICAL CAVEAT, more important than usual for a multiplier in this
-# file: this is NOT fit to reproduce the bot's own OBSERVED hazard curve
-# (which, once measured with the same equal-width methodology, already
-# declines too -- an earlier same-day analysis briefly and wrongly
-# concluded the bot's hazard INCREASES with staleness before a bucket-
-# width bug in that analysis was caught and retracted). This multiplier
-# targets the TRADER's revealed shape as the replication goal, applied
-# ADDITIONALLY on top of the bot's existing mechanisms (decide_side's
-# own persistence/switch stochastic gate, availability_check, the
-# deep-longshot dampener above). Because decide_side's persistence
+# All three assets: a steep (~80-85%) drop from the first to second
+# bucket, then a long, thin, near-zero tail. Deliberately SOFTER than a
+# literal per-tick hazard inversion (bucket-relative multipliers, not
+# raw hazard values) because decide_side's own persistence/switch gate
 # already provides SOME independent reluctance to jump onto a newly-
-# favored side, stacking a second, precisely-inverted per-tick
-# probability on top risks compounding into much stronger suppression
-# than either mechanism alone would produce -- there is no clean way to
-# separate the two effects without live monitoring. Deliberately using
-# SOFTER, bucket-relative multipliers (not a literal per-tick hazard
-# inversion) for this reason -- treat as a monitored change, same
-# discipline as QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME/BY_ASSET: re-run
-# the same equal-width hazard comparison after this has been live a
-# while, and soften or sharpen the tail multipliers if the bot's own
-# resulting curve over- or under-shoots the trader's.
+# favored side, and stacking a second, precisely-inverted probability on
+# top risks compounding into stronger suppression than either mechanism
+# alone would produce -- no clean way to separate the two effects
+# without live monitoring, so treat as a monitored change (same
+# discipline as QUEUE_SAFETY_FACTOR_OVERRIDE_BY_REGIME/BY_ASSET).
 #
-# Scope: same as DEEP_LONGSHOT_ENTRY_MULTIPLIER -- first entries only
-# (real_fill_count == 0 at the call site), not hedges (a hedge's side is
-# forced to the opposite of the dominant side, not a fresh preference,
-# so "how long has this side been cheap" isn't the same kind of decision
-# for it).
-CHEAP_FRESHNESS_THRESHOLD = 0.30
-CHEAP_FRESHNESS_MULTIPLIER = {
-    "Bitcoin":  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.15), (120.0, 180.0, 0.05), (180.0, math.inf, 0.02)],
-    "Ethereum": [(0.0, 60.0, 1.00), (60.0, 120.0, 0.27), (120.0, 180.0, 0.13), (180.0, math.inf, 0.03)],
-    "Solana":   [(0.0, 60.0, 1.00), (60.0, 120.0, 0.18), (120.0, 180.0, 0.08), (180.0, math.inf, 0.02)],
+# CHEAP_JOINT_CROSSING_THRESHOLD (0.30) marks the CHEAP-regime entry
+# itself (when a side's price first drops below the whole CHEAP band,
+# latched by MarketActivityState.update_cheap_crossings) --
+# CHEAP_JOINT_PRICE_THRESHOLD (0.05) is the SEPARATE, narrower split
+# within CHEAP between "deep longshot" and "the rest of CHEAP" that
+# is_deep keys off of. Do not confuse the two.
+CHEAP_JOINT_CROSSING_THRESHOLD = 0.30
+CHEAP_JOINT_PRICE_THRESHOLD = 0.05
+CHEAP_JOINT_ENTRY_MULTIPLIER = {
+    "Bitcoin": {
+        False: [(0.0, 60.0, 1.00), (60.0, 120.0, 0.15), (120.0, 180.0, 0.05), (180.0, math.inf, 0.02)],
+        True:  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.15), (120.0, 180.0, 0.05), (180.0, math.inf, 0.02)],
+    },
+    "Ethereum": {
+        False: [(0.0, 60.0, 1.00), (60.0, 120.0, 0.27), (120.0, 180.0, 0.13), (180.0, math.inf, 0.03)],
+        True:  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.27), (120.0, 180.0, 0.13), (180.0, math.inf, 0.03)],
+    },
+    "Solana": {
+        False: [(0.0, 60.0, 1.00), (60.0, 120.0, 0.18), (120.0, 180.0, 0.08), (180.0, math.inf, 0.02)],
+        True:  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.18), (120.0, 180.0, 0.08), (180.0, math.inf, 0.02)],
+    },
 }
 
 
-def cheap_freshness_multiplier(asset: str, seconds_since_cheap_crossing: Optional[float]) -> float:
-    """1.0 (no-op) when there's no recorded crossing yet (seconds_since_
-    cheap_crossing is None -- e.g. a market that opened already-cheap
-    with no pre-crossing tick captured) or for any asset with no
-    calibration -- otherwise the bucket this elapsed time falls into,
-    applied as a skip-probability at the call site (see
-    build_order_intent), same pattern as deep_longshot_entry_multiplier
-    above. A negative value (defensive: crossing timestamp somehow after
-    `now`) falls back to the first (no-op) bucket rather than raising."""
+def cheap_joint_entry_multiplier(asset: str, price: float,
+                                  seconds_since_cheap_crossing: Optional[float]) -> float:
+    """1.0 (no-op) when there's no recorded crossing yet
+    (seconds_since_cheap_crossing is None -- e.g. a market that opened
+    already-cheap with no pre-crossing tick captured) or for any asset
+    with no calibration -- otherwise the freshness bucket for this
+    (asset, is_deep, elapsed) cell, applied as a skip-probability at the
+    call site (see build_order_intent). A negative elapsed (defensive:
+    crossing timestamp somehow after `now`) falls back to the first
+    (no-op) bucket rather than raising. See CHEAP_JOINT_ENTRY_MULTIPLIER's
+    docstring for why both is_deep rows are currently identical."""
     if seconds_since_cheap_crossing is None:
         return 1.0
-    buckets = CHEAP_FRESHNESS_MULTIPLIER.get(asset)
-    if buckets is None:
+    table = CHEAP_JOINT_ENTRY_MULTIPLIER.get(asset)
+    if table is None:
         return 1.0
+    is_deep = price < CHEAP_JOINT_PRICE_THRESHOLD
     elapsed = max(0.0, seconds_since_cheap_crossing)
-    for lo, hi, mult in buckets:
+    for lo, hi, mult in table[is_deep]:
         if lo <= elapsed < hi:
             return mult
     return 1.0

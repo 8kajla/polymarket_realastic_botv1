@@ -139,19 +139,21 @@ class MarketActivityState:
     # reaction-window survives a deploy without losing its crossing time.
     up_decisive_crossed_at: Optional[float] = None
     down_decisive_crossed_at: Optional[float] = None
-    # ADDED 2026-09-18, alongside CHEAP_FRESHNESS_MULTIPLIER: the mirror-
-    # image tracker to up_decisive_crossed_at/down_decisive_crossed_at
-    # above, but for a side's price dropping BELOW config.CHEAP_
-    # FRESHNESS_THRESHOLD (0.30, the CHEAP regime's own upper bound)
-    # rather than snapping ABOVE DECISIVENESS_THRESHOLD (0.70). Needed
-    # because build_order_intent's own decisiveness_fraction computation
-    # only ever reads the >=0.70 crossing fields above -- there was no
+    # ADDED 2026-09-18, alongside what's now CHEAP_JOINT_ENTRY_MULTIPLIER
+    # (freshness axis): the mirror-image tracker to
+    # up_decisive_crossed_at/down_decisive_crossed_at above, but for a
+    # side's price dropping BELOW bc.CHEAP_JOINT_CROSSING_THRESHOLD
+    # (0.30, the CHEAP regime's own upper bound) rather than snapping
+    # ABOVE DECISIVENESS_THRESHOLD (0.70). Needed because
+    # build_order_intent's own decisiveness_fraction computation only
+    # ever reads the >=0.70 crossing fields above -- there was no
     # tracking anywhere of when a side actually BECAME cheap, which is
-    # exactly what CHEAP_FRESHNESS_MULTIPLIER needs (see its own
-    # docstring in behavior_config.py for the full derivation: the real
-    # trader's willingness to take a CHEAP crossing decays sharply with
-    # how long it's been sitting there, and this bot had no equivalent
-    # staleness-awareness at all). Same one-shot locking semantics as the
+    # exactly what the joint dampener's freshness axis needs (see its
+    # own docstring in behavior_config.py for the full derivation: the
+    # real trader's willingness to take a CHEAP crossing decays sharply
+    # with how long it's been sitting there, and this bot had no
+    # equivalent staleness-awareness at all). Same one-shot locking
+    # semantics as the
     # decisive-crossing fields (never reset once set, since the finding
     # measures delay from the FIRST moment a side became cheap, not from
     # any later moment it happens to still be there).
@@ -1192,36 +1194,22 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         logger.info("SKIP asset=%s regime=%s: %s", market.asset, regime, reason)
         return None
 
-    # DEEP-LONGSHOT entry dampener (2026-09-18): the real trader
-    # specifically avoids the deepest-cheap sub-band of CHEAP (price <
-    # bc.DEEP_LONGSHOT_PRICE_THRESHOLD) on first entries far more than a
-    # uniform-within-CHEAP model predicts -- see
-    # bc.deep_longshot_entry_multiplier's docstring for the full
-    # occupancy-normalized derivation. Gated to first entries only (not
-    # hedges, whose price is wherever the dominant side already sits,
-    # not a fresh preference) and checked before sizing, same SKIP
-    # pattern as availability_check just above.
-    if (config.ENABLE_DEEP_LONGSHOT_DAMPENER and not is_hedge
-            and activity.real_fill_count == 0):
-        deep_longshot_mult = bc.deep_longshot_entry_multiplier(market.asset, price)
-        if deep_longshot_mult < 1.0 and rng.random() > deep_longshot_mult:
-            logger.info("SKIP asset=%s regime=%s price=%.4f: deep-longshot dampener (mult=%.2f)",
-                        market.asset, regime, price, deep_longshot_mult)
-            return None
-
-    # CHEAP-FRESHNESS entry dampener (2026-09-18): the real trader's
-    # willingness to take a first CHEAP entry decays sharply with how
-    # long this side has already been sitting below the CHEAP threshold
-    # -- see bc.cheap_freshness_multiplier's docstring for the full
-    # equal-width hazard-rate derivation and the honest caveat on why
-    # this is deliberately softer than a literal per-tick inversion.
-    # Gated to first entries only (not hedges, whose side is forced to
-    # the opposite of the dominant side, not a fresh preference), same
-    # scoping as the deep-longshot dampener above. `now` may be None in
-    # some test/CLI call sites (same pattern as decisiveness_fraction
-    # just above) -- no-ops cleanly via seconds_since_cheap_crossing
-    # staying None in that case.
-    if (config.ENABLE_CHEAP_FRESHNESS_DAMPENER and not is_hedge
+    # CHEAP-JOINT entry dampener (2026-09-18, merged into one joint
+    # price-band x freshness-bucket mechanism 2026-09-19): the real
+    # trader avoids the deepest-cheap sub-band of CHEAP (price <
+    # bc.CHEAP_JOINT_PRICE_THRESHOLD) AND lets a first-entry crossing go
+    # stale far more than a uniform model of either axis alone predicts
+    # -- see bc.cheap_joint_entry_multiplier's docstring for the full
+    # derivation, including why this used to be two independently-
+    # multiplied dampeners and why that was proven wrong (a real
+    # price x freshness interaction, not two separable effects). Gated
+    # to first entries only (not hedges, whose price/side is wherever
+    # the dominant side already sits, not a fresh preference) and
+    # checked before sizing, same SKIP pattern as availability_check
+    # just above. `now` may be None in some test/CLI call sites (same
+    # pattern as decisiveness_fraction above) -- no-ops cleanly via
+    # seconds_since_cheap_crossing staying None in that case.
+    if (config.ENABLE_CHEAP_JOINT_DAMPENER and not is_hedge
             and activity.real_fill_count == 0 and regime == "CHEAP"):
         seconds_since_cheap_crossing: Optional[float] = None
         if now is not None:
@@ -1229,12 +1217,12 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                                  else activity.down_cheap_crossed_at)
             if cheap_crossed_at is not None:
                 seconds_since_cheap_crossing = now - cheap_crossed_at
-        freshness_mult = bc.cheap_freshness_multiplier(market.asset, seconds_since_cheap_crossing)
-        if freshness_mult < 1.0 and rng.random() > freshness_mult:
+        joint_mult = bc.cheap_joint_entry_multiplier(market.asset, price, seconds_since_cheap_crossing)
+        if joint_mult < 1.0 and rng.random() > joint_mult:
             logger.info(
-                "SKIP asset=%s regime=%s price=%.4f: cheap-freshness dampener "
+                "SKIP asset=%s regime=%s price=%.4f: cheap-joint dampener "
                 "(seconds_since_crossing=%s, mult=%.2f)",
-                market.asset, regime, price, seconds_since_cheap_crossing, freshness_mult)
+                market.asset, regime, price, seconds_since_cheap_crossing, joint_mult)
             return None
 
     position_tier = activity.position_tier()

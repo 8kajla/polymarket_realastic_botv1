@@ -969,29 +969,16 @@ ENABLE_DECISIVENESS_ONSET_MULTIPLIER = os.environ.get(
     "ENABLE_DECISIVENESS_ONSET_MULTIPLIER", "true"
 ).strip().lower() not in ("false", "0", "no")
 
-# Feature flag for DEEP_LONGSHOT_ENTRY_MULTIPLIER (see its docstring in
-# behavior_config.py). Added 2026-09-18 -- real, cross-asset-confirmed
-# avoidance of the deepest CHEAP longshots (price < 0.05) on first
-# entries, found via an occupancy-normalized analysis (entry rate per
-# unit of observed opportunity, not raw entry share) after his CHEAP
-# first-entry price distribution turned out to be dramatically cheaper
-# than the bot's (median 0.19 vs 0.12). Calibration is based on a
-# shorter (6-day) window than usual -- see the docstring for why.
-# Default TRUE everywhere.
-ENABLE_DEEP_LONGSHOT_DAMPENER = os.environ.get(
-    "ENABLE_DEEP_LONGSHOT_DAMPENER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# Feature flag for CHEAP_FRESHNESS_MULTIPLIER (see its docstring in
-# behavior_config.py). Added 2026-09-18 -- the real trader's willingness
-# to take a first CHEAP entry decays sharply with how long that side has
-# already been sitting below the CHEAP threshold, which this bot had no
-# equivalent tracking for at all. Deliberately softer than a literal
-# per-tick hazard inversion (see the docstring's caveat on compounding
-# with decide_side's own persistence gate) -- a monitored change, not a
-# precisely-fit one. Default TRUE everywhere.
-ENABLE_CHEAP_FRESHNESS_DAMPENER = os.environ.get(
-    "ENABLE_CHEAP_FRESHNESS_DAMPENER", "true"
+# Feature flag for CHEAP_JOINT_ENTRY_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-18 as two separate mechanisms
+# (DEEP_LONGSHOT_ENTRY_MULTIPLIER for price, CHEAP_FRESHNESS_MULTIPLIER
+# for time-since-crossing), MERGED into one joint (price-band x
+# freshness-bucket) mechanism 2026-09-19 after a joint model proved the
+# two axes interact and independent multiplication was mis-suppressing
+# by up to 7x in the best-powered cells. One flag now gates the single
+# joint lookup and skip roll. Default TRUE everywhere.
+ENABLE_CHEAP_JOINT_DAMPENER = os.environ.get(
+    "ENABLE_CHEAP_JOINT_DAMPENER", "true"
 ).strip().lower() not in ("false", "0", "no")
 
 # Feature flag for MID_CONTRARIAN_BIAS_PROBABILITY (see its docstring in
