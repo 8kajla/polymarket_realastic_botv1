@@ -621,6 +621,66 @@ def mid_contrarian_first_entry_side(asset: str, activity: MarketActivityState,
     return None
 
 
+def cross_asset_carryover_side(asset: str, activity: MarketActivityState,
+                                up_book: BookState, down_book: BookState,
+                                last_first_entry_by_asset: Optional[dict],
+                                now: float, rng: random.Random) -> Optional[str]:
+    """Returns the carryover side ("Up"/"Down") if the cross-asset
+    decision-carryover override should fire this tick, or None if not
+    (in which case the caller falls through to the ordinary decide_side
+    flow, or the next priority override). See
+    bc.CROSS_ASSET_CARRYOVER_PROBABILITY's docstring for the full
+    derivation and confound checks.
+
+    Only meaningful for a market's TRUE first entry (activity.
+    real_fill_count == 0 -- the current best-practice "first entry"
+    definition, matching build_order_intent's own forced_first_entry_side
+    gate; see MarketActivityState's docstring for why entry_count was
+    retired in favor of this) -- mirrors this file's other first-entry
+    priority overrides.
+
+    `last_first_entry_by_asset` is bot.py-maintained cross-market state
+    (this module has no memory across assets of its own), same pattern
+    as `previous_market_won`/`prev_hedge_rate`/etc. threaded through
+    build_order_intent: {other_asset_name: {"side": "Up"/"Down", "ts":
+    <fill_time>}}, updated whenever ANY asset registers a genuine first
+    fill. None or empty -> no-op (matching this file's usual defensive
+    handling for a signal that isn't available yet).
+
+    Picks the MOST RECENT other-asset entry (not all of them -- the
+    measured effect is specifically about the single most recent
+    cross-asset decision, not an aggregate). Regime-gated to CHEAP/MID
+    on the SUGGESTED side's own book price -- confirmed zero effect in
+    CORE/HIGH (those first entries are mechanically driven by that
+    market's own near-certain price, leaving no room for cross-asset
+    mood to intrude), so this deliberately returns None outside that
+    band rather than applying a diluted probability.
+    """
+    if activity.real_fill_count != 0:
+        return None
+    if not last_first_entry_by_asset:
+        return None
+    candidates = [(other_asset, info) for other_asset, info in last_first_entry_by_asset.items()
+                  if other_asset != asset and info.get("side") is not None and info.get("ts") is not None]
+    if not candidates:
+        return None
+    leader_asset, leader_info = max(candidates, key=lambda kv: kv[1]["ts"])
+    gap = now - leader_info["ts"]
+    if gap < 0:
+        return None  # defensive: a future/clock-skew timestamp, treat as no signal
+    prob = bc.cross_asset_carryover_probability(leader_asset, asset, gap)
+    if prob <= 0:
+        return None
+    candidate_side = leader_info["side"]
+    candidate_book = up_book if candidate_side == "Up" else down_book
+    candidate_price = candidate_book.best_bid if candidate_book is not None else None
+    if candidate_price is None or bc.classify_regime(candidate_price) not in ("CHEAP", "MID"):
+        return None
+    if rng.random() < prob:
+        return candidate_side
+    return None
+
+
 def gradient_score(asset: str, regime: str, recent_price_delta: Optional[float]) -> float:
     """
     Soft tiebreak score in [0, 1] for how well a candidate opportunity
@@ -862,7 +922,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                         max_notional_usd: Optional[float] = None,
                         bankroll_pnl_residual: Optional[float] = None,
                         after_big_loss: Optional[bool] = None,
-                        forced_first_entry_side: Optional[str] = None) -> Optional[OrderIntent]:
+                        forced_first_entry_side: Optional[str] = None,
+                        last_first_entry_by_asset: Optional[dict] = None) -> Optional[OrderIntent]:
     """
     Runs the full per-market pipeline (steps 1-6 of Part 5) and returns an
     OrderIntent, or None if this market isn't tradeable right now. Does NOT
@@ -917,6 +978,16 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     the validated spot-momentum finding was measured on first entries
     specifically.
 
+    `last_first_entry_by_asset` (added 2026-09-19, cross-asset decision-
+    carryover): bot.py-maintained cross-ASSET state (this module has no
+    memory across assets of its own), same category as
+    previous_market_won/prev_hedge_rate above but spanning Bitcoin/
+    Ethereum/Solana instead of one asset's own market history. Feeds
+    cross_asset_carryover_side's priority override -- see its own
+    docstring and bc.CROSS_ASSET_CARRYOVER_PROBABILITY's derivation.
+    Optional (default None -> no-op) for the same reason as everything
+    else here.
+
     `max_notional_usd` (added 2026-09-11, $100-bankroll safety work): a
     hard per-order cap in dollars, computed by bot.py as a fraction of
     CURRENT equity (config.MAX_ORDER_PCT_OF_EQUITY) -- not a fixed
@@ -965,6 +1036,7 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         prev_hedge_rate=prev_hedge_rate, after_big_loss=after_big_loss)
     is_hedge = hedge_side is not None
     is_contrarian = False
+    is_cross_asset_carryover = False
     if is_hedge:
         side = hedge_side
     elif forced_first_entry_side is not None and activity.real_fill_count == 0:
@@ -988,6 +1060,23 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # falls through to the ordinary decide_side path otherwise.
         side = mid_contrarian_side
         is_contrarian = True
+    elif (config.ENABLE_CROSS_ASSET_CARRYOVER
+          and (carryover_side := cross_asset_carryover_side(
+              market.asset, activity, up_book, down_book,
+              last_first_entry_by_asset, now if now is not None else time.time(),
+              rng)) is not None):
+        # CROSS-ASSET DECISION-CARRYOVER first-entry override (2026-09-19):
+        # see bc.CROSS_ASSET_CARRYOVER_PROBABILITY's docstring for the
+        # full derivation. Priority override ahead of decide_side, same
+        # architectural slot as mid_contrarian/forced_first_entry_side
+        # above -- deliberately placed AFTER mid_contrarian so that
+        # already-shipped, already-live-confirmed MID-band mechanism
+        # keeps first refusal on MID first entries; this only fires when
+        # mid_contrarian didn't (wrong regime for it -- i.e. CHEAP, where
+        # mid_contrarian doesn't apply at all -- or a MID case where its
+        # own magnitude/probability check missed).
+        side = carryover_side
+        is_cross_asset_carryover = True
     else:
         # Regime-dependent persistence needs the CURRENTLY-HELD side's
         # live price, not a stale one -- both books are already available
@@ -1347,6 +1436,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         reason = "floor_lot"
     elif is_contrarian:
         reason = "mid_contrarian"
+    elif is_cross_asset_carryover:
+        reason = "cross_asset_carryover"
     else:
         reason = "entry_curve"
 

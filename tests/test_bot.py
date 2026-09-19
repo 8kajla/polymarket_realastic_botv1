@@ -153,6 +153,76 @@ class TestCrossMarketSideTracking:
         assert captured["previous_market_first_side"] == tracked_side
 
 
+class TestCrossAssetCarryoverTracking:
+    """PaperBot.last_first_entry_by_asset, added 2026-09-19 -- see
+    CROSS_ASSET_CARRYOVER_PROBABILITY's docstring in behavior_config.py.
+    The STATISTICAL effect itself is covered at the strategy.py level
+    (TestCrossAssetCarryoverSide/TestBuildOrderIntentCrossAssetCarryover
+    in test_strategy.py); this confirms the bot-level state tracking
+    that feeds it: the tracker updates on a market's first entry
+    (keyed by THAT asset), and a DIFFERENT asset's evaluation actually
+    receives it."""
+
+    def test_tracker_is_empty_before_any_entry(self):
+        bot = PaperBot(assets=["Bitcoin", "Ethereum"], seed=1)
+        assert bot.last_first_entry_by_asset == {}
+
+    def test_tracker_records_the_first_entrys_side_and_timestamp(self):
+        bot = PaperBot(assets=["Bitcoin", "Ethereum"], seed=1)
+        market = make_market_for_asset("Bitcoin", condition_id="cond-1")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        assert bot.activity[market.condition_id].entry_count == 1
+        assert "Bitcoin" in bot.last_first_entry_by_asset
+        recorded = bot.last_first_entry_by_asset["Bitcoin"]
+        assert recorded["side"] == bot.activity[market.condition_id].last_side
+        assert recorded["ts"] == 1000.0
+
+    def test_a_different_assets_evaluation_receives_the_tracked_state(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin", "Ethereum"], seed=1)
+        market1 = make_market_for_asset("Bitcoin", condition_id="cond-1")
+        wire_market(bot, market1, bid=0.20, ask=0.21, depth=200.0)
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        tracked = bot.last_first_entry_by_asset["Bitcoin"]
+
+        captured = {}
+
+        def spy_cross_asset_carryover_side(asset, activity, up_book, down_book,
+                                            last_first_entry_by_asset, now, rng):
+            captured["last_first_entry_by_asset"] = last_first_entry_by_asset
+            return None
+
+        monkeypatch.setattr(stratmod, "cross_asset_carryover_side", spy_cross_asset_carryover_side)
+        monkeypatch.setattr(stratmod, "decide_hedge",
+                             lambda asset, activity, rng, liquidity=None, is_weekend=None,
+                             dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None: None)
+
+        market2 = make_market_for_asset("Ethereum", condition_id="cond-2", end_time=3000.0)
+        wire_market(bot, market2, bid=0.30, ask=0.31, depth=200.0)
+        asyncio.run(bot.strategy_tick(now=2000.0))
+
+        assert captured["last_first_entry_by_asset"]["Bitcoin"] == tracked
+
+    def test_a_second_entrys_own_asset_state_gets_overwritten(self):
+        # last_first_entry_by_asset always reflects the MOST RECENT first
+        # entry per asset -- a second market's first entry for the same
+        # asset should replace, not append to, that asset's entry.
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market1 = make_market_for_asset("Bitcoin", condition_id="cond-1")
+        wire_market(bot, market1, bid=0.20, ask=0.21, depth=200.0)
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        first_ts = bot.last_first_entry_by_asset["Bitcoin"]["ts"]
+
+        market2 = make_market_for_asset("Bitcoin", condition_id="cond-2", end_time=3000.0)
+        wire_market(bot, market2, bid=0.20, ask=0.21, depth=200.0)
+        asyncio.run(bot.strategy_tick(now=2000.0))
+
+        assert len(bot.last_first_entry_by_asset) == 1
+        assert bot.last_first_entry_by_asset["Bitcoin"]["ts"] != first_ts
+
+
 class TestCrossMarketFeedbackTracking:
     """The four new per-asset cross-market trackers added 2026-09-11
     alongside this session's 6-finding implementation pass -- see their

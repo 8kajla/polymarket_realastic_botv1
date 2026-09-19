@@ -912,6 +912,97 @@ def mid_contrarian_bias_probability(asset: str, velocity_magnitude: float) -> fl
 
 
 # ---------------------------------------------------------------------------
+# CROSS-ASSET DECISION CARRYOVER. Added 2026-09-19: the real trader's
+# first-entry side choice on one asset (Bitcoin/Ethereum/Solana) is
+# measurably correlated with his MOST RECENT first-entry side choice on
+# a DIFFERENT asset, if that other decision happened within the last
+# ~2-5 minutes -- decaying smoothly back to the 50% independence
+# baseline beyond that. See external-bot-strategies-loop-progress.md's
+# 2026-09-19 iterations 39-41 for the full derivation; summary of what
+# was checked before trusting this:
+#
+# - NOT real cross-asset spot-price co-movement: BTC/ETH/SOL spot
+#   returns genuinely co-move 80-82% of the time in the same 5-min
+#   window, but his cross-asset side-agreement is statistically FLAT
+#   regardless of whether real spot actually co-moved that window
+#   (e.g. eth-sol: 64.1% when it did vs 64.4% when it didn't).
+# - NOT a longer-horizon (30-min) trend either -- same flat-regardless-
+#   of-real-co-movement result.
+# - NOT a per-asset Up/Down base-rate artifact -- all three assets sit
+#   at ~50/50 individually; the implied independent-baseline agreement
+#   from those base rates alone is exactly 50.0% for every pair.
+# - NOT the "harvest near close" mechanic -- excluding every HIGH-band
+#   (>=0.90) entry from either side of the pair left the decay pattern
+#   unchanged (if anything slightly stronger at the short end).
+# - Corroborated on a SECOND, independent dimension: trade SIZE shows
+#   the identical decay-with-gap pattern (log-size correlation +0.156
+#   at <=15s decaying to +0.037 at 120-300s), and is consistently
+#   stronger for same-side pairs than different-side pairs at every
+#   gap bucket -- the signature of a real conviction/mood carryover,
+#   not coincidence.
+# - Passed temporal stability across pre-TWAP_SWITCH, post-TWAP/pre-
+#   halt, and post-halt periods independently -- same decay shape in
+#   all three, if anything slightly stronger post-halt.
+# - Magnitude of the LEADING decision does NOT predict override
+#   probability (flat ~60-65% across leader-size quartiles) -- the
+#   mechanism below is deliberately probability-only, not scaled by
+#   the other asset's trade size.
+# - Directional leadership is real but asymmetric: Bitcoin is
+#   consistently the stronger leader in both its pairs (see the table
+#   below) -- consistent with Bitcoin's already-established attention-
+#   priority status elsewhere in this project.
+#
+# SCOPED ENTIRELY TO CHEAP/MID (the follower's own book price at the
+# suggested side, same convention as MID_CONTRARIAN below) -- CORE/HIGH
+# show ZERO effect (48.1%/49.3%, exactly chance): those first entries
+# are mechanically driven by that specific market's own near-certain
+# price ("harvest the decided side"), leaving no room for cross-asset
+# mood to intrude. This table was calibrated on CHEAP/MID follower
+# entries specifically, not the broader all-regime aggregate.
+#
+# HONEST FRAMING: win-rate impact differs by regime, checked directly
+# against real resolution data (2026-09-19). In CHEAP, following this
+# signal is win-rate NEUTRAL (16.16% matched vs 16.10% unmatched --
+# negligible). In MID, following it correlates with a real, measured
+# ~5pp WORSE win rate (46.05% matched vs 51.10% unmatched) -- the same
+# fidelity-over-performance tradeoff category as MID_CONTRARIAN_BIAS_
+# PROBABILITY above, not a free win. Built anyway per this project's
+# standing priority (replicate the trader's real behavior, not
+# optimize the bot's own paper PnL).
+#
+# Probability of following the leader's side, per (leader, follower)
+# ordered pair, by time-gap-since-the-leader's-decision bucket in
+# seconds. Beyond the last bucket's upper bound (300s), treat as no
+# signal (see cross_asset_carryover_probability's 0.0 default).
+CROSS_ASSET_CARRYOVER_MAX_GAP_S = 300.0
+CROSS_ASSET_CARRYOVER_PROBABILITY = {
+    ("Bitcoin", "Ethereum"): ((0, 15, 0.697), (15, 30, 0.618), (30, 60, 0.544), (60, 120, 0.518), (120, 300, 0.515)),
+    ("Ethereum", "Bitcoin"): ((0, 15, 0.736), (15, 30, 0.666), (30, 60, 0.657), (60, 120, 0.605), (120, 300, 0.601)),
+    ("Bitcoin", "Solana"):   ((0, 15, 0.675), (15, 30, 0.575), (30, 60, 0.540), (60, 120, 0.538), (120, 300, 0.518)),
+    ("Solana", "Bitcoin"):   ((0, 15, 0.698), (15, 30, 0.657), (30, 60, 0.645), (60, 120, 0.605), (120, 300, 0.525)),
+    ("Ethereum", "Solana"):  ((0, 15, 0.781), (15, 30, 0.677), (30, 60, 0.660), (60, 120, 0.595), (120, 300, 0.554)),
+    ("Solana", "Ethereum"):  ((0, 15, 0.778), (15, 30, 0.702), (30, 60, 0.680), (60, 120, 0.595), (120, 300, 0.538)),
+}
+
+
+def cross_asset_carryover_probability(leader_asset: str, follower_asset: str,
+                                       gap_seconds: float) -> float:
+    """P(the follower's first-entry side should be biased toward
+    matching the leader's most recent first-entry side). 0.0 (no-op)
+    for an uncalibrated pair or a gap outside the measured range --
+    matching this file's usual pattern for "no signal available"."""
+    if gap_seconds < 0 or gap_seconds >= CROSS_ASSET_CARRYOVER_MAX_GAP_S:
+        return 0.0
+    buckets = CROSS_ASSET_CARRYOVER_PROBABILITY.get((leader_asset, follower_asset))
+    if buckets is None:
+        return 0.0
+    for lo, hi, prob in buckets:
+        if lo <= gap_seconds < hi:
+            return prob
+    return 0.0
+
+
+# ---------------------------------------------------------------------------
 # DECISIVENESS-ONSET size scaling. Added 2026-09-13: a market's price
 # snapping into a decisive band (>=0.70) is a distinct event from just
 # "having a decisive price" -- the trader reacts to the SNAP, not the

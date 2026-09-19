@@ -1007,3 +1007,20 @@ ENABLE_CHEAP_FRESHNESS_DAMPENER = os.environ.get(
 ENABLE_MID_CONTRARIAN_BIAS = os.environ.get(
     "ENABLE_MID_CONTRARIAN_BIAS", "true"
 ).strip().lower() not in ("false", "0", "no")
+
+# Feature flag for CROSS_ASSET_CARRYOVER_PROBABILITY (see its docstring
+# in behavior_config.py). Added 2026-09-19 -- the real trader's
+# first-entry side choice on one asset measurably correlates with his
+# most recent first-entry side on a DIFFERENT asset if that decision
+# landed within the last ~2-5 minutes, confirmed via 6 independent
+# checks (same-window spot correlation, 30-min trend, per-asset base
+# rate, harvest-mechanic exclusion, size-corroboration, temporal
+# stability). HONEST CAVEAT, same category as ENABLE_MID_CONTRARIAN_BIAS
+# above: win-rate-neutral in CHEAP but a real ~5pp WORSE win rate in MID
+# when followed -- a deliberate fidelity build, not a performance one.
+# Default TRUE everywhere; set false to fall back to pre-2026-09-19
+# first-entry side selection (mid-contrarian / cross-market persistence
+# only, no cross-asset awareness).
+ENABLE_CROSS_ASSET_CARRYOVER = os.environ.get(
+    "ENABLE_CROSS_ASSET_CARRYOVER", "true"
+).strip().lower() not in ("false", "0", "no")

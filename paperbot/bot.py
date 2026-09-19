@@ -173,6 +173,24 @@ class PaperBot:
         # is exactly the kind of discontinuity that finding excluded via
         # its own gap<=1h filter).
         self.last_first_entry_side_by_asset: dict[str, str] = {}
+        # ADDED 2026-09-19: cross-ASSET counterpart to
+        # last_first_entry_side_by_asset above -- feeds
+        # CROSS_ASSET_CARRYOVER_PROBABILITY (see its docstring in
+        # behavior_config.py). {asset: {"side": "Up"/"Down", "ts": <the
+        # placement time recorded below>}}, one entry per asset, always
+        # overwritten with the most recent first entry regardless of
+        # which OTHER asset's decision this feeds -- the measured effect
+        # is about the single most recent cross-asset decision, not an
+        # aggregate. Updated at the SAME point (order placement, right
+        # alongside last_first_entry_side_by_asset) rather than at fill
+        # confirmation, for internal consistency with that existing
+        # same-asset tracker -- a deliberate simplification vs. the real
+        # trader's data (trades.jsonl only ever records confirmed fills,
+        # so the calibration was measured fill-to-fill); documented here
+        # rather than silently diverging from the established pattern.
+        # In-memory only, resets on restart, same discipline as every
+        # other per-run tracker in this file.
+        self.last_first_entry_by_asset: dict[str, dict] = {}
         # ADDED 2026-09-11, alongside this session's 6-finding
         # implementation pass -- four more per-asset cross-market
         # trackers, same in-memory-only/resets-on-restart discipline as
@@ -748,7 +766,8 @@ class PaperBot:
             rolling_accuracy=self._rolling_accuracy(market.asset),
             max_notional_usd=max_notional_usd,
             bankroll_pnl_residual=self.ledger.realized_pnl_by_asset().get(market.asset),
-            after_big_loss=self.after_big_loss_by_asset.get(market.asset))
+            after_big_loss=self.after_big_loss_by_asset.get(market.asset),
+            last_first_entry_by_asset=self.last_first_entry_by_asset)
         if intent is None:
             return
 
@@ -804,6 +823,10 @@ class PaperBot:
             # Feeds the NEXT market's first-entry decision -- see
             # CROSS_MARKET_SIDE_PERSISTENCE's docstring in behavior_config.py.
             self.last_first_entry_side_by_asset[market.asset] = intent.side
+            # Feeds the OTHER TWO assets' next first-entry decision -- see
+            # CROSS_ASSET_CARRYOVER_PROBABILITY's docstring in
+            # behavior_config.py.
+            self.last_first_entry_by_asset[market.asset] = {"side": intent.side, "ts": now}
             # ADDED 2026-09-11: updates ewma_size_residual_by_asset from
             # the REALIZED first-entry notional (matches the pattern
             # directly above) -- feeds the NEXT market's

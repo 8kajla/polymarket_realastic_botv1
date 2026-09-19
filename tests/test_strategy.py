@@ -11,6 +11,7 @@ from paperbot.strategy import (
     MarketActivityState,
     availability_check,
     build_order_intent,
+    cross_asset_carryover_side,
     decide_hedge,
     decide_side,
     decide_size,
@@ -3319,3 +3320,248 @@ class TestBuildOrderIntentMidContrarian:
         assert intent is not None
         assert intent.side == "Down"  # decide_side's answer, not the contrarian override
         assert intent.reason != "mid_contrarian"
+
+
+class TestCrossAssetCarryoverProbability:
+    """bc.CROSS_ASSET_CARRYOVER_PROBABILITY / cross_asset_carryover_probability
+    (2026-09-19): the real trader's first-entry side on one asset
+    correlates with his most recent first-entry side on a DIFFERENT
+    asset if that decision landed within the last ~2-5 minutes. See
+    behavior_config.py's docstring for the full derivation."""
+
+    def test_lookup_by_gap_bucket(self):
+        assert bc.cross_asset_carryover_probability("Bitcoin", "Ethereum", 5) == pytest.approx(0.697)
+        assert bc.cross_asset_carryover_probability("Bitcoin", "Ethereum", 20) == pytest.approx(0.618)
+        assert bc.cross_asset_carryover_probability("Bitcoin", "Ethereum", 250) == pytest.approx(0.515)
+
+    def test_zero_beyond_max_gap(self):
+        assert bc.cross_asset_carryover_probability("Bitcoin", "Ethereum", 300) == 0.0
+        assert bc.cross_asset_carryover_probability("Bitcoin", "Ethereum", 1000) == 0.0
+
+    def test_zero_for_negative_gap(self):
+        assert bc.cross_asset_carryover_probability("Bitcoin", "Ethereum", -1) == 0.0
+
+    def test_zero_for_uncalibrated_pair(self):
+        assert bc.cross_asset_carryover_probability("Bitcoin", "Dogecoin", 5) == 0.0
+
+    def test_asymmetric_by_direction(self):
+        # Bitcoin is the stronger leader -- BTC->ETH should differ from
+        # ETH->BTC at the same gap, not be symmetric.
+        btc_leads = bc.cross_asset_carryover_probability("Bitcoin", "Ethereum", 5)
+        eth_leads = bc.cross_asset_carryover_probability("Ethereum", "Bitcoin", 5)
+        assert btc_leads != eth_leads
+
+
+class TestCrossAssetCarryoverSide:
+    """cross_asset_carryover_side: the priority-override function itself."""
+
+    def test_no_signal_when_not_a_first_entry(self):
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="MID", price=0.40)
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        last = {"Ethereum": {"side": "Up", "ts": 95.0}}
+        result = cross_asset_carryover_side("Bitcoin", activity, up_book, down_book, last,
+                                             now=100.0, rng=random.Random(0))
+        assert result is None
+
+    def test_no_signal_when_no_other_asset_state(self):
+        activity = MarketActivityState()
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        result = cross_asset_carryover_side("Bitcoin", activity, up_book, down_book, None,
+                                             now=100.0, rng=random.Random(0))
+        assert result is None
+        result = cross_asset_carryover_side("Bitcoin", activity, up_book, down_book, {},
+                                             now=100.0, rng=random.Random(0))
+        assert result is None
+
+    def test_ignores_own_asset_entry(self):
+        # Only OTHER assets' state should count, never the same asset's.
+        activity = MarketActivityState()
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        last = {"Bitcoin": {"side": "Down", "ts": 95.0}}
+        result = cross_asset_carryover_side("Bitcoin", activity, up_book, down_book, last,
+                                             now=100.0, rng=random.Random(0))
+        assert result is None
+
+    def test_no_signal_beyond_max_gap(self):
+        activity = MarketActivityState()
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        last = {"Ethereum": {"side": "Up", "ts": 0.0}}
+        result = cross_asset_carryover_side(
+            "Bitcoin", activity, up_book, down_book, last,
+            now=bc.CROSS_ASSET_CARRYOVER_MAX_GAP_S,
+            rng=type("AlwaysFire", (), {"random": staticmethod(lambda: 0.0)})())
+        assert result is None
+
+    def test_no_signal_outside_cheap_mid(self):
+        # Suggested side (Up, from Ethereum) sits at 0.95 -- HIGH band,
+        # confirmed-zero-effect regime -- must not fire even with an
+        # always-fire rng.
+        activity = MarketActivityState()
+        up_book = make_liquid_book(price=0.95, token_id="up")
+        down_book = make_liquid_book(price=0.05, token_id="down")
+        last = {"Ethereum": {"side": "Up", "ts": 95.0}}
+        result = cross_asset_carryover_side(
+            "Bitcoin", activity, up_book, down_book, last, now=100.0,
+            rng=type("AlwaysFire", (), {"random": staticmethod(lambda: 0.0)})())
+        assert result is None
+
+    def test_fires_with_the_leaders_side_in_mid(self):
+        activity = MarketActivityState()
+        up_book = make_liquid_book(price=0.40, token_id="up")  # MID
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        last = {"Ethereum": {"side": "Up", "ts": 95.0}}
+        result = cross_asset_carryover_side(
+            "Bitcoin", activity, up_book, down_book, last, now=100.0,
+            rng=type("AlwaysFire", (), {"random": staticmethod(lambda: 0.0)})())
+        assert result == "Up"
+
+    def test_does_not_fire_when_roll_exceeds_probability(self):
+        activity = MarketActivityState()
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        last = {"Ethereum": {"side": "Up", "ts": 95.0}}
+        result = cross_asset_carryover_side(
+            "Bitcoin", activity, up_book, down_book, last, now=100.0,
+            rng=type("NeverFire", (), {"random": staticmethod(lambda: 0.9999)})())
+        assert result is None
+
+    def test_picks_the_most_recent_other_asset(self):
+        # Ethereum's decision is stale (well past the max gap); Solana's
+        # is fresh -- must use Solana's side, not Ethereum's.
+        activity = MarketActivityState()
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        last = {
+            "Ethereum": {"side": "Down", "ts": -1000.0},
+            "Solana": {"side": "Up", "ts": 95.0},
+        }
+        result = cross_asset_carryover_side(
+            "Bitcoin", activity, up_book, down_book, last, now=100.0,
+            rng=type("AlwaysFire", (), {"random": staticmethod(lambda: 0.0)})())
+        assert result == "Up"
+
+    def test_no_signal_for_future_timestamp(self):
+        # Defensive: a leader timestamp after `now` (clock skew) must not
+        # produce a negative gap that accidentally matches a bucket.
+        activity = MarketActivityState()
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        last = {"Ethereum": {"side": "Up", "ts": 200.0}}
+        result = cross_asset_carryover_side(
+            "Bitcoin", activity, up_book, down_book, last, now=100.0,
+            rng=type("AlwaysFire", (), {"random": staticmethod(lambda: 0.0)})())
+        assert result is None
+
+
+class TestBuildOrderIntentCrossAssetCarryover:
+    """Integration tests: the cross-asset carryover override wired into
+    build_order_intent's decision chain."""
+
+    def test_carryover_override_picks_the_leaders_side(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        activity = MarketActivityState()
+        last = {"Ethereum": {"side": "Up", "ts": 95.0}}
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(bc, "cross_asset_carryover_probability",
+                             lambda leader, follower, gap: 1.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0,
+                                     last_first_entry_by_asset=last)
+        assert intent is not None
+        assert intent.side == "Up"
+        assert intent.reason == "cross_asset_carryover"
+
+    def test_mid_contrarian_keeps_priority(self, monkeypatch):
+        # Mid-contrarian should fire FIRST when both could apply --
+        # cross-asset carryover only kicks in when mid-contrarian didn't.
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        activity = MarketActivityState()
+        activity.up_first_price = 0.60
+        activity.down_first_price = 0.40
+        last = {"Ethereum": {"side": "Down", "ts": 95.0}}  # would suggest the OPPOSITE side
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(bc, "mid_contrarian_bias_probability", lambda asset, magnitude: 1.0)
+        monkeypatch.setattr(bc, "cross_asset_carryover_probability",
+                             lambda leader, follower, gap: 1.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0,
+                                     last_first_entry_by_asset=last)
+        assert intent is not None
+        assert intent.reason == "mid_contrarian"
+        assert intent.side == "Up"  # mid_contrarian's pick, not carryover's "Down"
+
+    def test_does_not_override_a_hedge(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Down", notional_usd=100.0, regime="MID", price=0.60)
+        last = {"Ethereum": {"side": "Up", "ts": 95.0}}
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: "Up")
+        monkeypatch.setattr(bc, "cross_asset_carryover_probability",
+                             lambda leader, follower, gap: 1.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0,
+                                     last_first_entry_by_asset=last)
+        assert intent is not None
+        assert intent.is_hedge is True
+
+    def test_feature_flag_disables_the_override(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        activity = MarketActivityState()
+        last = {"Ethereum": {"side": "Up", "ts": 95.0}}
+
+        monkeypatch.setattr(config, "ENABLE_CROSS_ASSET_CARRYOVER", False)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Down")
+        monkeypatch.setattr(bc, "cross_asset_carryover_probability",
+                             lambda leader, follower, gap: 1.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0,
+                                     last_first_entry_by_asset=last)
+        assert intent is not None
+        assert intent.side == "Down"  # decide_side's answer, not the carryover override
+        assert intent.reason != "cross_asset_carryover"
+
+    def test_no_carryover_state_falls_through_unchanged(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Down")
+
+        # last_first_entry_by_asset defaults to None -- every existing
+        # call site (paperbot/paperbot-100, every prior test) must keep
+        # working unchanged.
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0)
+        assert intent is not None
+        assert intent.side == "Down"
+        assert intent.reason != "cross_asset_carryover"
