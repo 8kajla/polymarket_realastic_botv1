@@ -1317,7 +1317,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             notional *= bc.MID_CONTRARIAN_SIZE_RATIO
 
     is_scout = False
-    if not is_hedge and not is_floor_lot and not is_contrarian and activity.real_fill_count == 0:
+    if (not is_hedge and not is_floor_lot and not is_contrarian
+            and not is_cross_asset_carryover and activity.real_fill_count == 0):
         # SCOUT: a deliberately small, tentative first entry -- see
         # SCOUT_PROBABILITY/SCOUT_SIZE_RATIO's docstring in
         # behavior_config.py. CHANGED 2026-09-14: entry_count ->
@@ -1346,6 +1347,17 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # individually supports. MID_CONTRARIAN_SIZE_RATIO already
         # covers the "this is a tentative bet" adjustment for these
         # entries on its own.
+        #
+        # EXCLUDED 2026-09-19: also never stacks with a cross-asset-
+        # carryover pick, for a DIFFERENT reason than contrarian above
+        # (no dedicated size dampener exists for this one) -- without
+        # this exclusion, a carryover-selected entry that also rolled
+        # scout-eligible would report reason="scout_entry" (is_scout is
+        # checked first below), silently hiding that carryover chose the
+        # side at all. Since reason is now persisted onto the ledger
+        # (see settlement-reason-persistence-and-post-deploy-puzzle.md),
+        # masking one override behind another would defeat the whole
+        # point of being able to isolate this mechanism's effect later.
         #
         # ACCURACY-conditioned (2026-09-11): scout_probability's base rate
         # is scaled by bc.accuracy_scout_multiplier(rolling_accuracy) --

@@ -3546,6 +3546,34 @@ class TestBuildOrderIntentCrossAssetCarryover:
         assert intent.side == "Down"  # decide_side's answer, not the carryover override
         assert intent.reason != "cross_asset_carryover"
 
+    def test_carryover_never_masked_by_scout(self, monkeypatch):
+        # Regression: is_scout used to be checked before
+        # is_cross_asset_carryover in the reason chain, so a carryover
+        # pick that also rolled scout-eligible would silently report
+        # reason="scout_entry", hiding that carryover chose the side --
+        # exactly defeating the point of persisting `reason` for later
+        # isolation. Force both SCOUT_PROBABILITY and the carryover roll
+        # to "always fire" and confirm carryover still wins the reason.
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.40, token_id="up")
+        down_book = make_liquid_book(price=0.60, token_id="down")
+        activity = MarketActivityState()
+        last = {"Ethereum": {"side": "Up", "ts": 95.0}}
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None: None)
+        monkeypatch.setattr(bc, "cross_asset_carryover_probability",
+                             lambda leader, follower, gap: 1.0)
+        monkeypatch.setattr(bc, "scout_probability", lambda *a, **k: 1.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0,
+                                     last_first_entry_by_asset=last)
+        assert intent is not None
+        assert intent.side == "Up"
+        assert intent.reason == "cross_asset_carryover"
+        assert intent.is_scout is False
+
     def test_no_carryover_state_falls_through_unchanged(self, monkeypatch):
         market = make_market(end_time=1000.0, asset="Bitcoin")
         up_book = make_liquid_book(price=0.40, token_id="up")
