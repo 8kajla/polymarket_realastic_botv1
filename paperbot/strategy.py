@@ -599,6 +599,21 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
             adverse_move = activity.first_entry_price - dominant_current_price
             trigger_mult = bc.adverse_move_hedge_trigger_multiplier(asset, adverse_move)
             p = max(0.0, min(1.0, p * trigger_mult))
+            # FAVORABLE-MOVE hedge trigger (2026-09-19): the mirror image
+            # of the block just above, covering adverse_move < 0 in
+            # CHEAP specifically -- see
+            # bc.favorable_move_hedge_trigger_multiplier's docstring for
+            # the full GP-IRL derivation. adverse_move_hedge_trigger_
+            # multiplier already no-ops for adverse_move<0, and this
+            # one already no-ops for adverse_move>=0, so applying both
+            # unconditionally is safe (exactly one of the two is ever
+            # non-1.0 for a given adverse_move) -- CHEAP-scoped at the
+            # call site since that's this multiplier's only calibrated
+            # regime, unlike its sibling which spans all four.
+            if (config.ENABLE_FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER
+                    and activity.first_entry_regime == "CHEAP"):
+                favorable_mult = bc.favorable_move_hedge_trigger_multiplier(asset, adverse_move)
+                p = max(0.0, min(1.0, p * favorable_mult))
         if config.ENABLE_CROSS_MARKET_HEDGE_RATE_MULTIPLIER and prev_hedge_rate is not None:
             rate_mult = bc.cross_market_hedge_rate_multiplier(asset, prev_hedge_rate)
             p = max(0.0, min(1.0, p * rate_mult))

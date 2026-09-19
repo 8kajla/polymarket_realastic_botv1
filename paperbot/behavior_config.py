@@ -614,18 +614,57 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
 # while HIGH dropped for all three (e.g. Bitcoin 13.47->8.46). Real,
 # regime-specific shifts, not a single uniform "everything flattened"
 # story -- kept as measured, not smoothed toward one narrative.
+#
+# CHEAP cells RECALIBRATED 2026-09-19 via GP-IRL: a plain (non-hazard)
+# Gaussian Process regression of log(usdcSize) on price -- letting the
+# curve's SHAPE be data-driven instead of assuming it's log-linear --
+# found CHEAP diverges substantially from the shipped slopes for
+# Ethereum and Solana. Checked for floor-lot contamination first (many
+# of the lowest-price trades were literal $0.00-$0.05 fills, obvious
+# minimum-size probes, not confidence-scaled): excluding trades <$0.20
+# notional at two thresholds, the divergence shrank for Bitcoin (which
+# then matched the shipped shape closely, left unchanged below) but
+# persisted, large, for Ethereum and Solana. Re-fit with the same OLS-
+# of-log(usdcSize)-on-price methodology as every other cell in this
+# table, floor-lot-excluded, full observed window (~1 week,
+# price_history_dense.jsonl's coverage):
+#   Bitcoin:  1.9179 -> 1.6699 (modest, within this table's own
+#             established recalibration noise -- see PRE/POST-boundary
+#             split below)
+#   Ethereum: 0.8809 -> 2.9746 (large)
+#   Solana:   0.6450 -> 3.1063 (large)
+# Bootstrap-confirmed (400 resamples, resampling each price bin's
+# observations): Ethereum's rise 90% CI=[0.407,0.731], Solana's
+# 90% CI=[0.736,1.027] -- both entirely above the shipped slopes'
+# implied rise, no overlap. Calendar split-half (first half of the week
+# vs second): Ethereum 0.495->0.702, Solana 0.697->0.919 -- both real
+# and STABLE, if anything strengthening, not a temporary blip. Pre vs
+# post the ~2026-09-18 boundary: Ethereum 3.07 (pre, n=810) vs 3.15
+# (post, n=148) -- highly consistent, not boundary-driven. Solana 2.89
+# (pre, n=800) vs 4.32 (post, n=98, thinner) -- directionally the same,
+# post is thinner but if anything steeper still.
+#
+# HONEST RESIDUAL, not fully captured by this recalibration: Ethereum's
+# CHEAP curve is NOT actually log-linear -- the GP found a genuine dip
+# around price=0.05 (notably the same threshold CHEAP_JOINT_PRICE_
+# THRESHOLD uses) before rising to a peak near 0.25. A single slope is
+# the best LINEAR approximation of that shape, not a full fit -- kept
+# as the simplest safe improvement over the old, far-worse-fitting
+# slope rather than force a bigger architecture change (a piecewise
+# curve) on ~1 week of data for one cell. Revisit if more data
+# accumulates or this residual turns out to matter economically.
 WITHIN_BAND_SIZE_SLOPE = {
     "Bitcoin": {"CORE": {"slope": 4.7755, "band_mean_price": 0.7865},
                 "HIGH": {"slope": 8.4602, "band_mean_price": 0.9396},
-                "CHEAP": {"slope": 1.9179, "band_mean_price": 0.1959},
+                "CHEAP": {"slope": 1.6699, "band_mean_price": 0.1482},
                 "MID": {"slope": 2.3301, "band_mean_price": 0.4639}},
     "Ethereum": {"CORE": {"slope": 8.6511, "band_mean_price": 0.8012},
                  "HIGH": {"slope": 14.8418, "band_mean_price": 0.9369},
-                 "CHEAP": {"slope": 0.8809, "band_mean_price": 0.1684},
+                 "CHEAP": {"slope": 2.9746, "band_mean_price": 0.1297},
                  "MID": {"slope": 3.7741, "band_mean_price": 0.4550}},
     "Solana": {"CORE": {"slope": 7.7354, "band_mean_price": 0.8080},
                "HIGH": {"slope": 20.5223, "band_mean_price": 0.9340},
-               "CHEAP": {"slope": 0.6450, "band_mean_price": 0.1814},
+               "CHEAP": {"slope": 3.1063, "band_mean_price": 0.1530},
                "MID": {"slope": 1.6615, "band_mean_price": 0.4407}},
 }
 _WITHIN_BAND_MULTIPLIER_CAP = 5.0  # symmetric: multiplier clamped to [1/cap, cap]
@@ -744,6 +783,26 @@ def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
 # CHEAP_JOINT_PRICE_THRESHOLD (0.05) is the SEPARATE, narrower split
 # within CHEAP between "deep longshot" and "the rest of CHEAP" that
 # is_deep keys off of. Do not confuse the two.
+#
+# CHEAP_JOINT_PRICE_THRESHOLD's exact value (0.05), NOT YET CHANGED:
+# GP-IRL research 2026-09-19 reconciled why the original occupancy-
+# normalized derivation (a sharp step at 0.05) and this session's
+# hazard-based GP fit (a smooth curve) looked like they disagreed --
+# they don't, once given the same resolution. Re-running the ORIGINAL
+# occupancy-normalized methodology across fine price bins instead of
+# just the one deep(<0.05)-vs-rest(0.05-0.30) split shows entry rate is
+# essentially ZERO below ~0.02 (literally 0 entries across 116-212
+# occupancy ticks, every asset) and ramps up sharply through 0.02-0.05,
+# already back to normal by ~0.04. The original 2-bin split averaged a
+# true, near-total floor (below ~0.02) together with a region already
+# recovered (0.03-0.05), producing the misleadingly uniform "0.30x for
+# the whole band" summary this file's DEEP_LONGSHOT/CHEAP_JOINT history
+# was built on. The REAL floor is closer to 0.02, not 0.05 -- left
+# unchanged here only because CHEAP_JOINT_ENTRY_MULTIPLIER's own values
+# are currently 1.0 (disabled, see its docstring below) regardless of
+# where this threshold sits, so there is no live behavior to fix yet.
+# Revisit this constant, not just the multiplier values, whenever this
+# mechanism is next recalibrated.
 CHEAP_JOINT_CROSSING_THRESHOLD = 0.30
 CHEAP_JOINT_PRICE_THRESHOLD = 0.05
 CHEAP_JOINT_ENTRY_MULTIPLIER = {
@@ -2346,6 +2405,105 @@ def adverse_move_hedge_trigger_multiplier(asset: str, adverse_move: Optional[flo
             result = p_val + frac * (q_val - p_val)
             break
     cap = _ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
+
+
+# ---------------------------------------------------------------------------
+# FAVORABLE-MOVE hedge trigger multiplier. Added 2026-09-19: the mirror
+# image of ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER above, covering
+# adverse_move < 0 (a move IN the primary position's favor) in CHEAP
+# specifically -- the exact case that table's own docstring flagged as
+# "a real but DIFFERENT, non-monotonic (U-shaped) pattern" and
+# deliberately left at a 1.0 no-op, suspecting a SCOUT-bleed
+# classification confound (an opportunistic "harvest the now-cheap
+# confirmed loser" bet miscounted as a hedge).
+#
+# Derivation: a Gaussian-Process IRL fit of the hedge-trigger reward
+# surface (this project's first fully data-driven, non-parametric-shape
+# analysis of this decision -- no threshold or bucket structure assumed
+# up front, unlike every other table in this file) found the U-shape is
+# real, not the suspected artifact. Checked directly and thoroughly
+# before building:
+#   - SCOUT-bleed confound tested and REJECTED: hedges at deep-favorable
+#     adverse_move (<-0.5) have median size 89% of the position being
+#     protected (n=183) -- a properly-scaled real hedge, not a tiny
+#     floor-lot/lottery-ticket bet (only 13.1% were "tiny", ratio<0.15).
+#   - Time-since-entry confound tested and controlled: adverse_move
+#     magnitude correlates with time-since-entry (0.25-0.59 across
+#     regimes, mechanically sensible -- bigger moves take longer to
+#     develop), so the shape was re-fit on ONLY the early (0-120s)
+#     time-since-entry stratum, where it survives cleanly (this same
+#     check, done for CORE/HIGH, found THEIR apparent shapes were pure
+#     time-confound artifacts and are NOT modeled here as a result).
+#   - Bootstrap-confirmed (500 resamples): both tails (adverse_move=-1.0
+#     and the adverse side already modeled above) exceed the near-zero
+#     valley in 98.6-100% of resamples.
+#   - Calendar split-half (first half of the observed week vs second):
+#     the valley-at-zero, elevated-at-both-extremes shape holds in BOTH
+#     halves; only the exact magnitude/asymmetry drifts, fully
+#     explained by the already-documented ~2026-09-18 hedge-rate
+#     collapse (see REGIME_HEDGE_POST_SHIFT_MULTIPLIER), applied
+#     upstream of this multiplier so it isn't double-counted here.
+#   - Per-asset checked (the original U-shape observation that led to
+#     this table's ancestor being left unmodeled was never itself
+#     re-examined per-asset): all three assets show the same qualitative
+#     bathtub, magnitudes differ (Ethereum's deep-favorable tail is the
+#     most extreme), so calibrated per-asset like its sibling table.
+#
+# Same "RATE-based mean-neutral multiplier on hedge_attempt_hazard's
+# output" construction as ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER: each
+# breakpoint's value is that adverse_move bin's real favorable-side
+# hedge rate divided by the OVERALL favorable-side hedge rate for that
+# asset (so the multiplier reshapes the distribution across adverse_move
+# without changing the overall favorable-side hedge rate on average).
+# CHEAP only -- MID showed a real hump for Bitcoin/Ethereum but Solana's
+# shape looked closer to monotonic within the same tested range (peak
+# possibly at or beyond -1.0, not clearly interior) -- left unmodeled
+# pending a asset-specific functional form, same discipline as this
+# file's other thin/inconsistent-per-asset exceptions.
+FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER = {
+    "Bitcoin": {-1.0: 1.644, -0.5: 1.449, -0.2: 1.051, -0.05: 0.789},
+    "Ethereum": {-1.0: 3.629, -0.5: 1.253, -0.2: 0.888, -0.05: 0.767},
+    "Solana": {-1.0: 1.632, -0.5: 1.665, -0.2: 0.757, -0.05: 0.905},
+}
+_FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP = 4.0  # measured range tops
+# out at 3.629 (Ethereum's deep-favorable bin, n=83) -- comfortably
+# inside, same "cap above what's measured" discipline as the sibling
+# table's own 3.0 cap.
+
+
+def favorable_move_hedge_trigger_multiplier(asset: str, adverse_move: Optional[float]) -> float:
+    """Continuous, mean-neutral multiplier on hedge_attempt_hazard's
+    output as a function of how far price has moved IN the primary
+    position's favor since entry -- the mirror image of
+    adverse_move_hedge_trigger_multiplier. 1.0 (no-op) for any asset not
+    in FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER, when adverse_move is
+    unavailable, OR when adverse_move >= 0 (that side is
+    adverse_move_hedge_trigger_multiplier's job, not this one's).
+    CHEAP-only by construction -- callers are responsible for scoping
+    this to CHEAP the same way they already scope the adverse-move
+    sibling to whichever regimes it's calibrated for. Flat beyond the
+    measured range, clamped to
+    _FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP, same discipline as
+    every other multiplier in this file."""
+    if adverse_move is None or adverse_move >= 0:
+        return 1.0
+    curve = FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER.get(asset)
+    if curve is None:
+        return 1.0
+    points = sorted(curve.items())
+    lo_move, lo_val = points[0]
+    hi_move, hi_val = points[-1]
+    move = max(lo_move, min(hi_move, adverse_move))
+    result = lo_val
+    for i in range(len(points) - 1):
+        p_move, p_val = points[i]
+        q_move, q_val = points[i + 1]
+        if p_move <= move <= q_move:
+            frac = (move - p_move) / (q_move - p_move) if q_move > p_move else 0.0
+            result = p_val + frac * (q_val - p_val)
+            break
+    cap = _FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP
     return max(1.0 / cap, min(cap, result))
 
 

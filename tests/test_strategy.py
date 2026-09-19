@@ -1692,6 +1692,74 @@ class TestDecideHedgeAdverseMoveTriggerMultiplier:
         )
         assert n_small_move == n_big_move, "with the flag off, adverse_move must be a strict no-op"
 
+
+class TestDecideHedgeFavorableMoveTriggerMultiplier:
+    """decide_hedge's favorable-move TRIGGER wiring, added 2026-09-19 --
+    see TestFavorableMoveHedgeTriggerMultiplier for the multiplier
+    function itself in isolation; these confirm decide_hedge applies it
+    ONLY in CHEAP (its only calibrated regime), only to the FIRST hedge,
+    and respects its own feature flag independently of its sibling's."""
+
+    def test_favorable_move_is_no_longer_a_noop_in_cheap(self):
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CHEAP", price=0.10)
+        n = 500
+        n_baseline = sum(  # no dominant_current_price -> neither multiplier applied
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed)) is not None
+        )
+        n_deep_favorable = sum(  # dominant_current_price=0.95 -> adverse_move=-0.85 (deep favorable)
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), dominant_current_price=0.95) is not None
+        )
+        assert n_deep_favorable != n_baseline, "CHEAP's favorable-move multiplier must actually move the rate"
+
+    def test_valley_near_zero_fires_less_often_than_deep_favorable_in_cheap(self):
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CHEAP", price=0.10)
+        n = 500
+        n_near_zero = sum(  # dominant_current_price=0.10 -> adverse_move=0.0 (approx, valley)
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), dominant_current_price=0.10) is not None
+        )
+        n_deep_favorable = sum(  # dominant_current_price=0.95 -> adverse_move=-0.85 (deep favorable, elevated)
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), dominant_current_price=0.95) is not None
+        )
+        assert n_deep_favorable > n_near_zero
+
+    def test_does_not_apply_outside_cheap(self):
+        # Same favorable adverse_move, but CORE first-entry regime --
+        # this multiplier is CHEAP-only by construction, must stay a
+        # strict no-op here (matching the sibling's own CORE behavior).
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE", price=0.80)
+        n = 500
+        n_baseline = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed)) is not None
+        )
+        n_favorable = sum(  # dominant_current_price=0.95 -> adverse_move=-0.15 (favorable)
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), dominant_current_price=0.95) is not None
+        )
+        assert n_baseline == n_favorable
+
+    def test_respects_its_own_feature_flag_independently(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER", False)
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CHEAP", price=0.10)
+        n = 500
+        n_near_zero = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), dominant_current_price=0.10) is not None
+        )
+        n_deep_favorable = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), dominant_current_price=0.95) is not None
+        )
+        assert n_near_zero == n_deep_favorable, "with the flag off, favorable adverse_move must be a strict no-op"
+
     def test_is_a_noop_when_first_entry_price_was_never_recorded(self):
         activity = MarketActivityState()
         record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE")  # no price= kwarg

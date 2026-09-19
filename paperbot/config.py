@@ -716,6 +716,20 @@ ENABLE_ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER (see its
+# docstring in behavior_config.py). Added 2026-09-19 -- the mirror-image
+# of ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER above, covering adverse_move<0
+# (a favorable move) in CHEAP specifically, which that table always
+# treated as a flat no-op. A GP-IRL reward-surface fit (this project's
+# first fully data-driven, non-parametric-shape hedge-trigger analysis)
+# found a real, per-asset-confirmed, four-times-confound-checked bathtub:
+# hedge propensity is LOWEST near adverse_move=0 and rises at BOTH
+# extremes, not flat. Default TRUE everywhere.
+ENABLE_FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER = os.environ.get(
+    "ENABLE_FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Feature flag for CROSS_MARKET_SIDE_PERSISTENCE (see its docstring in
 # behavior_config.py). Added 2026-09-11 -- default TRUE everywhere,
 # explicit FALSE for paperbot-mini (the $100 control instance).

@@ -688,6 +688,60 @@ class TestAdverseMoveHedgeTriggerMultiplier:
             assert max(curve.values()) < bc._ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP
 
 
+class TestFavorableMoveHedgeTriggerMultiplier:
+    """Mirror image of TestAdverseMoveHedgeTriggerMultiplier, added
+    2026-09-19 -- the favorable-move (adverse_move<0) side that table
+    deliberately left as a no-op, now modeled after a GP-IRL fit found
+    the U-shape survives every confound check (SCOUT-bleed sizing,
+    time-since-entry stratification, bootstrap, calendar split-half,
+    per-asset consistency). CHEAP only."""
+
+    def test_neutral_for_assets_not_in_the_table(self):
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            assert bc.favorable_move_hedge_trigger_multiplier(asset, -0.2) == 1.0
+
+    def test_neutral_when_adverse_move_is_unavailable(self):
+        assert bc.favorable_move_hedge_trigger_multiplier("Bitcoin", None) == 1.0
+
+    def test_neutral_for_adverse_moves_nonnegative_adverse_move(self):
+        # Deliberately unmodeled -- that's adverse_move_hedge_trigger_
+        # multiplier's job. Strict no-op, not extrapolated.
+        assert bc.favorable_move_hedge_trigger_multiplier("Bitcoin", 0.0) == 1.0
+        assert bc.favorable_move_hedge_trigger_multiplier("Bitcoin", 0.01) == 1.0
+        assert bc.favorable_move_hedge_trigger_multiplier("Bitcoin", 5.0) == 1.0
+
+    def test_exact_at_each_calibrated_point(self):
+        for asset, curve in bc.FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER.items():
+            for move, expected in curve.items():
+                got = bc.favorable_move_hedge_trigger_multiplier(asset, float(move))
+                assert abs(got - expected) < 1e-9, f"{asset}@{move}: {got} != {expected}"
+
+    def test_interpolates_between_points(self):
+        # Bitcoin: -0.5->1.449, -0.2->1.051 -- the midpoint move value
+        # must interpolate to (roughly) the midpoint multiplier.
+        mid_move = (-0.5 + -0.2) / 2
+        mid_val = bc.favorable_move_hedge_trigger_multiplier("Bitcoin", mid_move)
+        assert 1.051 < mid_val < 1.449
+
+    def test_flat_beyond_the_measured_range_no_extrapolation(self):
+        at_min = bc.favorable_move_hedge_trigger_multiplier("Bitcoin", -1.0)
+        below_min = bc.favorable_move_hedge_trigger_multiplier("Bitcoin", -5.0)
+        assert at_min == below_min
+
+    def test_valley_near_zero_is_lower_than_both_extremes(self):
+        # The confirmed bathtub shape: elevated at both the deepest
+        # favorable move AND (via the sibling table) the most adverse,
+        # with a valley near adverse_move==0.
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            near_zero = bc.favorable_move_hedge_trigger_multiplier(asset, -0.05)
+            deep_favorable = bc.favorable_move_hedge_trigger_multiplier(asset, -1.0)
+            assert deep_favorable > near_zero, f"{asset}: expected the deepest favorable move to score above near-zero"
+
+    def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
+        for asset, curve in bc.FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER.items():
+            assert max(curve.values()) < bc._FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP
+
+
 class TestWeekendHedgeMultiplier:
     """Weekend-conditioned first-hedge trigger, added 2026-09-10 --
     real, well-powered (z=9.9, n=10,183/3,902) finding that his
