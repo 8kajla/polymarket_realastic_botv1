@@ -2128,6 +2128,61 @@ def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) ->
 
 
 # ---------------------------------------------------------------------------
+# CHEAP-BAND POST-SHIFT HEDGE DAMPENER. Added 2026-09-19, in direct
+# response to a live PnL investigation: the bot's paper P&L cratered in
+# a ~3.4h window specifically because hedges accounted for 76% of its
+# CHEAP-band loss (-$233 of -$305) -- driven by the bot dual-siding
+# ~6x more often than the real trader currently is (61% vs 10.5%, same
+# window). See hedge-rate-secular-decline.md for the full derivation:
+# his overall dual-siding rate crashed at a sharp, discrete boundary
+# (~2026-09-18 03:00 UTC), holding cleanly for 33+ hours and TIGHTENING
+# (not reverting) on every re-check since. HEDGE_TRIGGER_PROBABILITY
+# above is fit on the old, pre-shift regime (778k-trade historical
+# dataset) and is now stale specifically for CHEAP.
+#
+# Re-measured "does this CHEAP-first-entry market EVER go dual-sided"
+# (the exact same definition HEDGE_TRIGGER_PROBABILITY itself uses),
+# post-boundary only, per asset:
+#
+#   Bitcoin:  n=138 post-shift rate=10.87% vs shipped 71.93% -> ratio 0.151
+#   Ethereum: n=125 post-shift rate= 9.60% vs shipped 41.27% -> ratio 0.233
+#   Solana:   n= 97 post-shift rate=12.37% vs shipped 53.31% -> ratio 0.232
+#
+# NOT a uniform per-asset drop -- Bitcoin fell to roughly 2/3 the
+# relative level Ethereum/Solana did, preserved below rather than
+# smoothed to a single flat multiplier. Confirmed this is a pure
+# FREQUENCY change, not a character change (unlike MID, which flipped
+# from majority profit-locking to majority defensive the same
+# boundary): CHEAP hedges that still fire are still ~87-93% favorable/
+# profit-locking, same as before the shift -- so a flat multiplier on
+# the existing hedge_attempt_hazard is the correct, minimal fix, not a
+# new hazard shape or trigger-condition change.
+#
+# HONEST CAVEAT: calibrated on only ~33 hours of post-shift data
+# (n=97-138 per asset) -- the SIGN and MAGNITUDE of the shift are not
+# in doubt (a drop from 40-72% to 10-12% is nowhere close to
+# explainable by sampling noise at this n), but the exact ratio values
+# should be re-derived once more days of post-shift data accumulate.
+# Feature-flagged so this can be cleanly disabled if the shift ever
+# reverts.
+CHEAP_HEDGE_POST_SHIFT_MULTIPLIER = {
+    "Bitcoin": 0.151,
+    "Ethereum": 0.233,
+    "Solana": 0.232,
+}
+
+
+def cheap_hedge_post_shift_multiplier(asset: str) -> float:
+    """1.0 (no-op) for any asset not in CHEAP_HEDGE_POST_SHIFT_MULTIPLIER
+    -- matching this file's usual pattern for an uncalibrated/dormant
+    asset. Callers apply this ONLY when first_entry_regime == "CHEAP";
+    it says nothing about MID/CORE/HIGH, which either didn't shift
+    (CORE/HIGH) or shifted in CHARACTER not just frequency (MID, not
+    yet modeled by a simple multiplier)."""
+    return CHEAP_HEDGE_POST_SHIFT_MULTIPLIER.get(asset, 1.0)
+
+
+# ---------------------------------------------------------------------------
 # ADVERSE-MOVE-conditioned hedge TRIGGER (as opposed to SIZE -- see
 # ADVERSE_MOVE_SIZE_MULTIPLIER/ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER
 # above, which cover how BIG a hedge is once one happens). Added

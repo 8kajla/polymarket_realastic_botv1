@@ -1735,6 +1735,48 @@ class TestDecideHedgeWeekendMultiplier:
         )
         assert n_weekday == n_weekend, "with the flag off, is_weekend must be a strict no-op"
 
+    def test_cheap_hedge_dampener_lookup(self):
+        assert bc.cheap_hedge_post_shift_multiplier("Bitcoin") == pytest.approx(0.151)
+        assert bc.cheap_hedge_post_shift_multiplier("Ethereum") == pytest.approx(0.233)
+        assert bc.cheap_hedge_post_shift_multiplier("Solana") == pytest.approx(0.232)
+
+    def test_cheap_hedge_dampener_is_noop_for_uncalibrated_asset(self):
+        assert bc.cheap_hedge_post_shift_multiplier("Dogecoin") == 1.0
+
+    def test_cheap_hedge_dampener_fires_less_often_than_mid(self):
+        # Same asset, same attempt index -- CHEAP should hedge less
+        # often than MID purely because of the post-shift dampener
+        # (both start from their own calibrated hedge_attempt_hazard,
+        # but only CHEAP gets scaled down further).
+        activity_cheap = MarketActivityState()
+        record_filled_entry(activity_cheap, "Up", notional_usd=10.0, regime="CHEAP")
+        activity_mid = MarketActivityState()
+        record_filled_entry(activity_mid, "Up", notional_usd=10.0, regime="MID")
+        n = 1000
+        n_cheap = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity_cheap, random.Random(seed)) is not None
+        )
+        n_mid = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity_mid, random.Random(seed)) is not None
+        )
+        assert n_cheap < n_mid
+
+    def test_cheap_hedge_dampener_respects_feature_flag(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_CHEAP_HEDGE_POST_SHIFT_DAMPENER", False)
+        monkeypatch.setattr(bc, "cheap_hedge_post_shift_multiplier", lambda asset: 0.0)
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CHEAP")
+        n = 200
+        n_fired = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed)) is not None
+        )
+        # With the flag off, a multiplier of 0.0 must be ignored entirely
+        # -- some hedges should still fire from the base hazard alone.
+        assert n_fired > 0
+
     def test_does_not_affect_continuation_hedges(self):
         # Same scoping rule as liquidity above -- only the first hedge.
         activity = MarketActivityState()

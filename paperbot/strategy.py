@@ -505,6 +505,16 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
     symmetric for a big win). Optional (default None -> no-op) for the
     same reason as every other optional param here; bot.py maintains the
     rolling per-asset loss history and passes in the flag.
+
+    CHEAP-BAND POST-SHIFT-conditioned (2026-09-19): when
+    first_entry_regime == "CHEAP", the FIRST-hedge probability is also
+    scaled by bc.cheap_hedge_post_shift_multiplier(asset) -- a real,
+    sharp drop in the trader's CHEAP hedge-trigger rate confirmed at a
+    specific recent boundary (see CHEAP_HEDGE_POST_SHIFT_MULTIPLIER's
+    docstring in behavior_config.py for the full derivation and the
+    honest short-window caveat). Not a new parameter -- computed
+    internally from `asset` and `activity.first_entry_regime`, which
+    this function already has.
     """
     if activity.entry_count < 1 or activity.first_entry_regime is None:
         return None
@@ -525,6 +535,16 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
         return None
     if activity.real_hedge_fill_count == 0:
         p = bc.hedge_attempt_hazard(asset, activity.first_entry_regime, activity.real_fill_count)
+        if (config.ENABLE_CHEAP_HEDGE_POST_SHIFT_DAMPENER
+                and activity.first_entry_regime == "CHEAP"):
+            # See CHEAP_HEDGE_POST_SHIFT_MULTIPLIER's docstring in
+            # behavior_config.py -- the real trader's CHEAP hedge rate
+            # crashed to ~10-23% of its old level at a sharp boundary
+            # (~2026-09-18 03:00 UTC), confirmed a pure frequency change
+            # (character unchanged), applied here before the other
+            # conditional multipliers so it scales the same base hazard
+            # they all do, not layered on top of an already-adjusted p.
+            p = max(0.0, min(1.0, p * bc.cheap_hedge_post_shift_multiplier(asset)))
         if config.ENABLE_HEDGE_LIQUIDITY_MULTIPLIER:
             liq_mult = bc.hedge_liquidity_multiplier(asset, liquidity)
             p = max(0.0, min(1.0, p * liq_mult))
