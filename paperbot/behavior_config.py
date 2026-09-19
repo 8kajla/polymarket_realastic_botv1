@@ -712,10 +712,48 @@ def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
 # his whole TWAP-era history against a baseline that doesn't cover it.
 # Revisit and re-derive once more occupancy history has accumulated.
 DEEP_LONGSHOT_PRICE_THRESHOLD = 0.05
+
+# DISABLED 2026-09-19 -- a MAJOR reversal found, not just a stale
+# calibration. Re-derived the same occupancy-normalized ratio this
+# table was originally built from (price_history_dense.jsonl occupancy
+# vs trades.jsonl first entries, same methodology, same 0.00-0.05 vs
+# 0.05-0.30 definition) and split it at the already-known ~2026-09-18
+# 03:00 UTC regime-shift boundary (see hedge-rate-secular-decline.md):
+#
+#             pre-boundary ratio   post-boundary ratio   (old, shipped)
+#   Bitcoin        0.446                 2.067                0.30
+#   Ethereum       0.446                 1.751                0.36
+#   Solana         0.328                 2.355                0.26
+#
+# Pre-boundary values roughly confirm the original derivation (0.33-
+# 0.45, in the same ballpark as 0.26-0.36 -- consistent with genuine,
+# if modest, upward drift over time). POST-boundary, all three ratios
+# jump ABOVE 1.0 -- a full reversal, not a weakening: he now enters the
+# DEEPEST longshot band (<0.05) at 1.75-2.36x the rate of the rest of
+# CHEAP, relative to opportunity, instead of avoiding it. Same
+# boundary, same direction, same consistency-across-all-three-assets
+# signature as the hedge-rate collapse and the MID hedge-character
+# flip found the same day -- a third independent dimension of his
+# behavior changing at once, not an isolated quirk.
+#
+# This mechanism's whole architecture (a SKIP-probability dampener) can
+# only ever suppress toward 1.0 (no-op) -- it has no way to express a
+# BOOST above the neutral rate, which is what the post-shift reality
+# now calls for. Rather than force a "boost" number out of ~30 hours of
+# post-boundary data (n=45-65 per asset -- thin, though the DIRECTION
+# is not in doubt given the consistency across all three assets),
+# disabled outright: continuing to suppress a preference that's
+# reversed would be actively counterproductive, but guessing a
+# specific boost magnitude this early would just replace one
+# unjustified number with another. Revisit once enough post-boundary
+# data accumulates to properly calibrate a boost mechanism (a genuinely
+# new architecture, not a value swap, since nothing in this codebase
+# currently models "enters MORE than a neutral baseline would predict"
+# for this dimension).
 DEEP_LONGSHOT_ENTRY_MULTIPLIER = {
-    "Bitcoin": 0.30,
-    "Ethereum": 0.36,
-    "Solana": 0.26,
+    "Bitcoin": 1.0,
+    "Ethereum": 1.0,
+    "Solana": 1.0,
 }
 
 
@@ -723,7 +761,9 @@ def deep_longshot_entry_multiplier(asset: str, price: float) -> float:
     """1.0 (no-op) at or above DEEP_LONGSHOT_PRICE_THRESHOLD, or for any
     asset with no calibration (e.g. a dormant/future asset) -- otherwise
     this asset's calibrated dampener, applied as a skip-probability at
-    the call site (see build_order_intent)."""
+    the call site (see build_order_intent). Currently 1.0 (no-op) for
+    every calibrated asset too -- see DEEP_LONGSHOT_ENTRY_MULTIPLIER's
+    docstring for why this was disabled rather than recalibrated."""
     if price >= DEEP_LONGSHOT_PRICE_THRESHOLD:
         return 1.0
     return DEEP_LONGSHOT_ENTRY_MULTIPLIER.get(asset, 1.0)

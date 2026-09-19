@@ -2914,19 +2914,30 @@ class TestBuildOrderIntentMaxNotionalCap:
 
 
 class TestDeepLongshotDampener:
-    """DEEP_LONGSHOT_ENTRY_MULTIPLIER (2026-09-18): a first entry priced
-    below bc.DEEP_LONGSHOT_PRICE_THRESHOLD within CHEAP gets probabilistically
-    skipped, mirroring the real trader's confirmed avoidance of the
-    deepest CHEAP longshots. See its docstring in behavior_config.py."""
+    """DEEP_LONGSHOT_ENTRY_MULTIPLIER (2026-09-18, DISABLED 2026-09-19): a
+    first entry priced below bc.DEEP_LONGSHOT_PRICE_THRESHOLD within CHEAP
+    gets probabilistically skipped -- originally calibrated to mirror the
+    real trader's confirmed avoidance of the deepest CHEAP longshots, but
+    his behavior reversed to a PREFERENCE for them at the ~2026-09-18
+    boundary, so every calibrated asset is now a 1.0 no-op. The mechanism
+    itself (gating, hedge/re-entry exclusion, feature flag) is unchanged
+    and still tested here in case it's recalibrated with a value below
+    1.0 again. See DEEP_LONGSHOT_ENTRY_MULTIPLIER's docstring in
+    behavior_config.py."""
 
     def test_multiplier_is_a_noop_at_or_above_the_threshold(self):
         assert bc.deep_longshot_entry_multiplier("Bitcoin", 0.05) == 1.0
         assert bc.deep_longshot_entry_multiplier("Bitcoin", 0.20) == 1.0
 
-    def test_multiplier_applies_the_calibrated_value_below_threshold(self):
-        assert bc.deep_longshot_entry_multiplier("Bitcoin", 0.03) == pytest.approx(0.30)
-        assert bc.deep_longshot_entry_multiplier("Ethereum", 0.03) == pytest.approx(0.36)
-        assert bc.deep_longshot_entry_multiplier("Solana", 0.03) == pytest.approx(0.26)
+    def test_multiplier_is_currently_disabled_below_threshold_too(self):
+        # DISABLED 2026-09-19: his deep-longshot avoidance reversed to a
+        # preference at the ~2026-09-18 boundary (see
+        # DEEP_LONGSHOT_ENTRY_MULTIPLIER's docstring) -- suppressing
+        # would now be backwards, so every calibrated asset is a 1.0
+        # no-op below the threshold too, not just above it.
+        assert bc.deep_longshot_entry_multiplier("Bitcoin", 0.03) == 1.0
+        assert bc.deep_longshot_entry_multiplier("Ethereum", 0.03) == 1.0
+        assert bc.deep_longshot_entry_multiplier("Solana", 0.03) == 1.0
 
     def test_multiplier_defaults_to_noop_for_an_uncalibrated_asset(self):
         assert bc.deep_longshot_entry_multiplier("Dogecoin", 0.03) == 1.0
