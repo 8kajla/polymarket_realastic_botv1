@@ -1355,3 +1355,76 @@ class TestDecisiveEntryEligibilityMultiplier:
         for asset, buckets in bc.DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER.items():
             for lo, hi, mult in buckets:
                 assert 0.0 < mult <= 1.0
+
+
+class TestSharesForPrice:
+    """On-chain share-count sizing primitive (see its docstring above
+    median_entry_notional in behavior_config.py)."""
+
+    def test_matches_the_on_chain_formula_at_the_midpoint(self):
+        # dist=0 -> 5.05 * exp(0) = 5.05
+        assert bc.shares_for_price(0.5) == pytest.approx(5.05, abs=0.05)
+
+    def test_symmetric_around_the_midpoint(self):
+        for price in (0.10, 0.25, 0.40, 0.60, 0.75, 0.90):
+            assert bc.shares_for_price(price) == bc.shares_for_price(1.0 - price)
+
+    def test_kink_lands_on_the_030_070_band_boundary(self):
+        # dist=0.20 (price 0.30/0.70) is where the formula switches --
+        # NOT a continuous seam (a real, deliberate jump exists in the
+        # on-chain data at this exact point, matching this file's own
+        # existing CHEAP/MID vs CORE/HIGH band boundary). At price
+        # exactly 0.30, dist<=0.20 is still true (inclusive), so it uses
+        # the inner formula; just past it, the outer (steeper) formula
+        # takes over and drops sharply.
+        at_boundary = bc.shares_for_price(0.30)
+        just_outside = bc.shares_for_price(0.30 - 1e-6)
+        assert at_boundary == pytest.approx(6.0, abs=0.1)
+        assert just_outside == pytest.approx(5.5, abs=0.1)
+        assert just_outside < at_boundary
+
+    def test_grows_monotonically_away_from_the_midpoint(self):
+        prices = [0.5, 0.45, 0.40, 0.30, 0.20, 0.10, 0.05, 0.02]
+        shares = [bc.shares_for_price(p) for p in prices]
+        assert shares == sorted(shares)
+
+    def test_quantized_to_one_decimal_share_lot(self):
+        for price in (0.13, 0.27, 0.5, 0.68, 0.91):
+            shares = bc.shares_for_price(price)
+            assert round(shares * 10) == pytest.approx(shares * 10, abs=1e-9)
+
+    def test_outside_mid_band_uses_the_steeper_tail_formula(self):
+        # dist=0.30 (price=0.20): raw = 2.16 * exp(4.685*0.30) = ~8.81
+        assert bc.shares_for_price(0.20) == pytest.approx(8.81, abs=0.1)
+
+
+class TestNotionalForPrice:
+    """Position-tier-corrected notional wrapper (found DURING
+    implementation, not in the original on-chain discovery -- see the
+    POSITION_TIER_SHARE_MULTIPLIER docstring)."""
+
+    def test_first_tier_is_a_noop_on_top_of_shares_for_price(self):
+        price = 0.35
+        assert bc.notional_for_price(price, "first") == pytest.approx(
+            bc.shares_for_price(price) * price)
+
+    def test_later_tiers_size_up_relative_to_first(self):
+        price = 0.35
+        first = bc.notional_for_price(price, "first")
+        second = bc.notional_for_price(price, "2nd_3rd")
+        fourth = bc.notional_for_price(price, "4th_plus")
+        assert first < second < fourth
+
+    def test_default_tier_is_first_when_unspecified(self):
+        price = 0.6
+        assert bc.notional_for_price(price) == bc.notional_for_price(price, "first")
+
+    def test_unknown_tier_degrades_to_a_noop_rather_than_raising(self):
+        price = 0.6
+        assert bc.notional_for_price(price, "nonexistent_tier") == pytest.approx(
+            bc.notional_for_price(price, "first"))
+
+    def test_position_tier_multiplier_table_matches_documented_calibration(self):
+        assert bc.POSITION_TIER_SHARE_MULTIPLIER["first"] == 1.0
+        assert bc.POSITION_TIER_SHARE_MULTIPLIER["2nd_3rd"] == pytest.approx(1.07)
+        assert bc.POSITION_TIER_SHARE_MULTIPLIER["4th_plus"] == pytest.approx(1.30)

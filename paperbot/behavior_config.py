@@ -577,6 +577,82 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# SHARE-COUNT-BASED ENTRY SIZING. Added 2026-09-20/21, replacing
+# median_entry_notional() + within_band_size_multiplier() as the ENTRY
+# base (hedges are untouched -- see ENABLE_SHARE_BASED_SIZING's docstring
+# in config.py for scope). On-chain ground truth (CTFExchange OrderFilled
+# events, not the off-chain data-api's fragmented per-print `size`) found
+# he sizes in exact SHARE COUNT, quantized to 0.1-share lots, as one
+# symmetric piecewise-exponential function of |price-0.5| -- asset-
+# independent (confirmed identical BTC/ETH/SOL) and identical for
+# dominant-side entries vs hedge-side fills in the on-chain sample, one
+# shared curve instead of this file's previous 16 independently-fit
+# per-(asset,regime) exponentials. See onchain-share-sizing-discovery-
+# and-code-audit.md (project memory) for the full discovery/audit trail.
+#
+# dist<=0.20 (price 0.30-0.70): shares = 5.05 * exp(0.873*dist), r=0.956
+# dist>0.20 (price outside that): shares = 2.16 * exp(4.685*dist), r=0.983
+# The kink lands almost exactly on this file's own existing CHEAP/MID vs
+# CORE/HIGH band boundary (0.30/0.70) -- not a coincidence being forced
+# in, the two boundaries were derived completely independently and
+# happen to agree.
+#
+# POSITION-TIER CORRECTION (found during implementation, NOT in the
+# original discovery): the on-chain sample never checked whether entry
+# ORDER (1st/2nd_3rd/4th_plus into a market, same definition as
+# position_tier_for_index above) carries information beyond price alone.
+# Checked directly against trades.jsonl using this project's own
+# established 5-second CLOB-fragment collapse (turns fragmented fill
+# rows into real per-decision share counts -- the same technique used
+# throughout this project for decision-level analysis): a REAL,
+# monotonic, split-half-CONFIRMED effect exists -- later entries in a
+# market are sized systematically larger than price alone predicts.
+# Median real-share / shares_for_price(price), 14-day window, first vs
+# second half of that window:
+#   tier       first-half   second-half   (pooled median, n)
+#   first          1.030        1.082      1.040  (n=14,124)
+#   2nd_3rd        1.073        1.235      1.112  (n=15,449)
+#   4th_plus       1.290        1.465      1.355  (n=9,798)
+# Monotonic in both halves independently (not just pooled), well-powered
+# throughout (n=2,144-10,349 per half-cell). A real secular drift exists
+# too (second half runs higher across all three tiers, consistent with
+# this project's established pattern of things drifting over time), but
+# the RELATIVE tier ordering and rough gap magnitude is stable across
+# both halves -- treated as a real, structural relationship, not noise.
+# Calibrated on POOLED full-period medians (more data than either half
+# alone), normalized to tier="first"=1.0 (matches what the tiny original
+# on-chain sample was implicitly dominated by): 2nd_3rd=1.112/1.040=1.07,
+# 4th_plus=1.355/1.040=1.30.
+POSITION_TIER_SHARE_MULTIPLIER = {
+    "first": 1.0,
+    "2nd_3rd": 1.07,
+    "4th_plus": 1.30,
+}
+
+
+def shares_for_price(price: float) -> float:
+    """The bare price->shares curve, no position-tier correction. Exposed
+    separately from notional_for_price for direct testing against the
+    on-chain discovery's own numbers."""
+    dist = abs(price - 0.5)
+    if dist <= 0.20:
+        raw = 5.05 * math.exp(0.873 * dist)
+    else:
+        raw = 2.16 * math.exp(4.685 * dist)
+    return round(raw, 1)  # 0.1-share lot quantization, matches on-chain ground truth
+
+
+def notional_for_price(price: float, position_tier: str = "first") -> float:
+    """shares_for_price(price), corrected for position_tier (see this
+    section's docstring above), converted to a USD notional. position_
+    tier defaults to "first" (multiplier 1.0, a no-op) so any call site
+    that doesn't know its own tier degrades to the bare price-only curve
+    rather than raising."""
+    shares = shares_for_price(price) * POSITION_TIER_SHARE_MULTIPLIER.get(position_tier, 1.0)
+    return shares * price
+
+
+# ---------------------------------------------------------------------------
 # Continuous within-band size scaling. Added 2026-09-08: ENTRY_SIZING_USD
 # only conditions on the discrete (regime, position_tier) bucket -- but a
 # fresh investigation found a real, positive relationship between price and

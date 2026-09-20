@@ -368,6 +368,66 @@ class TestSizingDecision:
         # these must match exactly, not just approximately.
         assert low == high
 
+    def test_share_based_sizing_off_by_default_preserves_old_behavior(self):
+        assert config.ENABLE_SHARE_BASED_SIZING is False
+        rng_a = random.Random(11)
+        rng_b = random.Random(11)
+        notional_default, _ = decide_size("Bitcoin", "CORE", "first", 0.8, rng_a)
+        median = bc.median_entry_notional("Bitcoin", "CORE", "first")
+        within_band = bc.within_band_size_multiplier("Bitcoin", "CORE", 0.8)
+        assert median * within_band * 0.8 <= notional_default <= median * within_band * 1.2
+        # sanity: explicitly toggling the flag off (matching the real
+        # default) must produce the identical draw sequence/result.
+        with_flag_off = decide_size("Bitcoin", "CORE", "first", 0.8, rng_b)
+        assert notional_default == with_flag_off[0]
+
+    def test_share_based_sizing_on_uses_notional_for_price(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_SHARE_BASED_SIZING", True)
+        rng = random.Random(1)
+        notional, is_floor_lot = decide_size("Ethereum", "MID", "first", 0.35, rng)
+        assert is_floor_lot is False
+        expected = bc.notional_for_price(0.35, "first")
+        # within jitter bounds (SIZING_JITTER_FRACTION), not exact --
+        # other multipliers (momentum/bankroll/etc.) all default to 1.0
+        # when their optional args aren't passed, so only jitter should
+        # move this away from the bare notional_for_price value.
+        assert expected * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= notional <= \
+            expected * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
+    def test_share_based_sizing_on_ignores_the_old_median_and_within_band_tables(self, monkeypatch):
+        # Solana MID has real WITHIN_BAND_SIZE_SLOPE/ENTRY_SIZING_USD
+        # entries -- with the flag on, decide_size must stop reading them
+        # entirely, not just override their product's magnitude.
+        monkeypatch.setattr(config, "ENABLE_SHARE_BASED_SIZING", True)
+        monkeypatch.setattr(bc, "median_entry_notional",
+                             lambda *a, **kw: (_ for _ in ()).throw(AssertionError(
+                                 "median_entry_notional must not be called when "
+                                 "ENABLE_SHARE_BASED_SIZING is on")))
+        monkeypatch.setattr(bc, "within_band_size_multiplier",
+                             lambda *a, **kw: (_ for _ in ()).throw(AssertionError(
+                                 "within_band_size_multiplier must not be called when "
+                                 "ENABLE_SHARE_BASED_SIZING is on")))
+        rng = random.Random(2)
+        notional, is_floor_lot = decide_size("Solana", "MID", "2nd_3rd", 0.45, rng)
+        assert is_floor_lot is False
+        assert notional > 0
+
+    def test_share_based_sizing_position_tier_ordering(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_SHARE_BASED_SIZING", True)
+
+        def avg_notional(position_tier, n=300):
+            rng = random.Random(4)
+            total = 0.0
+            for _ in range(n):
+                notional, _ = decide_size("Bitcoin", "MID", position_tier, 0.4, rng)
+                total += notional
+            return total / n
+
+        first = avg_notional("first")
+        second = avg_notional("2nd_3rd")
+        fourth = avg_notional("4th_plus")
+        assert first < second < fourth
+
     def test_cross_market_size_momentum_defaults_to_a_noop_when_not_passed(self):
         rng_a = random.Random(37)
         rng_b = random.Random(37)

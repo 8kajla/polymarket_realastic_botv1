@@ -874,29 +874,44 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
         notional = config.FLOOR_LOT_SIZE_SHARES * price
         return notional, True
 
-    median = bc.median_entry_notional(asset, regime, position_tier)
     jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)
-    # Continuous within-band scaling (2026-09-08 finding): a real, cell-
-    # verified relationship between price and size WITHIN CORE/HIGH that
-    # the discrete regime bucket alone can't express. Mean-neutral by
-    # construction (see WITHIN_BAND_SIZE_SLOPE's docstring) -- a no-op
-    # (1.0x) everywhere it wasn't specifically verified (CHEAP/MID, the
-    # three dormant assets), so this can't silently change behavior
-    # outside the two regimes it was actually calibrated on.
-    within_band = bc.within_band_size_multiplier(asset, regime, price)
-    # CHEAP/MID gating (2026-09-11): WITHIN_BAND_SIZE_SLOPE now also has
-    # real, cross-asset-validated, temporally-stable CHEAP/MID cells (see
-    # cheap-mid-within-band-scaling-gap in project memory) -- but unlike
-    # CORE/HIGH, those cells are gated by a dedicated flag rather than
-    # being unconditionally live, so paperbot-mini's existing
-    # WITHIN_BAND_SIZE_SLOPE behavior (CORE/HIGH only) stays exactly
-    # unchanged when ENABLE_CHEAP_MID_WITHIN_BAND_SCALING=false, instead
-    # of silently picking up two new regimes' worth of scaling the moment
-    # this file's table was extended. Gated HERE (the call site), not
-    # inside within_band_size_multiplier itself -- behavior_config.py
-    # never imports config, same discipline as every other multiplier.
-    if regime in ("CHEAP", "MID") and not config.ENABLE_CHEAP_MID_WITHIN_BAND_SCALING:
-        within_band = 1.0
+    # SHARE-BASED ENTRY SIZING (2026-09-20/21, Phase 1 of share-based-
+    # sizing-implementation-design.md): on-chain ground truth replaces
+    # the statistically-fit median * within_band product with one
+    # formula backed by exact on-chain fills. See ENABLE_SHARE_BASED_
+    # SIZING's docstring in config.py for scope/rollout. Everything
+    # else in this function (momentum/bankroll/ttc/resumption/reentry_
+    # fatigue/hedge_count_reinforcement/decisiveness/overshoot_
+    # correction below) still composes on top of this base exactly as
+    # before -- Phase 1 only replaces the BASE curve, not those
+    # separately-validated multipliers (see the design doc's own
+    # "confirmed independent, no action needed" list).
+    if config.ENABLE_SHARE_BASED_SIZING:
+        median = bc.notional_for_price(price, position_tier)
+        within_band = 1.0  # subsumed by notional_for_price's own price-shape
+    else:
+        median = bc.median_entry_notional(asset, regime, position_tier)
+        # Continuous within-band scaling (2026-09-08 finding): a real, cell-
+        # verified relationship between price and size WITHIN CORE/HIGH that
+        # the discrete regime bucket alone can't express. Mean-neutral by
+        # construction (see WITHIN_BAND_SIZE_SLOPE's docstring) -- a no-op
+        # (1.0x) everywhere it wasn't specifically verified (CHEAP/MID, the
+        # three dormant assets), so this can't silently change behavior
+        # outside the two regimes it was actually calibrated on.
+        within_band = bc.within_band_size_multiplier(asset, regime, price)
+        # CHEAP/MID gating (2026-09-11): WITHIN_BAND_SIZE_SLOPE now also has
+        # real, cross-asset-validated, temporally-stable CHEAP/MID cells (see
+        # cheap-mid-within-band-scaling-gap in project memory) -- but unlike
+        # CORE/HIGH, those cells are gated by a dedicated flag rather than
+        # being unconditionally live, so paperbot-mini's existing
+        # WITHIN_BAND_SIZE_SLOPE behavior (CORE/HIGH only) stays exactly
+        # unchanged when ENABLE_CHEAP_MID_WITHIN_BAND_SCALING=false, instead
+        # of silently picking up two new regimes' worth of scaling the moment
+        # this file's table was extended. Gated HERE (the call site), not
+        # inside within_band_size_multiplier itself -- behavior_config.py
+        # never imports config, same discipline as every other multiplier.
+        if regime in ("CHEAP", "MID") and not config.ENABLE_CHEAP_MID_WITHIN_BAND_SCALING:
+            within_band = 1.0
     # CROSS-MARKET sizing momentum (2026-09-11 finding): a market's first
     # entry echoes the PREVIOUS market's own size residual (slow EWMA
     # decay, not lag-1-only) -- see CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER's

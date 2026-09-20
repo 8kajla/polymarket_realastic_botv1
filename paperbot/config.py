@@ -1069,6 +1069,33 @@ ENABLE_ORDER_CAP_PREEMPTION = os.environ.get(
     "ENABLE_ORDER_CAP_PREEMPTION", "true"
 ).strip().lower() not in ("false", "0", "no")
 
+# ---------------------------------------------------------------------------
+# Feature flag for share-based entry sizing (see behavior_config.py's
+# shares_for_price/notional_for_price docstring). Added 2026-09-20/21:
+# on-chain OrderFilled ground truth found he sizes entries in exact SHARE
+# COUNT as one shared, asset-independent piecewise-exponential curve of
+# |price-0.5| -- replacing this file's MEDIAN_ENTRY_NOTIONAL +
+# WITHIN_BAND_SIZE_SLOPE (16 independently-fit per-asset/regime curves)
+# with one formula backed by exact on-chain fills rather than a
+# statistical fit. Phase 1 of share-based-sizing-implementation-design.md
+# (project memory) -- ENTRIES ONLY; decide_hedge's own sizing chain
+# (HEDGE_SIZE_RATIO etc.) is untouched by this flag, deliberately, so a
+# live regression is attributable to one thing. Evidence quality is
+# asset-uneven (Bitcoin-strong, Ethereum-confirmed, Solana-thin -- 9
+# fills in the largest on-chain collection so far) and the deep tail
+# (|price-0.5|>0.35) has almost no on-chain coverage at all -- per the
+# design doc's own Phase 0 judgment call, shipped anyway (the evidence
+# that exists is exact on-chain ground truth, not a noisy statistical
+# fit, even where n is modest), but as a CONTROLLED rollout: default
+# FALSE everywhere, explicitly enabled on paperbot-100 only first (the
+# smallest-stakes instance) to gather live evidence before considering a
+# wider rollout -- same "ship disabled or mini-style controlled rollout
+# first" discipline the design doc itself specifies, adapted since
+# paperbot-mini no longer runs.
+ENABLE_SHARE_BASED_SIZING = os.environ.get(
+    "ENABLE_SHARE_BASED_SIZING", "false"
+).strip().lower() not in ("false", "0", "no")
+
 # Feature flag for MID_CONTRARIAN_BIAS_PROBABILITY (see its docstring in
 # behavior_config.py). Added 2026-09-18 -- the real trader's MID
 # first-entry side genuinely favors whichever side has lost value since
