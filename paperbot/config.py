@@ -752,6 +752,17 @@ ENABLE_CHEAP_TTC_SELECTIVITY = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER (see its docstring
+# in behavior_config.py). Added 2026-09-20, closing replication-checklist
+# item #31 ("MID hedge hump"): the original pooled GP-IRL hump was never
+# checked per-asset before being left unshipped -- redone per-asset, it
+# only replicates for Solana (Bitcoin null, Ethereum a different,
+# unshipped monotonic shape). Solana/MID only. Default TRUE everywhere.
+ENABLE_MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER = os.environ.get(
+    "ENABLE_MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Feature flag for CROSS_MARKET_SIDE_PERSISTENCE (see its docstring in
 # behavior_config.py). Added 2026-09-11 -- default TRUE everywhere,
 # explicit FALSE for paperbot-mini (the $100 control instance).

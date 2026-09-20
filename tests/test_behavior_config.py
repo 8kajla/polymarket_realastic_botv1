@@ -742,6 +742,54 @@ class TestFavorableMoveHedgeTriggerMultiplier:
             assert max(curve.values()) < bc._FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP
 
 
+class TestMidFavorableHedgeTriggerMultiplier:
+    """MID's favorable-move hump, added 2026-09-20 to close replication-
+    checklist item #31. Unlike the CHEAP sibling above, a per-asset
+    replication check found this shape is Solana-only (Bitcoin null,
+    Ethereum a different unshipped shape) -- so only Solana is populated."""
+
+    def test_neutral_for_assets_not_in_the_table(self):
+        for asset in ("Bitcoin", "Ethereum", "Dogecoin"):
+            assert bc.mid_favorable_hedge_trigger_multiplier(asset, -0.2) == 1.0
+
+    def test_neutral_when_adverse_move_is_unavailable(self):
+        assert bc.mid_favorable_hedge_trigger_multiplier("Solana", None) == 1.0
+
+    def test_neutral_for_nonnegative_adverse_move(self):
+        assert bc.mid_favorable_hedge_trigger_multiplier("Solana", 0.0) == 1.0
+        assert bc.mid_favorable_hedge_trigger_multiplier("Solana", 0.01) == 1.0
+        assert bc.mid_favorable_hedge_trigger_multiplier("Solana", 5.0) == 1.0
+
+    def test_exact_at_each_calibrated_point(self):
+        for move, expected in bc.MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER["Solana"].items():
+            got = bc.mid_favorable_hedge_trigger_multiplier("Solana", float(move))
+            assert abs(got - expected) < 1e-9, f"Solana@{move}: {got} != {expected}"
+
+    def test_interpolates_between_points(self):
+        # -0.291->2.1274, -0.108->0.4479 -- the midpoint move must land
+        # strictly between the two calibrated multipliers.
+        mid_move = (-0.291 + -0.108) / 2
+        mid_val = bc.mid_favorable_hedge_trigger_multiplier("Solana", mid_move)
+        assert 0.4479 < mid_val < 2.1274
+
+    def test_flat_beyond_the_measured_range_no_extrapolation(self):
+        at_min = bc.mid_favorable_hedge_trigger_multiplier("Solana", -0.291)
+        below_min = bc.mid_favorable_hedge_trigger_multiplier("Solana", -5.0)
+        assert at_min == below_min
+
+    def test_peak_is_the_interior_bin_not_an_extreme(self):
+        # The confirmed hump shape: the deepest-measured favorable move
+        # scores ABOVE the near-zero point, matching the real per-asset
+        # finding (peak around -0.29, not at either edge).
+        deep = bc.mid_favorable_hedge_trigger_multiplier("Solana", -0.291)
+        near_zero = bc.mid_favorable_hedge_trigger_multiplier("Solana", -0.002)
+        assert deep > near_zero
+
+    def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
+        for asset, curve in bc.MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER.items():
+            assert max(curve.values()) < bc._MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER_CAP
+
+
 class TestAdverseMoveTtcInteractionMultiplier:
     """Added 2026-09-20 after a code audit found decide_hedge had zero
     time-to-close awareness for the TRIGGER decision (only for sizing).

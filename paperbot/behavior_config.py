@@ -2700,6 +2700,73 @@ def favorable_move_hedge_trigger_multiplier(asset: str, adverse_move: Optional[f
 
 
 # ---------------------------------------------------------------------------
+# MID favorable-move hedge HUMP. Added 2026-09-20, closing checklist item
+# #31 ("MID hedge hump" -- left OPEN in the replication self-audit because
+# the original GP-IRL pass found MID's favorable-move interior hump only
+# POOLED across assets, never checked per-asset before deciding not to
+# ship it (unlike CHEAP's bathtub above, which WAS per-asset-checked).
+#
+# Rebuilt that missing per-asset check (same early-time-since-entry
+# stratum discipline as CHEAP's bathtub, since that's the confound-
+# cleared window): the pooled hump does NOT replicate uniformly.
+#   - Bitcoin: NULL. z=-0.36 comparing the two best-powered bins --
+#     essentially flat (~0.09-0.10) across the whole favorable range.
+#   - Ethereum: real, but a DIFFERENT shape -- monotonically DECLINING
+#     hedge rate as the move gets less extreme (0.20->0.17->0.07->0.04,
+#     z=3.35 deep-vs-near-zero), not an interior hump. Not built here --
+#     would need its own separate characterization, flagged as a future
+#     candidate, not force-fit into this table.
+#   - Solana: the genuine hump. z=3.01-3.01 comparing the peak quartile
+#     against its neighbors (both clear this file's own |z|>=2.58 bar),
+#     bootstrap-confirmed 99.5% (2000 resamples, n=72-182/bin) that the
+#     interior bin beats BOTH neighbors. This is the one being built.
+#
+# Quartile calibration (n=97-100/quartile, decision-collapsed, early
+# stratum only, 8-day price_history_dense.jsonl window): a real peak
+# around adverse_move=-0.29, dropping off on both sides. The two
+# quartiles closer to zero are noisier (0.45/0.90/0.54, not perfectly
+# monotonic) -- disclosed, not smoothed over, same as every other
+# multiplier here that has real but imperfect quartile-level structure.
+MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER = {
+    "Solana": {-0.291: 2.1274, -0.108: 0.4479, -0.031: 0.8958, -0.002: 0.5431},
+}
+_MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER_CAP = 3.0  # measured range tops out
+# at 2.1274 -- comfortably inside, same discipline as every other table.
+
+
+def mid_favorable_hedge_trigger_multiplier(asset: str, adverse_move: Optional[float]) -> float:
+    """Continuous, mean-neutral multiplier on hedge_attempt_hazard's
+    output as a function of favorable move, MID-only (analogous to
+    favorable_move_hedge_trigger_multiplier's CHEAP scope) -- see this
+    section's docstring above for why only Solana is populated (Bitcoin
+    null, Ethereum a different unshipped shape). 1.0 (no-op) for any
+    asset not in MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER, when adverse_move
+    is unavailable, or when adverse_move >= 0 (that side is
+    adverse_move_hedge_trigger_multiplier's job). Callers are
+    responsible for scoping this to MID. Flat beyond the measured range,
+    clamped to _MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER_CAP."""
+    if adverse_move is None or adverse_move >= 0:
+        return 1.0
+    curve = MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER.get(asset)
+    if curve is None:
+        return 1.0
+    points = sorted(curve.items())
+    lo_move, lo_val = points[0]
+    hi_move, hi_val = points[-1]
+    move = max(lo_move, min(hi_move, adverse_move))
+    result = lo_val
+    for i in range(len(points) - 1):
+        p_move, p_val = points[i]
+        q_move, q_val = points[i + 1]
+        if p_move <= move <= q_move:
+            frac = (move - p_move) / (q_move - p_move) if q_move > p_move else 0.0
+            result = p_val + frac * (q_val - p_val)
+            break
+    cap = _MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER_CAP
+    return max(1.0 / cap, min(cap, result))
+
+
+# ---------------------------------------------------------------------------
 # CROSS-MARKET hedge-RATE persistence. Added 2026-09-11: real, cross-asset
 # finding (r=0.25-0.35, among the strongest correlations found all
 # night) that how hedge-heavy the PREVIOUS market was predicts how

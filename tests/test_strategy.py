@@ -1761,6 +1761,87 @@ class TestDecideHedgeFavorableMoveTriggerMultiplier:
         assert n_near_zero == n_deep_favorable, "with the flag off, favorable adverse_move must be a strict no-op"
 
 
+class TestDecideHedgeMidFavorableHedgeHumpMultiplier:
+    """decide_hedge's MID favorable-move HUMP wiring, added 2026-09-20 to
+    close replication-checklist item #31 -- see
+    TestMidFavorableHedgeTriggerMultiplier for the multiplier function
+    itself. Solana/MID only; confirms decide_hedge applies it there and
+    nowhere else."""
+
+    def test_favorable_move_is_no_longer_a_noop_in_mid_for_solana(self):
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="MID", price=0.50)
+        n = 500
+        n_baseline = sum(
+            1 for seed in range(n)
+            if decide_hedge("Solana", activity, random.Random(seed)) is not None
+        )
+        n_hump_peak = sum(  # dominant_current_price=0.791 -> adverse_move=-0.291 (the hump peak)
+            1 for seed in range(n)
+            if decide_hedge("Solana", activity, random.Random(seed), dominant_current_price=0.791) is not None
+        )
+        assert n_hump_peak != n_baseline, "MID's favorable-move hump must actually move the rate for Solana"
+
+    def test_hump_peak_fires_more_often_than_near_zero(self):
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="MID", price=0.50)
+        n = 500
+        n_near_zero = sum(  # dominant_current_price=0.502 -> adverse_move~=-0.002 (valley)
+            1 for seed in range(n)
+            if decide_hedge("Solana", activity, random.Random(seed), dominant_current_price=0.502) is not None
+        )
+        n_hump_peak = sum(  # dominant_current_price=0.791 -> adverse_move=-0.291 (the hump peak)
+            1 for seed in range(n)
+            if decide_hedge("Solana", activity, random.Random(seed), dominant_current_price=0.791) is not None
+        )
+        assert n_hump_peak > n_near_zero
+
+    def test_does_not_apply_outside_mid(self):
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE", price=0.80)
+        n = 500
+        n_baseline = sum(
+            1 for seed in range(n)
+            if decide_hedge("Solana", activity, random.Random(seed)) is not None
+        )
+        n_favorable = sum(  # same-shaped favorable move, but CORE first-entry regime
+            1 for seed in range(n)
+            if decide_hedge("Solana", activity, random.Random(seed), dominant_current_price=1.09) is not None
+        )
+        assert n_baseline == n_favorable
+
+    def test_does_not_apply_outside_solana(self):
+        # Bitcoin/Ethereum found null/different-shaped in the per-asset
+        # check -- must stay a strict no-op for them even in MID.
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="MID", price=0.50)
+        n = 500
+        n_baseline = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed)) is not None
+        )
+        n_hump_peak = sum(
+            1 for seed in range(n)
+            if decide_hedge("Bitcoin", activity, random.Random(seed), dominant_current_price=0.791) is not None
+        )
+        assert n_baseline == n_hump_peak
+
+    def test_respects_its_own_feature_flag_independently(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER", False)
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="MID", price=0.50)
+        n = 500
+        n_near_zero = sum(
+            1 for seed in range(n)
+            if decide_hedge("Solana", activity, random.Random(seed), dominant_current_price=0.502) is not None
+        )
+        n_hump_peak = sum(
+            1 for seed in range(n)
+            if decide_hedge("Solana", activity, random.Random(seed), dominant_current_price=0.791) is not None
+        )
+        assert n_near_zero == n_hump_peak, "with the flag off, MID favorable adverse_move must be a strict no-op"
+
+
 class TestDecideHedgeAdverseMoveTtcInteraction:
     """decide_hedge's adverse_move x time-remaining wiring, added
     2026-09-20 -- see TestAdverseMoveTtcInteractionMultiplier for the

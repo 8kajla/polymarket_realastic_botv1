@@ -615,6 +615,19 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
                     and activity.first_entry_regime == "CHEAP"):
                 favorable_mult = bc.favorable_move_hedge_trigger_multiplier(asset, adverse_move)
                 p = max(0.0, min(1.0, p * favorable_mult))
+            # MID favorable-move HUMP (2026-09-20): the MID-regime sibling
+            # of the CHEAP block just above -- see
+            # bc.mid_favorable_hedge_trigger_multiplier's docstring for
+            # the per-asset replication check (Solana only; Bitcoin null,
+            # Ethereum a different unshipped shape) that closes
+            # replication-checklist item #31. Same mutual-exclusivity
+            # reasoning as the CHEAP block: this only ever fires for
+            # adverse_move<0, adverse_move_hedge_trigger_multiplier only
+            # for >=0.
+            if (config.ENABLE_MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER
+                    and activity.first_entry_regime == "MID"):
+                mid_hump_mult = bc.mid_favorable_hedge_trigger_multiplier(asset, adverse_move)
+                p = max(0.0, min(1.0, p * mid_hump_mult))
             # ADVERSE-MOVE x TIME-REMAINING interaction (2026-09-20): a
             # refinement ON TOP OF adverse_move_hedge_trigger_multiplier
             # above, not instead of it -- see
