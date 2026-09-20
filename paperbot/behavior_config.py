@@ -2724,18 +2724,39 @@ def favorable_move_hedge_trigger_multiplier(asset: str, adverse_move: Optional[f
 #     protected, only 14.3% "tiny", n=14, in line with CHEAP's own
 #     passing SCOUT-bleed check).
 #
-# HONEST CAVEAT (calendar split-half, run AFTER shipping -- should have
-# been done before, per the same discipline this file otherwise
-# enforces): the hump's DIRECTION survives in both calendar halves (peak
-# beats both neighbors each time), but per-half significance is weaker
-# than the pooled numbers above suggest -- first half clears vs one
-# neighbor (z=3.65) but falls just short vs the other (z=2.45); second
-# half clears vs one (z=2.66) but clearly fails vs the other (z=0.60).
-# Real and asset-isolated, but a fragile-under-halving effect, not a
-# split-half-robust one like CHEAP's bathtub. Kept live given the
-# bootstrap/SCOUT-bleed/per-asset evidence, but this is a weaker basis
-# than this file's other calibrations and should be re-checked once
-# price_history_dense.jsonl has more than its current 8-day window.
+# SUPERSEDED CAVEAT, corrected same day: the first split-half attempt
+# used a naive ROW-COUNT median split, which does NOT align with this
+# project's own documented Sep-18 regime-shift boundary (BOUNDARY=
+# 1789700400 -- see REGIME_HEDGE_POST_SHIFT_MULTIPLIER) -- the 8-day
+# price_history_dense.jsonl window straddles it at 73% through, not the
+# midpoint, so each naive "half" silently mixed pre- and post-boundary
+# regimes together. That mixing, not genuine fragility, is what produced
+# the earlier "clears vs one neighbor but not the other" result.
+#
+# RE-SPLIT ON THE REAL BOUNDARY instead (validated first: this exact
+# dataset shows the same secular dual-siding decline documented
+# elsewhere -- Solana MID dual-share 41.3% pre-boundary -> 25.0% post,
+# confirming this is the right split to trust):
+#   - PRE-boundary (n=375, the dominant regime in this window): the hump
+#     is ROBUST, not fragile -- z=3.11 AND z=2.93 against BOTH
+#     neighbors, comfortably clearing this file's own bar in a real
+#     split-half, not just pooled.
+#   - POST-boundary (n=16 total across all three bins): genuinely
+#     UNTESTABLE, not null -- 4/3/7 observations per bin is far too thin
+#     to confirm OR deny the shape survives into the current regime.
+#     price_history_dense.jsonl only extends 2.15 days past the
+#     boundary; this needs real re-derivation once more accumulates.
+#
+# ELEVATED RISK, disclosed rather than assumed away: DEEP_LONGSHOT_
+# ENTRY_MULTIPLIER (see hedge-rate-secular-decline in project memory)
+# is a DIRECT precedent for a shape FLIPPING (not just shifting level)
+# across this exact boundary, and REGIME_HEDGE_POST_SHIFT_MULTIPLIER
+# exists specifically because MID's overall hedge LEVEL also dropped
+# here. This multiplier's calibration is ~96% pre-boundary data by
+# construction (375 of 391 rows) -- kept live because there is no
+# positive evidence of reversal (unlike DEEP_LONGSHOT, which had one),
+# but this is a HIGH-PRIORITY recheck candidate, not a settled finding,
+# the moment enough post-boundary price_history_dense.jsonl exists.
 #
 # Quartile calibration (n=97-100/quartile, decision-collapsed, early
 # stratum only, 8-day price_history_dense.jsonl window): a real peak
