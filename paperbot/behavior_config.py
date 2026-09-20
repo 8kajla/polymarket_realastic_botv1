@@ -2716,10 +2716,26 @@ def favorable_move_hedge_trigger_multiplier(asset: str, adverse_move: Optional[f
 #     z=3.35 deep-vs-near-zero), not an interior hump. Not built here --
 #     would need its own separate characterization, flagged as a future
 #     candidate, not force-fit into this table.
-#   - Solana: the genuine hump. z=3.01-3.01 comparing the peak quartile
-#     against its neighbors (both clear this file's own |z|>=2.58 bar),
+#   - Solana: the genuine hump. Pooled: z=3.01/2.87 comparing the peak
+#     bin against both neighbors (clears this file's own |z|>=2.58 bar),
 #     bootstrap-confirmed 99.5% (2000 resamples, n=72-182/bin) that the
-#     interior bin beats BOTH neighbors. This is the one being built.
+#     interior bin beats BOTH neighbors, and NOT a SCOUT-bleed artifact
+#     (peak-bin hedges are properly sized -- median 54% of the position
+#     protected, only 14.3% "tiny", n=14, in line with CHEAP's own
+#     passing SCOUT-bleed check).
+#
+# HONEST CAVEAT (calendar split-half, run AFTER shipping -- should have
+# been done before, per the same discipline this file otherwise
+# enforces): the hump's DIRECTION survives in both calendar halves (peak
+# beats both neighbors each time), but per-half significance is weaker
+# than the pooled numbers above suggest -- first half clears vs one
+# neighbor (z=3.65) but falls just short vs the other (z=2.45); second
+# half clears vs one (z=2.66) but clearly fails vs the other (z=0.60).
+# Real and asset-isolated, but a fragile-under-halving effect, not a
+# split-half-robust one like CHEAP's bathtub. Kept live given the
+# bootstrap/SCOUT-bleed/per-asset evidence, but this is a weaker basis
+# than this file's other calibrations and should be re-checked once
+# price_history_dense.jsonl has more than its current 8-day window.
 #
 # Quartile calibration (n=97-100/quartile, decision-collapsed, early
 # stratum only, 8-day price_history_dense.jsonl window): a real peak
