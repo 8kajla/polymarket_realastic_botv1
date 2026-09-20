@@ -1297,6 +1297,31 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                     market.asset, regime, price, seconds_remaining, ttc_selectivity_mult)
                 return None
 
+    # DECISIVE-ENTRY ELIGIBILITY (2026-09-20): the CORE/HIGH sibling of
+    # the CHEAP-joint dampener just above -- see
+    # bc.decisive_entry_eligibility_multiplier's docstring for the full
+    # derivation. Closes a gap found by checking whether the CHEAP
+    # win-rate investigation generalized: CORE/HIGH never had an
+    # entry-eligibility freshness gate at all (DECISIVENESS_ONSET_
+    # MULTIPLIER only ever scaled size). Same skip-probability pattern,
+    # first entries only, mutually exclusive regime scope with the CHEAP
+    # block above so the two never both fire for the same decision.
+    if (config.ENABLE_DECISIVE_ENTRY_ELIGIBILITY and not is_hedge
+            and activity.real_fill_count == 0 and regime in ("CORE", "HIGH")):
+        seconds_since_decisive_crossing: Optional[float] = None
+        if now is not None:
+            decisive_crossed_at = (activity.up_decisive_crossed_at if side == "Up"
+                                    else activity.down_decisive_crossed_at)
+            if decisive_crossed_at is not None:
+                seconds_since_decisive_crossing = now - decisive_crossed_at
+        eligibility_mult = bc.decisive_entry_eligibility_multiplier(market.asset, seconds_since_decisive_crossing)
+        if eligibility_mult < 1.0 and rng.random() > eligibility_mult:
+            logger.info(
+                "SKIP asset=%s regime=%s price=%.4f: decisive-entry eligibility dampener "
+                "(seconds_since_crossing=%s, mult=%.2f)",
+                market.asset, regime, price, seconds_since_decisive_crossing, eligibility_mult)
+            return None
+
     position_tier = activity.position_tier()
 
     min_size = market.order_min_size

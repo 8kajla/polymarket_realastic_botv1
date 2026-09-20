@@ -444,6 +444,38 @@ class FillSimulator:
 
         return changed
 
+    def cancel_order(self, order_id: int, now: Optional[float] = None,
+                      reason: str = "manual") -> bool:
+        """On-demand cancellation, distinct from manage_open_orders' own
+        per-tick expiry/drift cancellation above -- added for bot.py's
+        order-cap preemption (2026-09-20), which needs to cancel a
+        specific stale order the moment a fresh regime crossing needs its
+        slot, not wait for the next drift check. Returns False (a no-op,
+        not an error) if the order is unknown or already closed, since a
+        caller's own staleness snapshot can race harmlessly with a fill or
+        another cancellation landing the same tick.
+
+        Mirrors manage_open_orders' partial-fill handling exactly: a
+        partial fill's already-filled portion is preserved via
+        cancelled_remainder (still settleable) rather than dropped, same
+        as the drift-cancel branch above.
+        """
+        now = now if now is not None else time.time()
+        order = self.orders.get(order_id)
+        if order is None or not order.is_open():
+            return False
+        if order.filled_size > 0:
+            order.cancelled_remainder = True
+        else:
+            order.status = OrderStatus.CANCELLED
+        order.final_at = now
+        logger.info(
+            "CANCELLED order=%d asset=%s regime=%s filled=%.6f/%.6f: %s",
+            order.order_id, order.asset, order.regime,
+            order.filled_size, order.original_size, reason,
+        )
+        return True
+
     def _reprice(self, order: SimulatedOrder, book: BookState, now: float) -> None:
         old_price = order.price
         new_raw_queue = book.depth_shares_at_or_better("bid", book.best_bid)

@@ -846,6 +846,54 @@ def cheap_joint_entry_multiplier(asset: str, price: float,
 
 
 # ---------------------------------------------------------------------------
+# DECISIVE-ENTRY ELIGIBILITY (CORE/HIGH). Added 2026-09-20, closing a gap
+# found while checking whether the CHEAP win-rate investigation's
+# findings generalized: they did, worse. DECISIVENESS_ONSET_MULTIPLIER
+# above scales SIZE only -- it has zero influence on decide_side's own
+# entry-hazard logic, so nothing previously made the bot less likely to
+# enter a CORE/HIGH market the longer it's been decisive, mirroring
+# cheap_joint_entry_multiplier's role for CHEAP. Measured directly (real
+# per-tick hazard, equal-width 60s buckets, price_history_dense.jsonl
+# decisive crossings joined against the real trader's trades.jsonl,
+# price>=0.165 to isolate freshness from the already-known deep-price
+# effects): the trader's own hazard rate decays sharply after a market
+# snaps decisive and is essentially fully given up on by 120s+ --
+# Bitcoin 9.81%->1.44%->0.45%->0.16%, Ethereum 7.70%->2.07%->0.98%->
+# 0.24%, Solana 10.95%->2.02%->0.85%->0.25%. Normalized to the first
+# bucket (this is a skip-probability multiplier, not an absolute rate)
+# and applied the same way cheap_joint_entry_multiplier is -- a skip
+# roll at the call site, first entries only (not hedges, which target
+# the dominant side wherever it sits, not a fresh preference).
+DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER = {
+    "Bitcoin":  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.1468), (120.0, 180.0, 0.0459), (180.0, math.inf, 0.0163)],
+    "Ethereum": [(0.0, 60.0, 1.00), (60.0, 120.0, 0.2688), (120.0, 180.0, 0.1273), (180.0, math.inf, 0.0312)],
+    "Solana":   [(0.0, 60.0, 1.00), (60.0, 120.0, 0.1845), (120.0, 180.0, 0.0776), (180.0, math.inf, 0.0228)],
+}
+
+
+def decisive_entry_eligibility_multiplier(asset: str, seconds_since_decisive_crossing: Optional[float]) -> float:
+    """1.0 (no-op) when there's no recorded decisive crossing yet
+    (seconds_since_decisive_crossing is None -- e.g. a market that
+    opened already-decisive with no pre-crossing tick captured) or for
+    any asset with no calibration -- otherwise the freshness bucket for
+    this (asset, elapsed) cell, applied as a skip-probability at the
+    call site (see build_order_intent), same discipline as
+    cheap_joint_entry_multiplier. A negative elapsed (defensive:
+    crossing timestamp somehow after `now`) falls back to the first
+    (no-op) bucket rather than raising."""
+    if seconds_since_decisive_crossing is None:
+        return 1.0
+    table = DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER.get(asset)
+    if table is None:
+        return 1.0
+    elapsed = max(0.0, seconds_since_decisive_crossing)
+    for lo, hi, mult in table:
+        if lo <= elapsed < hi:
+            return mult
+    return 1.0
+
+
+# ---------------------------------------------------------------------------
 # CHEAP ENTRY-SELECTIVITY vs TIME-TO-CLOSE. Added 2026-09-20, closing the
 # other half of the same code-audit gap ADVERSE_MOVE_TTC_INTERACTION_COEF
 # closes on the hedge side: this file has extensive TTC-aware SIZING but

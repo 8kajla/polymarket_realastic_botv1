@@ -434,6 +434,54 @@ class TestExpiry:
         assert order.is_open()
 
 
+class TestCancelOrder:
+    """Direct unit tests for cancel_order (2026-09-20), added for bot.py's
+    order-cap preemption -- an on-demand counterpart to manage_open_orders'
+    own per-tick expiry/drift cancellation above."""
+
+    def test_cancels_an_unfilled_order(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=1000.0)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0), book, now=0.0)
+
+        result = sim.cancel_order(order.order_id, now=5.0, reason="test")
+
+        assert result is True
+        assert order.status == OrderStatus.CANCELLED
+        assert order.final_at == 5.0
+        assert not order.is_open()
+
+    def test_preserves_a_partial_fill_via_cancelled_remainder(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=0.0)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0), book, now=0.0)
+        sim.on_trade_print("tok-up", TradePrint(price=0.20, size=2.0, side="SELL", ts=1.0))
+
+        result = sim.cancel_order(order.order_id, now=5.0, reason="test")
+
+        assert result is True
+        assert order.status == OrderStatus.PARTIALLY_FILLED
+        assert order.cancelled_remainder is True
+        assert order.filled_size == pytest.approx(2.0)
+        assert not order.is_open()
+
+    def test_unknown_order_id_is_a_safe_no_op(self):
+        sim = FillSimulator(queue_safety_factor=0.25)
+        assert sim.cancel_order(999, now=5.0) is False
+
+    def test_already_closed_order_is_a_safe_no_op(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=1000.0)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.20, size_shares=5.0), book, now=0.0)
+        sim.cancel_order(order.order_id, now=1.0)
+        assert order.status == OrderStatus.CANCELLED
+
+        result = sim.cancel_order(order.order_id, now=2.0)
+
+        assert result is False
+        assert order.final_at == 1.0, "a second cancel must not overwrite the original final_at"
+
+
 class TestReprice:
     def test_drift_beyond_threshold_within_same_band_reprices(self):
         from paperbot import config

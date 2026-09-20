@@ -689,6 +689,10 @@ class PaperBot:
         # build_order_intent, which reads the crossing timestamps this
         # sets. Persisted via activity's own save/load, like every other
         # MarketActivityState field.
+        up_decisive_before = activity.up_decisive_crossed_at
+        down_decisive_before = activity.down_decisive_crossed_at
+        up_cheap_before = activity.up_cheap_crossed_at
+        down_cheap_before = activity.down_cheap_crossed_at
         activity.update_decisive_crossings(up_book.best_bid, down_book.best_bid, now,
                                             threshold=config.DECISIVENESS_THRESHOLD)
         # CHEAP-crossing tracking (2026-09-18): mirror image of the
@@ -699,6 +703,52 @@ class PaperBot:
         # CHEAP_JOINT_ENTRY_MULTIPLIER's docstring in behavior_config.py.
         activity.update_cheap_crossings(up_book.best_bid, down_book.best_bid, now,
                                          threshold=bc.CHEAP_JOINT_CROSSING_THRESHOLD)
+        # ORDER-CAP PREEMPTION (2026-09-20): see
+        # core-high-missing-entry-eligibility-gate's Priority 2 in memory --
+        # a market's MAX_OPEN_ORDERS_PER_MARKET cap is shared across BOTH
+        # its Up and Down token orders, so a fresh crossing on one side can
+        # sit blocked behind stale orders resting on the OTHER side that
+        # haven't drifted past DRIFT_REPRICE_TICKS yet even though they're
+        # no longer this market's live decision. Confirmed live: ~28-55s of
+        # blocked SKIP_OPEN_ORDER_CAP placement on both a CHEAP and a CORE
+        # crossing (see cheap-edge-gap-root-cause-persistence-miscalibration's
+        # live-trace entry). The crossed_at fields above latch once and
+        # never reset, so "just crossed" must be measured as a before/after
+        # transition on THIS tick, not "currently past threshold" (which
+        # would fire every tick after the first). On a fresh crossing while
+        # already at cap, proactively cancel this market's single oldest
+        # non-hedge resting order to free exactly one slot -- the same
+        # precedent already established for hedges (bug audit #2: some
+        # things matter enough to preempt the cap rather than wait for it).
+        just_crossed = (
+            (activity.up_decisive_crossed_at is not None and up_decisive_before is None)
+            or (activity.down_decisive_crossed_at is not None and down_decisive_before is None)
+            or (activity.up_cheap_crossed_at is not None and up_cheap_before is None)
+            or (activity.down_cheap_crossed_at is not None and down_cheap_before is None)
+        )
+        if config.ENABLE_ORDER_CAP_PREEMPTION and just_crossed and at_open_order_cap:
+            open_here = self.resting_order_ids.get(market.condition_id, set())
+            candidates = [
+                o for oid in open_here
+                if (o := self.fill_sim.orders.get(oid)) is not None
+                and o.is_open() and not o.is_hedge
+            ]
+            if candidates:
+                stalest = min(candidates, key=lambda o: o.original_placed_at)
+                if self.fill_sim.cancel_order(stalest.order_id, now,
+                                               reason="ORDER_CAP_PREEMPTION"):
+                    open_here.discard(stalest.order_id)
+                    if open_here:
+                        self.resting_order_ids[market.condition_id] = open_here
+                    else:
+                        self.resting_order_ids.pop(market.condition_id, None)
+                    at_open_order_cap = False
+                    logger.info(
+                        "CAP_PREEMPTED asset=%s cid=%s cancelled_order=%d age=%.1fs: "
+                        "freed slot for fresh crossing",
+                        market.asset, market.condition_id, stalest.order_id,
+                        now - stalest.original_placed_at,
+                    )
         # FIRST-PRICE tracking (2026-09-18): plain "first observation"
         # latch (no threshold), needed for the MID-band contrarian
         # first-entry side-selection signal. See MID_CONTRARIAN_BIAS_

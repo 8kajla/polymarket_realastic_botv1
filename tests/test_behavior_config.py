@@ -1313,3 +1313,45 @@ class TestAccuracyScoutMultiplier:
         assert bc.accuracy_scout_multiplier(0.0) == bc.accuracy_scout_multiplier(xs[0])
         assert bc.accuracy_scout_multiplier(1.5) == bc.accuracy_scout_multiplier(xs[-1])
         assert bc.hedge_size_ratio("NotAnAsset", "CHEAP") == bc._DEFAULT_HEDGE_SIZE_RATIO
+
+
+class TestDecisiveEntryEligibilityMultiplier:
+    """DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER, added 2026-09-20 -- the
+    CORE/HIGH sibling of cheap_joint_entry_multiplier. Closes a gap
+    found by checking whether the CHEAP win-rate investigation
+    generalized: DECISIVENESS_ONSET_MULTIPLIER only ever scaled size,
+    never whether/when an entry happens, so CORE/HIGH had no
+    entry-eligibility freshness gate at all. Calibrated directly against
+    the real trader's own decisive-crossing hazard decay."""
+
+    def test_multiplier_is_a_noop_within_the_first_bucket(self):
+        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 0.0) == 1.0
+        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 59.9) == 1.0
+
+    def test_multiplier_applies_the_calibrated_value_in_later_buckets(self):
+        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 90.0) == pytest.approx(0.1468)
+        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 150.0) == pytest.approx(0.0459)
+        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 300.0) == pytest.approx(0.0163)
+        assert bc.decisive_entry_eligibility_multiplier("Ethereum", 90.0) == pytest.approx(0.2688)
+        assert bc.decisive_entry_eligibility_multiplier("Solana", 90.0) == pytest.approx(0.1845)
+
+    def test_decay_is_monotonically_steeper_over_time(self):
+        # The trader's real hazard decays -- each later bucket must be
+        # <= the one before it, for every calibrated asset.
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            vals = [bc.decisive_entry_eligibility_multiplier(asset, t) for t in (30.0, 90.0, 150.0, 210.0)]
+            assert vals == sorted(vals, reverse=True)
+
+    def test_multiplier_defaults_to_noop_for_an_uncalibrated_asset(self):
+        assert bc.decisive_entry_eligibility_multiplier("Dogecoin", 300.0) == 1.0
+
+    def test_multiplier_is_a_noop_when_no_crossing_recorded(self):
+        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", None) == 1.0
+
+    def test_multiplier_treats_a_negative_elapsed_as_the_first_bucket(self):
+        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", -5.0) == 1.0
+
+    def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
+        for asset, buckets in bc.DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER.items():
+            for lo, hi, mult in buckets:
+                assert 0.0 < mult <= 1.0

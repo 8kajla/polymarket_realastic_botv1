@@ -843,6 +843,127 @@ class TestOpenOrderCapPerMarketPolicy:
         )
 
 
+class TestOrderCapPreemption:
+    """Priority 2 of core-high-missing-entry-eligibility-gate (2026-09-20):
+    a market's MAX_OPEN_ORDERS_PER_MARKET cap is shared across both its Up
+    and Down token orders, so a fresh regime crossing on one side used to
+    sit blocked behind a stale resting order on the OTHER side that hadn't
+    drifted past DRIFT_REPRICE_TICKS yet, even though manage_open_orders'
+    own passive drift/regime-mismatch check would eventually have cancelled
+    it anyway. Confirmed live: ~28-55s of blocked SKIP_OPEN_ORDER_CAP
+    placement on both a CHEAP and a CORE crossing. This proactively cancels
+    the market's single oldest non-hedge resting order the moment a fresh
+    crossing needs the slot, mirroring the existing precedent that a hedge
+    already preempts the cap (bug audit #2)."""
+
+    def test_frees_a_slot_on_a_fresh_decisive_crossing_at_cap(self, monkeypatch):
+        monkeypatch.setattr(config, "MAX_OPEN_ORDERS_PER_MARKET", 1)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market, bid=0.20, ask=0.21)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        assert len(bot.resting_order_ids[market.condition_id]) == 1
+        stale_order_id = next(iter(bot.resting_order_ids[market.condition_id]))
+
+        # Price jumps to a fresh decisive crossing (Up >= 0.70) while still
+        # at the cap -- the stale CHEAP-band order must be preempted so the
+        # market isn't stuck silently skipping the fresh crossing behind
+        # SKIP_OPEN_ORDER_CAP.
+        bot.book_states[market.token_id_up].apply_snapshot(
+            bids=[(0.75, 200.0)], asks=[(0.76, 200.0)])
+        bot.book_states[market.token_id_down].apply_snapshot(
+            bids=[(0.24, 200.0)], asks=[(0.25, 200.0)])
+
+        asyncio.run(bot.strategy_tick(now=1001.0))
+
+        assert bot.fill_sim.orders[stale_order_id].status == OrderStatus.CANCELLED
+        assert stale_order_id not in bot.resting_order_ids.get(market.condition_id, set())
+
+    def test_never_preempts_a_hedge(self, monkeypatch):
+        monkeypatch.setattr(config, "MAX_OPEN_ORDERS_PER_MARKET", 1)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market, bid=0.20, ask=0.21)
+
+        hedge_order = SimulatedOrder(
+            order_id=1, condition_id=market.condition_id, token_id=market.token_id_up,
+            asset="Bitcoin", regime="CHEAP", position_tier="first", side="Up", price=0.20,
+            original_size=10.0, is_floor_lot=False, placed_at=1000.0, is_hedge=True,
+            remaining_size=10.0, queue_ahead_raw=0.0, queue_ahead_discounted=0.0,
+        )
+        bot.fill_sim.orders[hedge_order.order_id] = hedge_order
+        bot.resting_order_ids[market.condition_id] = {hedge_order.order_id}
+
+        bot.book_states[market.token_id_up].apply_snapshot(
+            bids=[(0.75, 200.0)], asks=[(0.76, 200.0)])
+        bot.book_states[market.token_id_down].apply_snapshot(
+            bids=[(0.24, 200.0)], asks=[(0.25, 200.0)])
+
+        asyncio.run(bot.strategy_tick(now=1001.0))
+
+        assert hedge_order.status == OrderStatus.PENDING, (
+            "a hedge must never be the one preempted -- it should still be "
+            "resting exactly as an ordinary hedge placement already is at "
+            "the cap"
+        )
+        assert hedge_order.order_id in bot.resting_order_ids[market.condition_id]
+
+    def test_no_preemption_when_not_at_cap(self, monkeypatch):
+        monkeypatch.setattr(config, "MAX_OPEN_ORDERS_PER_MARKET", 5)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market, bid=0.20, ask=0.21)
+
+        order = SimulatedOrder(
+            order_id=1, condition_id=market.condition_id, token_id=market.token_id_up,
+            asset="Bitcoin", regime="CHEAP", position_tier="first", side="Up", price=0.20,
+            original_size=10.0, is_floor_lot=False, placed_at=1000.0,
+            remaining_size=10.0, queue_ahead_raw=0.0, queue_ahead_discounted=0.0,
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        bot.resting_order_ids[market.condition_id] = {order.order_id}
+
+        bot.book_states[market.token_id_up].apply_snapshot(
+            bids=[(0.75, 200.0)], asks=[(0.76, 200.0)])
+        bot.book_states[market.token_id_down].apply_snapshot(
+            bids=[(0.24, 200.0)], asks=[(0.25, 200.0)])
+
+        asyncio.run(bot.strategy_tick(now=1001.0))
+
+        assert order.status == OrderStatus.PENDING, (
+            "well below the cap, nothing needs to be preempted"
+        )
+
+    def test_flag_disables_preemption(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_ORDER_CAP_PREEMPTION", False)
+        monkeypatch.setattr(config, "MAX_OPEN_ORDERS_PER_MARKET", 1)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_bitcoin_market()
+        wire_market(bot, market, bid=0.20, ask=0.21)
+
+        order = SimulatedOrder(
+            order_id=1, condition_id=market.condition_id, token_id=market.token_id_up,
+            asset="Bitcoin", regime="CHEAP", position_tier="first", side="Up", price=0.20,
+            original_size=10.0, is_floor_lot=False, placed_at=1000.0,
+            remaining_size=10.0, queue_ahead_raw=0.0, queue_ahead_discounted=0.0,
+        )
+        bot.fill_sim.orders[order.order_id] = order
+        bot.resting_order_ids[market.condition_id] = {order.order_id}
+
+        bot.book_states[market.token_id_up].apply_snapshot(
+            bids=[(0.75, 200.0)], asks=[(0.76, 200.0)])
+        bot.book_states[market.token_id_down].apply_snapshot(
+            bids=[(0.24, 200.0)], asks=[(0.25, 200.0)])
+
+        asyncio.run(bot.strategy_tick(now=1001.0))
+
+        assert order.status == OrderStatus.PENDING, (
+            "with the feature flag off, the old order must survive even at "
+            "cap on a fresh crossing"
+        )
+
+
 class TestBookResyncOnMismatch:
     """FIXED 2026-09-12 (bug audit #6): BookState._reconcile_best used to
     be a silent no-op when a price_change message asserted a best_bid/

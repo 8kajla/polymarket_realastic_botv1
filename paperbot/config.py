@@ -1041,6 +1041,34 @@ ENABLE_CHEAP_JOINT_DAMPENER = os.environ.get(
     "ENABLE_CHEAP_JOINT_DAMPENER", "true"
 ).strip().lower() not in ("false", "0", "no")
 
+# ---------------------------------------------------------------------------
+# Feature flag for DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER (see its
+# docstring in behavior_config.py). Added 2026-09-20: CORE/HIGH never
+# had an entry-eligibility freshness gate at all -- DECISIVENESS_ONSET_
+# MULTIPLIER only scales size, never whether/when an entry happens.
+# Measured directly against the real trader's own decisive-crossing
+# hazard decay (which the bot's realized hazard fell far short of,
+# worse than CHEAP's own already-known gap). Default TRUE everywhere.
+ENABLE_DECISIVE_ENTRY_ELIGIBILITY = os.environ.get(
+    "ENABLE_DECISIVE_ENTRY_ELIGIBILITY", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for order-cap preemption (see bot.py's _evaluate_one_market,
+# the "ORDER-CAP PREEMPTION" block). Added 2026-09-20, Priority 2 of
+# core-high-missing-entry-eligibility-gate: a market's MAX_OPEN_ORDERS_
+# PER_MARKET cap is shared across both its Up and Down token orders, so a
+# fresh regime crossing on one side was confirmed live (~28-55s on both a
+# CHEAP and a CORE crossing) to sit blocked behind stale orders on the
+# OTHER side that hadn't yet drifted past DRIFT_REPRICE_TICKS. This
+# proactively cancels the single oldest non-hedge resting order in a
+# market on a fresh crossing when already at cap, rather than waiting for
+# manage_open_orders' passive drift/regime-mismatch check. Default TRUE
+# everywhere.
+ENABLE_ORDER_CAP_PREEMPTION = os.environ.get(
+    "ENABLE_ORDER_CAP_PREEMPTION", "true"
+).strip().lower() not in ("false", "0", "no")
+
 # Feature flag for MID_CONTRARIAN_BIAS_PROBABILITY (see its docstring in
 # behavior_config.py). Added 2026-09-18 -- the real trader's MID
 # first-entry side genuinely favors whichever side has lost value since
