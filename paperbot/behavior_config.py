@@ -970,6 +970,60 @@ def decisive_entry_eligibility_multiplier(asset: str, seconds_since_decisive_cro
 
 
 # ---------------------------------------------------------------------------
+# REGIME ENGAGEMENT (2026-09-21): unlike every gate above/below (all keyed
+# on FRESHNESS of a specific crossing, first entries only), this is a
+# structurally different question -- does he engage in this REGIME at all,
+# independent of how fresh or stale the current price level is. Found via
+# a historical replay (see historical-replay-item-20-first-version.md /
+# regime-targeting-gap-design.md, project memory): the real trader
+# targets CHEAP/HIGH at 1.5-2.2x their NATURAL occurrence rate (computed
+# from raw price_history_dense.jsonl ticks, i.e. what a perfectly
+# time-uniform non-selective observer would see) and avoids MID/CORE at
+# 0.3-0.75x -- validated per-asset AND calendar split-half, zero sign
+# reversals anywhere. The replica's own regime mix, with every existing
+# gate already active, tracked the NATURAL rate almost exactly (no active
+# targeting at all) -- confirming this is a genuinely missing mechanism,
+# not a miscalibration of an existing one.
+#
+# Calibrated as ratio_regime / ratio_anchor, where ratio is real-trader-
+# share / natural-occurrence-rate and anchor is whichever regime has the
+# HIGHEST ratio for that asset (kept at 1.0, a no-op -- can't "boost"
+# above the existing baseline, only suppress relative to it). Bitcoin
+# anchors on HIGH (1.85x vs CHEAP's 1.57x); Ethereum/Solana anchor on
+# CHEAP (2.21x/2.13x vs HIGH's 1.55x/1.48x) -- a real, asset-specific
+# asymmetry, not a simplification error.
+#
+# KNOWN CALIBRATION DRIFT, disclosed not hidden: HIGH's targeting ratio
+# nearly doubled between the first and second half of the measurement
+# window (1.32x -> 2.39x, pooled) -- this table is built on the full-
+# period pooled ratio. If that drift continues, HIGH's multiplier
+# (especially Ethereum/Solana's 0.70/0.69) may need raising later. Same
+# disclosed-approximation status as WITHIN_BAND_SIZE_SLOPE's Ethereum
+# CHEAP dip -- not a reason to withhold the fix, since the DIRECTION is
+# stable everywhere checked, only the magnitude drifts.
+REGIME_ENGAGEMENT_MULTIPLIER = {
+    "Bitcoin":  {"CHEAP": 0.85, "MID": 0.26, "CORE": 0.41, "HIGH": 1.00},
+    "Ethereum": {"CHEAP": 1.00, "MID": 0.13, "CORE": 0.16, "HIGH": 0.70},
+    "Solana":   {"CHEAP": 1.00, "MID": 0.15, "CORE": 0.21, "HIGH": 0.69},
+}
+
+
+def regime_engagement_multiplier(asset: str, regime: str) -> float:
+    """1.0 (no-op) for any asset/regime with no calibration -- otherwise
+    the per-asset targeting multiplier for this regime, applied as a
+    skip-probability at the call site (see build_order_intent), same
+    discipline as every other multiplier in this file. Unlike
+    cheap_joint_entry_multiplier/decisive_entry_eligibility_multiplier,
+    the CALLER is responsible for latching this per (side, regime)
+    EPISODE, not re-rolling it every tick -- see build_order_intent's own
+    comment at the call site for why (a flat per-tick roll against a
+    long-lived regime "eventually" passes regardless of how low the
+    probability is, confirmed live in the historical-replay validation
+    before this was fixed)."""
+    return REGIME_ENGAGEMENT_MULTIPLIER.get(asset, {}).get(regime, 1.0)
+
+
+# ---------------------------------------------------------------------------
 # CHEAP ENTRY-SELECTIVITY vs TIME-TO-CLOSE. Added 2026-09-20, closing the
 # other half of the same code-audit gap ADVERSE_MOVE_TTC_INTERACTION_COEF
 # closes on the hedge side: this file has extensive TTC-aware SIZING but

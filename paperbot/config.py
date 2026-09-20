@@ -1096,6 +1096,25 @@ ENABLE_SHARE_BASED_SIZING = os.environ.get(
     "ENABLE_SHARE_BASED_SIZING", "false"
 ).strip().lower() not in ("false", "0", "no")
 
+# ---------------------------------------------------------------------------
+# Feature flag for REGIME_ENGAGEMENT_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-21: a historical replay found the
+# real trader targets CHEAP/HIGH at 1.5-2.2x their natural occurrence
+# rate and avoids MID/CORE at 0.3-0.75x, validated per-asset and calendar
+# split-half -- the replica's own regime mix, with every existing
+# freshness-based gate already active, just tracked the natural rate with
+# no active targeting at all. Validated end-to-end via the same
+# historical-replay harness before shipping: composing this with the
+# already-live CHEAP_JOINT_ENTRY_MULTIPLIER/DECISIVE_ENTRY_ELIGIBILITY_
+# MULTIPLIER did not over-suppress (the initial worry) -- closed most of
+# the regime-mix gap on every dimension once the gate was correctly
+# latched per (side, regime) EPISODE rather than re-rolled every tick
+# (see regime_engagement_multiplier's docstring for why the episode latch
+# is required, not optional). Default TRUE everywhere.
+ENABLE_REGIME_ENGAGEMENT_MULTIPLIER = os.environ.get(
+    "ENABLE_REGIME_ENGAGEMENT_MULTIPLIER", "true"
+).strip().lower() not in ("false", "0", "no")
+
 # Feature flag for MID_CONTRARIAN_BIAS_PROBABILITY (see its docstring in
 # behavior_config.py). Added 2026-09-18 -- the real trader's MID
 # first-entry side genuinely favors whichever side has lost value since

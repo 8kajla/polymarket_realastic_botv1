@@ -1428,3 +1428,55 @@ class TestNotionalForPrice:
         assert bc.POSITION_TIER_SHARE_MULTIPLIER["first"] == 1.0
         assert bc.POSITION_TIER_SHARE_MULTIPLIER["2nd_3rd"] == pytest.approx(1.07)
         assert bc.POSITION_TIER_SHARE_MULTIPLIER["4th_plus"] == pytest.approx(1.30)
+
+
+class TestRegimeEngagementMultiplier:
+    """Added 2026-09-21 -- see REGIME_ENGAGEMENT_MULTIPLIER's docstring
+    for the historical-replay derivation. conftest.py's autouse
+    neutralize_regime_engagement_multiplier fixture defaults this
+    function to a no-op for every test in the suite (its reach into
+    build_order_intent is too broad to leave live by default -- see that
+    fixture's own docstring); this class explicitly restores the real
+    function to test it directly."""
+
+    @pytest.fixture(autouse=True)
+    def restore_real_function(self, monkeypatch):
+        monkeypatch.setattr(
+            bc, "regime_engagement_multiplier",
+            lambda asset, regime: bc.REGIME_ENGAGEMENT_MULTIPLIER.get(asset, {}).get(regime, 1.0))
+
+    def test_bitcoin_anchors_on_high(self):
+        assert bc.regime_engagement_multiplier("Bitcoin", "HIGH") == 1.0
+
+    def test_ethereum_anchors_on_cheap(self):
+        assert bc.regime_engagement_multiplier("Ethereum", "CHEAP") == 1.0
+
+    def test_solana_anchors_on_cheap(self):
+        assert bc.regime_engagement_multiplier("Solana", "CHEAP") == 1.0
+
+    def test_mid_and_core_are_suppressed_for_every_asset(self):
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            assert bc.regime_engagement_multiplier(asset, "MID") < 1.0
+            assert bc.regime_engagement_multiplier(asset, "CORE") < 1.0
+
+    def test_matches_the_documented_calibration_table(self):
+        assert bc.regime_engagement_multiplier("Bitcoin", "CHEAP") == pytest.approx(0.85)
+        assert bc.regime_engagement_multiplier("Bitcoin", "MID") == pytest.approx(0.26)
+        assert bc.regime_engagement_multiplier("Bitcoin", "CORE") == pytest.approx(0.41)
+        assert bc.regime_engagement_multiplier("Ethereum", "MID") == pytest.approx(0.13)
+        assert bc.regime_engagement_multiplier("Ethereum", "CORE") == pytest.approx(0.16)
+        assert bc.regime_engagement_multiplier("Ethereum", "HIGH") == pytest.approx(0.70)
+        assert bc.regime_engagement_multiplier("Solana", "MID") == pytest.approx(0.15)
+        assert bc.regime_engagement_multiplier("Solana", "CORE") == pytest.approx(0.21)
+        assert bc.regime_engagement_multiplier("Solana", "HIGH") == pytest.approx(0.69)
+
+    def test_unknown_asset_is_a_noop(self):
+        assert bc.regime_engagement_multiplier("Dogecoin", "MID") == 1.0
+
+    def test_unknown_regime_is_a_noop(self):
+        assert bc.regime_engagement_multiplier("Bitcoin", "NONEXISTENT") == 1.0
+
+    def test_every_calibrated_value_is_a_valid_probability(self):
+        for asset, table in bc.REGIME_ENGAGEMENT_MULTIPLIER.items():
+            for regime, mult in table.items():
+                assert 0.0 < mult <= 1.0

@@ -3633,6 +3633,158 @@ class TestDecisiveEntryEligibilityDampener:
         assert intent is not None  # flag off -- must not skip even though the multiplier says to
 
 
+class TestRegimeEngagementDampener:
+    """regime_engagement_multiplier wiring, added 2026-09-21 -- unlike
+    TestCheapJointDampener/TestDecisiveEntryEligibilityDampener above,
+    this fires in EVERY regime and is NOT scoped to real_fill_count==0
+    (see build_order_intent's own comment for why). conftest.py's
+    autouse neutralize_regime_engagement_multiplier fixture defaults this
+    to a no-op for every other test in the suite -- these tests
+    explicitly re-enable it."""
+
+    def test_dampener_can_skip_an_entry_in_a_suppressed_regime(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")  # MID
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 0.0)  # always skip
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0)
+        assert intent is None
+
+    def test_dampener_never_fires_for_a_no_op_multiplier(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 1.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0)
+        assert intent is not None
+
+    def test_dampener_does_not_apply_to_hedges(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=100.0, regime="MID", price=0.50)
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: "Down")
+        monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 0.0)  # would always skip an ordinary entry
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0)
+        assert intent is not None
+        assert intent.is_hedge is True
+
+    def test_feature_flag_disables_the_dampener(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(config, "ENABLE_REGIME_ENGAGEMENT_MULTIPLIER", False)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 0.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0)
+        assert intent is not None  # flag off -- must not skip even though the multiplier says to
+
+    def test_dampener_applies_even_after_a_real_fill_unlike_the_freshness_gates(self, monkeypatch):
+        # Deliberately DIFFERENT from TestDecisiveEntryEligibilityDampener's
+        # equivalent test -- this gate is NOT scoped to first entries only,
+        # since the finding it fixes (his overall regime MIX) was measured
+        # across his whole decision history, not just first entries.
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=5.0, regime="MID", price=0.50)
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 0.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0)
+        assert intent is None
+
+    def test_episode_latch_prevents_re_rolling_on_a_second_call(self, monkeypatch):
+        # The v3->v4 historical-replay finding this fixes: a flat per-tick
+        # roll against a long-lived regime "eventually" passes no matter
+        # how low the probability is. Verify a SECOND call for the same
+        # unchanged (side, regime) is rejected WITHOUT consuming another
+        # rng draw -- simulated here with a Random subclass that raises if
+        # asked for more than one draw.
+        class OneShotRandom(random.Random):
+            def __init__(self, seed):
+                super().__init__(seed)
+                self._draws = 0
+
+            def random(self):
+                self._draws += 1
+                if self._draws > 1:
+                    raise AssertionError("regime engagement gate re-rolled an already-rejected episode")
+                return 0.999  # guarantees a reject against any mult < 1.0
+
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 0.5)
+
+        rng = OneShotRandom(0)
+        first = build_order_intent(market, up_book, down_book, activity, rng, now=100.0)
+        second = build_order_intent(market, up_book, down_book, activity, rng, now=112.0)
+        assert first is None
+        assert second is None
+        assert activity.is_regime_episode_rejected("Up", "MID") is True
+
+    def test_a_regime_change_produces_a_fresh_episode_not_blocked_by_the_old_rejection(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        activity = MarketActivityState()
+        activity.reject_regime_episode("Up", "MID")  # simulates an earlier rejection
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 1.0)
+
+        # price has since moved to CHEAP -- a different (side, regime) key,
+        # so the old MID rejection must not block it.
+        up_book = make_liquid_book(price=0.10, token_id="up")
+        down_book = make_liquid_book(price=0.90, token_id="down")
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0)
+        assert intent is not None
+
+
 class TestCheapTtcSelectivityDampenerWiring:
     """build_order_intent's cheap_ttc_selectivity_multiplier wiring,
     added 2026-09-20 -- see TestCheapTtcSelectivityMultiplier for the
@@ -3765,6 +3917,52 @@ class TestUpdateFirstPrices:
         activity.update_first_prices(up_price=0.30, down_price=0.55)
         assert activity.up_first_price == 0.45  # unchanged
         assert activity.down_first_price == 0.55  # first time it was available
+
+
+class TestRegimeEpisodeRejection:
+    """MarketActivityState.is_regime_episode_rejected/reject_regime_episode
+    (2026-09-21), the episode-latch state REGIME_ENGAGEMENT_MULTIPLIER
+    needs -- see its own docstring for why a flat per-tick roll against a
+    long-lived regime isn't enough on its own."""
+
+    def test_nothing_rejected_by_default(self):
+        activity = MarketActivityState()
+        assert activity.is_regime_episode_rejected("Up", "MID") is False
+        assert activity.is_regime_episode_rejected("Down", "CHEAP") is False
+
+    def test_reject_then_check_round_trips(self):
+        activity = MarketActivityState()
+        activity.reject_regime_episode("Up", "MID")
+        assert activity.is_regime_episode_rejected("Up", "MID") is True
+
+    def test_rejection_is_scoped_to_the_exact_side_and_regime(self):
+        activity = MarketActivityState()
+        activity.reject_regime_episode("Up", "MID")
+        assert activity.is_regime_episode_rejected("Down", "MID") is False
+        assert activity.is_regime_episode_rejected("Up", "CORE") is False
+
+    def test_rejecting_the_same_episode_twice_is_a_safe_no_op(self):
+        activity = MarketActivityState()
+        activity.reject_regime_episode("Up", "MID")
+        activity.reject_regime_episode("Up", "MID")
+        assert activity.rejected_regime_episodes["Up"] == ["MID"]
+
+    def test_both_sides_can_independently_reject_different_regimes(self):
+        activity = MarketActivityState()
+        activity.reject_regime_episode("Up", "MID")
+        activity.reject_regime_episode("Down", "CORE")
+        assert activity.is_regime_episode_rejected("Up", "MID") is True
+        assert activity.is_regime_episode_rejected("Down", "CORE") is True
+        assert activity.is_regime_episode_rejected("Up", "CORE") is False
+        assert activity.is_regime_episode_rejected("Down", "MID") is False
+
+    def test_round_trips_through_save_and_load(self, tmp_path):
+        activity = MarketActivityState()
+        activity.reject_regime_episode("Up", "MID")
+        path = tmp_path / "activity.json"
+        stratmod.save_activity_state({"cond-1": activity}, path)
+        loaded = stratmod.load_activity_state(path)
+        assert loaded["cond-1"].is_regime_episode_rejected("Up", "MID") is True
 
 
 class TestMidContrarianFirstEntrySide:

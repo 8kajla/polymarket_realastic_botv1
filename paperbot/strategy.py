@@ -173,6 +173,29 @@ class MarketActivityState:
     # nothing previously tracked.
     up_first_price: Optional[float] = None
     down_first_price: Optional[float] = None
+    # ADDED 2026-09-21, alongside REGIME_ENGAGEMENT_MULTIPLIER: side ->
+    # list of regimes that gate has already rejected an ordinary entry
+    # for in THIS market. Needed because a flat per-tick skip-probability
+    # roll against a long-lived regime (MID/CORE routinely persist for
+    # minutes) "eventually" passes no matter how low the probability is --
+    # confirmed in the historical-replay validation this table's own
+    # docstring references. Latching the roll per (side, regime) EPISODE
+    # instead (roll once, remember the answer until the regime genuinely
+    # changes) fixes this: a real regime change produces a different
+    # dict key naturally, so no explicit clearing logic is needed -- an
+    # old rejection for a regime a side has since LEFT simply never
+    # matches again. Stored as a dict of lists (not a set of tuples) so
+    # this round-trips through save_activity_state/load_activity_state's
+    # plain JSON (a Python set isn't JSON-serializable).
+    rejected_regime_episodes: dict = field(default_factory=dict)
+
+    def is_regime_episode_rejected(self, side: str, regime: str) -> bool:
+        return regime in self.rejected_regime_episodes.get(side, [])
+
+    def reject_regime_episode(self, side: str, regime: str) -> None:
+        self.rejected_regime_episodes.setdefault(side, [])
+        if regime not in self.rejected_regime_episodes[side]:
+            self.rejected_regime_episodes[side].append(regime)
 
     def update_first_prices(self, up_price: Optional[float], down_price: Optional[float]) -> None:
         """Latches the first non-None price seen for each side. Called
@@ -1264,6 +1287,33 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # without this.
         logger.info("SKIP asset=%s regime=%s: %s", market.asset, regime, reason)
         return None
+
+    # REGIME ENGAGEMENT (2026-09-21): see bc.regime_engagement_multiplier's
+    # docstring for the full derivation -- a historical replay found the
+    # bot has no active preference for CHEAP/HIGH over MID/CORE at all
+    # (unlike the freshness-gated dampeners just below, which only ever
+    # suppress STALE crossings on first entries). Deliberately UNSCOPED
+    # by real_fill_count -- unlike the CHEAP-joint/decisive-eligibility
+    # gates below, this applies to every ordinary (non-hedge) entry
+    # consideration in the market's life, since the finding it's fixing
+    # (his overall regime MIX) was measured across his whole decision
+    # history, not just first entries. Rolled ONCE per (side, regime)
+    # EPISODE via activity.is_regime_episode_rejected/reject_regime_
+    # episode, not every tick -- confirmed in the historical-replay
+    # validation that a flat per-tick roll against a long-lived MID/CORE
+    # episode "eventually" passes no matter how low the probability is,
+    # since a real regime change naturally produces a fresh (side,
+    # regime) key with no rejection recorded against it yet.
+    if config.ENABLE_REGIME_ENGAGEMENT_MULTIPLIER and not is_hedge:
+        if activity.is_regime_episode_rejected(side, regime):
+            return None
+        engagement_mult = bc.regime_engagement_multiplier(market.asset, regime)
+        if engagement_mult < 1.0 and rng.random() > engagement_mult:
+            activity.reject_regime_episode(side, regime)
+            logger.info(
+                "SKIP asset=%s regime=%s price=%.4f: regime engagement dampener (mult=%.2f)",
+                market.asset, regime, price, engagement_mult)
+            return None
 
     # CHEAP-JOINT entry dampener (2026-09-18, merged into one joint
     # price-band x freshness-bucket mechanism 2026-09-19): the real

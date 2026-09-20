@@ -19,6 +19,7 @@ for any test in this suite, not just the ones that happened to notice.
 """
 import pytest
 
+from paperbot import behavior_config as bc
 from paperbot import config
 
 
@@ -26,3 +27,20 @@ from paperbot import config
 def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "LEDGER_PATH", tmp_path / "paper_ledger.json")
+
+
+@pytest.fixture(autouse=True)
+def neutralize_regime_engagement_multiplier(monkeypatch):
+    """REGIME_ENGAGEMENT_MULTIPLIER (added 2026-09-21) is deliberately
+    UNSCOPED by real_fill_count -- unlike CHEAP_JOINT_ENTRY_MULTIPLIER/
+    DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER (first entries, one regime
+    group each), it can skip ANY ordinary entry in ANY of the 4 regimes.
+    That reach means it silently perturbs almost every build_order_intent
+    -level test in this suite that wasn't written with it in mind (21
+    failures the first time this was added, across entirely unrelated
+    mechanisms -- momentum/EWMA tracking, hedge fallthrough, scout
+    eligibility, MID-contrarian, cross-asset carryover). Same reasoning
+    as isolated_data_dir above: neutralize it here, for every test, not
+    just the ones that happened to notice -- the dedicated test class for
+    this mechanism explicitly re-enables the real function."""
+    monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 1.0)
