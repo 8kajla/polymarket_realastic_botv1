@@ -763,6 +763,19 @@ ENABLE_MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for DECISIVENESS_TTC_OVERSHOOT_CORRECTION (see its
+# docstring in behavior_config.py). Added 2026-09-20, closing checklist
+# item #25 ("joint decision modeling, not universal"): decisiveness_
+# fraction and seconds_remaining are mechanically correlated (r=-0.82)
+# within a market, and a direct real-vs-predicted test found the
+# existing multipliers genuinely overshoot Ethereum/Solana HIGH sizing
+# at high decisiveness_fraction, confirmed stable across the Sep-18
+# regime boundary. Default TRUE everywhere.
+ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION = os.environ.get(
+    "ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Feature flag for CROSS_MARKET_SIDE_PERSISTENCE (see its docstring in
 # behavior_config.py). Added 2026-09-11 -- default TRUE everywhere,
 # explicit FALSE for paperbot-mini (the $100 control instance).

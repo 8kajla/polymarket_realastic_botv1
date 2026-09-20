@@ -978,6 +978,17 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # confound check this survived before being built.
     decisiveness_mult = bc.decisiveness_onset_multiplier(
         asset, regime, decisiveness_fraction) if config.ENABLE_DECISIVENESS_ONSET_MULTIPLIER else 1.0
+    # DECISIVENESS x TTC x WITHIN-BAND overshoot correction (2026-09-20):
+    # closes checklist item #25 -- unlike momentum x bankroll (tested,
+    # found to be calendar drift, not real), decisiveness_fraction and
+    # seconds_remaining are MECHANICALLY correlated (r=-0.82) within a
+    # single market, and a direct real-vs-predicted test found the three
+    # multipliers above genuinely overshoot real Ethereum/Solana HIGH
+    # sizing at high decisiveness_fraction -- see bc.decisiveness_ttc_
+    # overshoot_correction's docstring for the split-half-confirmed
+    # derivation. Bitcoin excluded (undershoots instead, a separate gap).
+    overshoot_correction = bc.decisiveness_ttc_overshoot_correction(
+        asset, regime, decisiveness_fraction) if config.ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION else 1.0
     # COMBINED-MULTIPLIER SAFETY BOUND (2026-09-12, bug audit #4): each of
     # within_band/momentum_mult/bankroll_mult/ttc_mult/resumption_mult/
     # reentry_fatigue_mult/hedge_count_reinforcement_mult/decisiveness_mult
@@ -1004,7 +1015,8 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # of every factor aligning in the same direction at once.
     combined_signal = (within_band * momentum_mult * bankroll_mult * ttc_mult
                         * resumption_mult * reentry_fatigue_mult
-                        * hedge_count_reinforcement_mult * decisiveness_mult)
+                        * hedge_count_reinforcement_mult * decisiveness_mult
+                        * overshoot_correction)
     cap = config.COMBINED_SIZE_MULTIPLIER_CAP
     combined_signal = max(1.0 / cap, min(cap, combined_signal))
     # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a

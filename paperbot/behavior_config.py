@@ -1208,6 +1208,66 @@ def decisiveness_onset_multiplier(asset: str, regime: str, fraction_consumed: Op
 
 
 # ---------------------------------------------------------------------------
+# DECISIVENESS x TTC x WITHIN-BAND overshoot correction. Added 2026-09-20,
+# closing checklist item #25's first well-powered confirmation: unlike
+# the momentum x bankroll pair (tested and found to be a calendar-drift
+# artifact, not real), THIS overlap is genuine and structural.
+# decisiveness_fraction = (now-crossed_at)/(end_time-crossed_at) and
+# seconds_remaining = end_time-now are mechanically related within a
+# single market (both derived from the same timestamps) -- confirmed
+# r=-0.82 (t=-42 to -78, all three assets independently, n=1030-2876)
+# in CORE/HIGH, far stronger than any calendar-drift artifact.
+#
+# Direct real-vs-predicted test (first decisive-side entry per market,
+# HIGH only, decision-collapsed, price_history_dense.jsonl): multiplying
+# within_band x ttc x decisiveness together OVERSHOOTS real sizing
+# specifically at HIGH decisiveness_fraction (>=0.45) for Ethereum/
+# Solana -- Bitcoin actually UNDERSHOOTS across the board (a separate,
+# unexplained gap, NOT evidence against this correction, left
+# uncalibrated here since correcting an undershoot isn't this finding's
+# job). Split-half on the Sep-18 boundary (the exact regime-boundary
+# lesson from item #31's own re-derivation, applied here BEFORE shipping
+# this time) confirms stability: Ethereum real ratio 1.68 pre-boundary /
+# 2.06 post (n=210/57); Solana 1.96 pre / 1.97 post (n=229/59) -- both
+# stable across the boundary, unlike item #31's fragile Solana hedge
+# hump. config.COMBINED_SIZE_MULTIPLIER_CAP=4.0 does NOT catch this --
+# the overshoot bites at ~1.9-2.2x, well under that blanket cap.
+#
+# Keyed by asset and decisiveness_fraction bucket (only the two buckets
+# that actually overshoot; [0.00,0.45) was already close to 1:1 and is
+# left uncorrected, 1.0 no-op):
+#   Ethereum: [0.45,0.60) predicted/real=1.765 -> correction 0.567
+#             [0.60,1.00) predicted/real=1.139 -> correction 0.878
+#   Solana:   [0.45,0.60) predicted/real=1.937 -> correction 0.516
+#             [0.60,1.00) predicted/real=2.168 -> correction 0.461
+DECISIVENESS_TTC_OVERSHOOT_CORRECTION = {
+    "Ethereum": [(0.45, 0.60, 0.567), (0.60, 1.00, 0.878)],
+    "Solana": [(0.45, 0.60, 0.516), (0.60, 1.00, 0.461)],
+}
+
+
+def decisiveness_ttc_overshoot_correction(asset: str, regime: str,
+                                           fraction_consumed: Optional[float]) -> float:
+    """1.0 (no-op) for Bitcoin (undershoots here, a separate unexplained
+    gap -- not this correction's job), for CHEAP/MID (decisiveness_
+    fraction is never populated there), or when fraction_consumed is
+    None/below 0.45 (the [0.00,0.45) range already multiplies out close
+    to 1:1 against real sizing, confirmed in the same joint test that
+    found the overshoot above 0.45). HIGH only -- CORE was not part of
+    the confirmed overshoot (its predicted/real ratios stayed <=1 in the
+    same joint test)."""
+    if regime != "HIGH" or fraction_consumed is None:
+        return 1.0
+    buckets = DECISIVENESS_TTC_OVERSHOOT_CORRECTION.get(asset)
+    if buckets is None:
+        return 1.0
+    for lo, hi, mult in buckets:
+        if lo <= fraction_consumed < hi:
+            return mult
+    return 1.0
+
+
+# ---------------------------------------------------------------------------
 # TIME-TO-CLOSE size scaling. Added 2026-09-10: the whole session's own
 # reverse-engineering work found a real, structural signal (a market
 # entering its 60s TWAP window makes the outcome increasingly computable

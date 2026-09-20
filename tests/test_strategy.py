@@ -1235,6 +1235,87 @@ class TestDecideSizeDecisivenessIntegration:
         assert notional_flagged_off == notional_no_fraction
 
 
+class TestDecisivenessTtcOvershootCorrection:
+    """Item #25 chase, round 2: unlike momentum x bankroll (found to be
+    calendar drift, not real -- see the item 25 project memory), this
+    overlap between decisiveness_fraction and seconds_remaining is
+    mechanically correlated (r=-0.82 within a market) and a direct
+    real-vs-predicted test found a genuine overshoot for Ethereum/Solana
+    HIGH at high decisiveness_fraction, split-half-confirmed stable
+    across the Sep-18 regime boundary."""
+
+    def test_noop_for_bitcoin(self):
+        # Bitcoin UNDERSHOOTS in the same joint test -- a separate,
+        # unexplained gap, not this correction's job.
+        assert bc.decisiveness_ttc_overshoot_correction("Bitcoin", "HIGH", 0.50) == 1.0
+
+    def test_noop_for_core(self):
+        # CORE's predicted/real ratios stayed <=1 in the joint test.
+        assert bc.decisiveness_ttc_overshoot_correction("Ethereum", "CORE", 0.50) == 1.0
+
+    def test_noop_below_the_confirmed_overshoot_threshold(self):
+        assert bc.decisiveness_ttc_overshoot_correction("Ethereum", "HIGH", 0.30) == 1.0
+        assert bc.decisiveness_ttc_overshoot_correction("Solana", "HIGH", 0.00) == 1.0
+
+    def test_noop_when_fraction_is_none(self):
+        assert bc.decisiveness_ttc_overshoot_correction("Ethereum", "HIGH", None) == 1.0
+
+    def test_exact_bucket_values(self):
+        assert bc.decisiveness_ttc_overshoot_correction("Ethereum", "HIGH", 0.50) == 0.567
+        assert bc.decisiveness_ttc_overshoot_correction("Ethereum", "HIGH", 0.80) == 0.878
+        assert bc.decisiveness_ttc_overshoot_correction("Solana", "HIGH", 0.50) == 0.516
+        assert bc.decisiveness_ttc_overshoot_correction("Solana", "HIGH", 0.80) == 0.461
+
+    def test_correction_is_a_dampener_not_a_boost(self):
+        # Every calibrated value must be < 1.0 -- this only ever corrects
+        # DOWN an overshoot, never up.
+        for asset, buckets in bc.DECISIVENESS_TTC_OVERSHOOT_CORRECTION.items():
+            for lo, hi, mult in buckets:
+                assert mult < 1.0, f"{asset} bucket [{lo},{hi}) = {mult} is not a dampener"
+
+
+class TestDecideSizeDecisivenessTtcOvershootIntegration:
+    def test_dampens_ethereum_high_sizing_at_late_fraction_when_enabled(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION", True)
+        rng_a = random.Random(3)
+        rng_b = random.Random(3)
+        notional_no_late, _ = decide_size("Ethereum", "HIGH", "first", 0.95, rng_a,
+                                           decisiveness_fraction=0.10)  # below threshold, no-op
+        notional_late, _ = decide_size("Ethereum", "HIGH", "first", 0.95, rng_b,
+                                        decisiveness_fraction=0.50)  # 0.567x correction
+        assert notional_late < notional_no_late
+
+    def test_flag_disabled_makes_decide_size_ignore_the_correction(self, monkeypatch):
+        # decisiveness_fraction also feeds the separate, still-enabled
+        # DECISIVENESS_ONSET_MULTIPLIER -- isolate this flag's own effect
+        # via the ratio between two fractions, not an absolute value.
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION", False)
+        rng_a = random.Random(5)
+        rng_b = random.Random(5)
+        notional_low, _ = decide_size("Solana", "HIGH", "first", 0.95, rng_a,
+                                       decisiveness_fraction=0.10)
+        notional_high, _ = decide_size("Solana", "HIGH", "first", 0.95, rng_b,
+                                        decisiveness_fraction=0.80)  # would be 0.461x if enabled
+        raw_decisiveness_ratio = (bc.decisiveness_onset_multiplier("Solana", "HIGH", 0.80)
+                                   / bc.decisiveness_onset_multiplier("Solana", "HIGH", 0.10))
+        assert abs((notional_high / notional_low) - raw_decisiveness_ratio) < 1e-6
+
+    def test_does_not_affect_bitcoin(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION", True)
+        rng_a = random.Random(11)
+        rng_b = random.Random(11)
+        notional_a, _ = decide_size("Bitcoin", "HIGH", "first", 0.95, rng_a,
+                                     decisiveness_fraction=0.10)
+        notional_b, _ = decide_size("Bitcoin", "HIGH", "first", 0.95, rng_b,
+                                     decisiveness_fraction=0.80)
+        # Only decisiveness_onset_multiplier (not the new correction)
+        # should differ these two -- confirm the correction itself isn't
+        # additionally scaling Bitcoin.
+        raw_decisiveness_ratio = (bc.decisiveness_onset_multiplier("Bitcoin", "HIGH", 0.10)
+                                   / bc.decisiveness_onset_multiplier("Bitcoin", "HIGH", 0.80))
+        assert abs((notional_a / notional_b) - raw_decisiveness_ratio) < 1e-6
+
+
 class TestActivityStatePersistence:
     """ADDED 2026-09-13: closes a real, confirmed-live bug -- PaperBot's
     self.activity used to exist ONLY in memory, so every restart (an
