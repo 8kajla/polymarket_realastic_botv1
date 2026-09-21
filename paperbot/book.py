@@ -275,7 +275,7 @@ class MarketWebSocketClient:
         import websockets  # imported lazily so the rest of the package has
                             # no hard dependency on it for pure-logic tests
 
-        async with websockets.connect(config.CLOB_WS_URL) as ws:
+        async with websockets.connect(config.CLOB_WS_URL, max_queue=None) as ws:
             self._ws = ws
             if self._subscribed_ids:
                 await self._send_subscription(list(self._subscribed_ids))

@@ -1448,15 +1448,18 @@ class PaperBot:
         """Reconnects the WebSocket with backoff if it drops. A dropped
         connection halts nothing by itself -- book state simply goes stale,
         which the availability check (spread/depth) will naturally reject."""
-        backoff = 1.0
+        backoff = config.WS_RECONNECT_BACKOFF_INITIAL_SECONDS
         while True:
+            started = time.monotonic()
             try:
                 await self.ws_client.connect_and_run()
-                backoff = 1.0
+                backoff = config.WS_RECONNECT_BACKOFF_INITIAL_SECONDS
             except Exception:
+                if time.monotonic() - started >= config.WS_HEALTHY_CONNECTION_SECONDS:
+                    backoff = config.WS_RECONNECT_BACKOFF_INITIAL_SECONDS
                 logger.exception("WS connection dropped; reconnecting in %.1fs", backoff)
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 30.0)
+                backoff = min(backoff * 2, config.WS_RECONNECT_BACKOFF_MAX_SECONDS)
 
 
 def main() -> None:

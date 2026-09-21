@@ -58,6 +58,17 @@ CLOB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 WS_SUBSCRIBE_CUSTOM_FEATURE_ENABLED = True
 WS_PING_INTERVAL_SECONDS = 10
 WS_PING_MESSAGE = "PING"
+# ADDED 2026-09-22: the feed was dark ~14% of the day (23% in the latest
+# 20 min) -- every abnormal drop (server 1013 "slow consumer", "no close
+# frame") raised out of connect_and_run, so _ws_supervisor's backoff only
+# ever reset on the rare clean close, sat at 30s, and fill simulation (which
+# needs last_trade_price prints) was blind for that whole wait. Reconnect
+# fast, reset the backoff after any connection that lived a while, and drop
+# the client-side receive-queue cap (websockets' default max_queue=32 stops
+# reading under a burst while the loop is busy -> the server kicks us).
+WS_RECONNECT_BACKOFF_INITIAL_SECONDS = 0.5
+WS_RECONNECT_BACKOFF_MAX_SECONDS = 5.0
+WS_HEALTHY_CONNECTION_SECONDS = 10.0
 
 # ---------------------------------------------------------------------------
 # Market discovery. Slug prefixes are confirmed for BNB and Hyperliquid from
