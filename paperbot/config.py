@@ -1131,6 +1131,12 @@ ENABLE_PRICE_BASED_HEDGE_SIZING = os.environ.get(
     "ENABLE_PRICE_BASED_HEDGE_SIZING", "false"
 ).strip().lower() not in ("false", "0", "no")
 
+# ADDED 2026-09-22: Bitcoin entry base-size level correction (see
+# ENTRY_SIZE_LEVEL_CORRECTION in behavior_config.py). Default ON.
+ENABLE_ENTRY_SIZE_LEVEL_CORRECTION = os.environ.get(
+    "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", "true"
+).strip().lower() not in ("false", "0", "no")
+
 # ---------------------------------------------------------------------------
 # Feature flag for REGIME_ENGAGEMENT_MULTIPLIER (see its docstring in
 # behavior_config.py). Added 2026-09-21: a historical replay found the

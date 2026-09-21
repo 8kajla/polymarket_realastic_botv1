@@ -576,6 +576,27 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
         raise BehaviorLookupError(asset, regime) from exc
 
 
+# ENTRY_SIZE_LEVEL_CORRECTION -- ADDED 2026-09-22. ENTRY_SIZING_USD was last
+# calibrated 2026-09-08 on ~2.3 days of trading right after the 13.6-day
+# silence (its own comment asked for a recheck once more time had passed).
+# Rechecked on Sep 12-21 (5,112 real first entries): the Bitcoin base is
+# stale -- real base bias ln(real/pred) is +0.14..+0.85 in EVERY Bitcoin
+# regime, positive on all 10 days and both sides of the Sep-18 boundary.
+# FULL-STACK check (what the bots actually place vs what he really filled,
+# matched by price band, n-weighted, post-boundary): Bitcoin first x1.53,
+# 2nd_3rd x1.99, 4th_plus x1.50. Ethereum/Solana already match (first x1.11
+# / x1.04) and are left alone. Values below are shrunk to 80% of the log gap.
+# Applied to the base, outside COMBINED_SIZE_MULTIPLIER_CAP (a level
+# recalibration, not a cross-market signal). Re-measure after ~2 days.
+ENTRY_SIZE_LEVEL_CORRECTION = {
+    "Bitcoin": {"first": 1.40, "2nd_3rd": 1.74, "4th_plus": 1.38},
+}
+
+
+def entry_size_level_correction(asset: str, position_tier: str) -> float:
+    return ENTRY_SIZE_LEVEL_CORRECTION.get(asset, {}).get(position_tier, 1.0)
+
+
 # ---------------------------------------------------------------------------
 # SHARE-COUNT-BASED ENTRY SIZING. Added 2026-09-20/21, replacing
 # median_entry_notional() + within_band_size_multiplier() as the ENTRY

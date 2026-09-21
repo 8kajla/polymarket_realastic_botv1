@@ -1072,7 +1072,9 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # config.py. Applied here (not to the floor-lot branch above) so the
     # tiny, independently-calibrated probe tier is never pushed below a
     # real exchange minimum by a scale-down meant for the ordinary curve.
-    return max(median * jitter * combined_signal * config.SIZE_SCALE_FACTOR, 0.0), False
+    level_correction = (bc.entry_size_level_correction(asset, position_tier)
+                         if config.ENABLE_ENTRY_SIZE_LEVEL_CORRECTION else 1.0)
+    return max(median * level_correction * jitter * combined_signal * config.SIZE_SCALE_FACTOR, 0.0), False
 
 
 def build_order_intent(market: Market, up_book: BookState, down_book: BookState,

@@ -279,6 +279,12 @@ class TestCrossMarketFirstEntrySidePersistence:
 
 
 class TestSizingDecision:
+    @pytest.fixture(autouse=True)
+    def _isolate_level_correction(self, monkeypatch):
+        # These tests pin the raw base curve; the Bitcoin level correction
+        # has its own TestEntrySizeLevelCorrection class.
+        monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", False)
+
     def test_bitcoin_never_rolls_floor_lot(self):
         rng = random.Random(1)
         for _ in range(500):
@@ -4637,3 +4643,26 @@ class TestHedgeNotionalForPrice:
                 > bc.hedge_notional_for_price("Solana", 0.9))
         assert bc.hedge_notional_for_price("Bitcoin", 0.97) > bc.hedge_notional_for_price("Bitcoin", 0.5) \
             > bc.hedge_notional_for_price("Bitcoin", 0.05)
+
+
+class TestEntrySizeLevelCorrection:
+    def test_bitcoin_scaled_per_tier_when_enabled(self, monkeypatch):
+        for tier in ("first", "2nd_3rd", "4th_plus"):
+            monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", True)
+            on, _ = decide_size("Bitcoin", "MID", tier, 0.5, random.Random(3))
+            monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", False)
+            off, _ = decide_size("Bitcoin", "MID", tier, 0.5, random.Random(3))
+            assert abs(on / off - bc.entry_size_level_correction("Bitcoin", tier)) < 1e-6
+            assert on > off
+
+    def test_ethereum_and_solana_untouched(self, monkeypatch):
+        for asset in ("Ethereum", "Solana"):
+            monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", True)
+            on, _ = decide_size(asset, "MID", "first", 0.5, random.Random(3))
+            monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", False)
+            off, _ = decide_size(asset, "MID", "first", 0.5, random.Random(3))
+            assert on == off
+
+    def test_lookup_defaults_to_one(self):
+        assert bc.entry_size_level_correction("Ethereum", "first") == 1.0
+        assert bc.entry_size_level_correction("Bitcoin", "no_such_tier") == 1.0
