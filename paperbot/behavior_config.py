@@ -993,18 +993,39 @@ def decisive_entry_eligibility_multiplier(asset: str, seconds_since_decisive_cro
 # CHEAP (2.21x/2.13x vs HIGH's 1.55x/1.48x) -- a real, asset-specific
 # asymmetry, not a simplification error.
 #
-# KNOWN CALIBRATION DRIFT, disclosed not hidden: HIGH's targeting ratio
-# nearly doubled between the first and second half of the measurement
-# window (1.32x -> 2.39x, pooled) -- this table is built on the full-
-# period pooled ratio. If that drift continues, HIGH's multiplier
-# (especially Ethereum/Solana's 0.70/0.69) may need raising later. Same
-# disclosed-approximation status as WITHIN_BAND_SIZE_SLOPE's Ethereum
-# CHEAP dip -- not a reason to withhold the fix, since the DIRECTION is
-# stable everywhere checked, only the magnitude drifts.
+# RECALIBRATED 2026-09-21, hours after the first version shipped: the
+# disclosed drift risk above materialized faster and further than
+# expected. A live comparison against the real trader's ACTUAL activity
+# in the same wall-clock window (not his historical average) found he'd
+# shifted so hard toward HIGH that the original table -- built on the
+# full pooled historical window -- badly OVERSHOT relative to his
+# CURRENT behavior: bot CHEAP hit 65-71% live (target at the time was
+# 53.8%, but the trader's actual concurrent share was only 28.8%), MID/
+# CORE were crushed to 2-6% (his concurrent share: ~10-20%/~8-10%), HIGH
+# undershot at 24-25% (his concurrent share: 32-41%). Re-derived using
+# ONLY recent data (last 72h, real trader n=541-1439/asset, natural rate
+# from the same window) instead of the full pooled history -- stability-
+# checked across last_24h/48h/72h windows first (same direction, some
+# magnitude spread, matching this project's established secular-drift
+# pattern rather than being a one-off blip). HIGH is now the anchor for
+# ALL THREE assets (was CHEAP for Ethereum/Solana) -- a real behavioral
+# shift, not a bigger dataset revealing the "true" original answer.
+# Re-validated via the same historical-replay harness against this same
+# recent window before shipping: CHEAP 52.1% vs his 49.4%, MID 6.7% vs
+# 9.8%, CORE 7.6% vs 8.4%, HIGH 33.6% vs 32.3% -- all within a few
+# points, a dramatic improvement over the table this replaces.
+#
+# STANDING RISK, now confirmed real rather than hypothetical: his
+# regime-targeting behavior drifts meaningfully on a timescale of DAYS,
+# not months. This table should be treated as needing periodic re-
+# derivation against recent data, not a settled constant -- unlike most
+# other tables in this file, which have stayed stable for weeks once
+# validated. Revisit if a future live comparison shows a similar-sized
+# gap reopening.
 REGIME_ENGAGEMENT_MULTIPLIER = {
-    "Bitcoin":  {"CHEAP": 0.85, "MID": 0.26, "CORE": 0.41, "HIGH": 1.00},
-    "Ethereum": {"CHEAP": 1.00, "MID": 0.13, "CORE": 0.16, "HIGH": 0.70},
-    "Solana":   {"CHEAP": 1.00, "MID": 0.15, "CORE": 0.21, "HIGH": 0.69},
+    "Bitcoin":  {"CHEAP": 0.45, "MID": 0.10, "CORE": 0.23, "HIGH": 1.00},
+    "Ethereum": {"CHEAP": 0.83, "MID": 0.06, "CORE": 0.11, "HIGH": 1.00},
+    "Solana":   {"CHEAP": 0.76, "MID": 0.05, "CORE": 0.08, "HIGH": 1.00},
 }
 
 

@@ -1448,27 +1448,40 @@ class TestRegimeEngagementMultiplier:
     def test_bitcoin_anchors_on_high(self):
         assert bc.regime_engagement_multiplier("Bitcoin", "HIGH") == 1.0
 
-    def test_ethereum_anchors_on_cheap(self):
-        assert bc.regime_engagement_multiplier("Ethereum", "CHEAP") == 1.0
+    def test_ethereum_anchors_on_high(self):
+        # RECALIBRATED 2026-09-21: was CHEAP under the original full-
+        # pooled-history calibration -- a real behavioral shift (his
+        # HIGH-targeting overtook CHEAP-targeting within days), not a
+        # test update chasing a bigger dataset's "truer" answer.
+        assert bc.regime_engagement_multiplier("Ethereum", "HIGH") == 1.0
 
-    def test_solana_anchors_on_cheap(self):
-        assert bc.regime_engagement_multiplier("Solana", "CHEAP") == 1.0
+    def test_solana_anchors_on_high(self):
+        # RECALIBRATED 2026-09-21: same shift as Ethereum above.
+        assert bc.regime_engagement_multiplier("Solana", "HIGH") == 1.0
 
     def test_mid_and_core_are_suppressed_for_every_asset(self):
         for asset in ("Bitcoin", "Ethereum", "Solana"):
             assert bc.regime_engagement_multiplier(asset, "MID") < 1.0
             assert bc.regime_engagement_multiplier(asset, "CORE") < 1.0
 
+    def test_cheap_is_now_suppressed_too_for_every_asset(self):
+        # RECALIBRATED 2026-09-21: under the original calibration, CHEAP
+        # was the anchor (1.0, no-op) for Ethereum/Solana. Now that HIGH
+        # anchors all three assets, CHEAP needs its own (milder than MID/
+        # CORE) suppression too.
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            assert bc.regime_engagement_multiplier(asset, "CHEAP") < 1.0
+
     def test_matches_the_documented_calibration_table(self):
-        assert bc.regime_engagement_multiplier("Bitcoin", "CHEAP") == pytest.approx(0.85)
-        assert bc.regime_engagement_multiplier("Bitcoin", "MID") == pytest.approx(0.26)
-        assert bc.regime_engagement_multiplier("Bitcoin", "CORE") == pytest.approx(0.41)
-        assert bc.regime_engagement_multiplier("Ethereum", "MID") == pytest.approx(0.13)
-        assert bc.regime_engagement_multiplier("Ethereum", "CORE") == pytest.approx(0.16)
-        assert bc.regime_engagement_multiplier("Ethereum", "HIGH") == pytest.approx(0.70)
-        assert bc.regime_engagement_multiplier("Solana", "MID") == pytest.approx(0.15)
-        assert bc.regime_engagement_multiplier("Solana", "CORE") == pytest.approx(0.21)
-        assert bc.regime_engagement_multiplier("Solana", "HIGH") == pytest.approx(0.69)
+        assert bc.regime_engagement_multiplier("Bitcoin", "CHEAP") == pytest.approx(0.45)
+        assert bc.regime_engagement_multiplier("Bitcoin", "MID") == pytest.approx(0.10)
+        assert bc.regime_engagement_multiplier("Bitcoin", "CORE") == pytest.approx(0.23)
+        assert bc.regime_engagement_multiplier("Ethereum", "CHEAP") == pytest.approx(0.83)
+        assert bc.regime_engagement_multiplier("Ethereum", "MID") == pytest.approx(0.06)
+        assert bc.regime_engagement_multiplier("Ethereum", "CORE") == pytest.approx(0.11)
+        assert bc.regime_engagement_multiplier("Solana", "CHEAP") == pytest.approx(0.76)
+        assert bc.regime_engagement_multiplier("Solana", "MID") == pytest.approx(0.05)
+        assert bc.regime_engagement_multiplier("Solana", "CORE") == pytest.approx(0.08)
 
     def test_unknown_asset_is_a_noop(self):
         assert bc.regime_engagement_multiplier("Dogecoin", "MID") == 1.0
