@@ -1507,6 +1507,69 @@ def decisiveness_ttc_overshoot_correction(asset: str, regime: str,
 
 
 # ---------------------------------------------------------------------------
+# DECISIVENESS x WITHIN-BAND overshoot correction. Added 2026-09-21, closing
+# a SECOND, distinct double-counting bug found via the on-chain share-sizing
+# audit (see onchain-share-sizing-discovery-and-code-audit.md) -- different
+# from DECISIVENESS_TTC_OVERSHOOT_CORRECTION above, which corrects
+# decisiveness_fraction's collinearity with seconds_remaining (TTC). This
+# corrects its SEPARATE collinearity with raw price level (WITHIN_BAND_
+# SIZE_SLOPE's own axis), and unlike the TTC correction, hits CORE as well
+# as HIGH.
+#
+# Real-vs-predicted joint test: for each (asset, regime, price sub-band),
+# compared real mean entry size at decisiveness_fraction<0.45 ("early")
+# vs >=0.45 ("late") against what within_band_size_multiplier x
+# decisiveness_onset_multiplier predicts for the same split. Holding price
+# fixed isolates the fraction axis's own error from WITHIN_BAND's
+# legitimate, already-correct price-driven growth (unlike a naive "high
+# price + late fraction vs everything else" comparison, which conflates
+# the two). Real size DOES grow somewhat as decisiveness_fraction
+# increases (matching decisiveness_onset_multiplier's own intent) but
+# consistently less than the model predicts, in every price sub-band
+# tested, both assets, both regimes:
+#   Ethereum CORE: overshoot 1.19-1.42x across 2 price bands, n-weighted 1.261
+#   Ethereum HIGH: overshoot 1.24-1.28x across 2 price bands, n-weighted 1.267
+#   Solana CORE:   overshoot 1.76-2.37x across 2 price bands, n-weighted 2.013
+#   Solana HIGH:   overshoot 1.77-1.79x across 2 price bands, n-weighted 1.782
+# Bitcoin explicitly checked and excluded: shows the OPPOSITE pattern
+# (overshoot 0.69-0.75, i.e. UNDERshoots) at every price band tested, same
+# "separate unexplained gap, not this correction's job" reasoning as the
+# TTC correction above.
+#
+# Split-half stability (Sep-18 boundary): direction (real overshoot) holds
+# in every cell testable on both sides of the boundary, though several
+# post-boundary cells (especially Solana CORE) are too thin to independently
+# confirm magnitude -- calibrated on the full-sample (pre+post pooled)
+# numbers above, same convention as every other split-half-checked table
+# in this file.
+#
+# Coarser than DECISIVENESS_TTC_OVERSHOOT_CORRECTION's two fraction
+# sub-buckets ([0.45,0.60)/[0.60,1.00)) -- this uses one combined
+# [0.45,1.00) bucket per (asset, regime), since the underlying joint test
+# only supports a clean early/late split at current sample sizes, not a
+# finer one. [0.00,0.45) is left at the implicit 1.0 no-op, same "close to
+# 1:1 already" reasoning as the TTC correction's own early bucket.
+DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION = {
+    "Ethereum": {"CORE": 0.793, "HIGH": 0.789},
+    "Solana": {"CORE": 0.497, "HIGH": 0.561},
+}
+
+
+def decisiveness_withinband_overshoot_correction(asset: str, regime: str,
+                                                   fraction_consumed: Optional[float]) -> float:
+    """1.0 (no-op) for Bitcoin (undershoots here, a separate unexplained
+    gap, same reasoning as decisiveness_ttc_overshoot_correction), for
+    CHEAP/MID (decisiveness_fraction is never populated there), or when
+    fraction_consumed is None/below 0.45 (already close to 1:1, confirmed
+    in the same joint test that found the overshoot above 0.45). Applies
+    to BOTH CORE and HIGH -- unlike the TTC correction, this collinearity
+    was confirmed present in CORE too."""
+    if regime not in ("CORE", "HIGH") or fraction_consumed is None or fraction_consumed < 0.45:
+        return 1.0
+    return DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION.get(asset, {}).get(regime, 1.0)
+
+
+# ---------------------------------------------------------------------------
 # TIME-TO-CLOSE size scaling. Added 2026-09-10: the whole session's own
 # reverse-engineering work found a real, structural signal (a market
 # entering its 60s TWAP window makes the outcome increasingly computable

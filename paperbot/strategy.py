@@ -1027,6 +1027,16 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # derivation. Bitcoin excluded (undershoots instead, a separate gap).
     overshoot_correction = bc.decisiveness_ttc_overshoot_correction(
         asset, regime, decisiveness_fraction) if config.ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION else 1.0
+    # DECISIVENESS x WITHIN-BAND overshoot correction (2026-09-21): a
+    # SECOND, distinct double-counting bug from the on-chain share-sizing
+    # audit -- decisiveness_fraction's collinearity with raw price level
+    # (within_band's own axis), not TTC/seconds_remaining like the
+    # correction above. Hits CORE as well as HIGH. See bc.decisiveness_
+    # withinband_overshoot_correction's docstring for the split-half-
+    # confirmed derivation. Bitcoin excluded (undershoots instead, same
+    # reasoning as the TTC correction).
+    withinband_overshoot_correction = bc.decisiveness_withinband_overshoot_correction(
+        asset, regime, decisiveness_fraction) if config.ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION else 1.0
     # COMBINED-MULTIPLIER SAFETY BOUND (2026-09-12, bug audit #4): each of
     # within_band/momentum_mult/bankroll_mult/ttc_mult/resumption_mult/
     # reentry_fatigue_mult/hedge_count_reinforcement_mult/decisiveness_mult
@@ -1054,7 +1064,7 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     combined_signal = (within_band * momentum_mult * bankroll_mult * ttc_mult
                         * resumption_mult * reentry_fatigue_mult
                         * hedge_count_reinforcement_mult * decisiveness_mult
-                        * overshoot_correction)
+                        * overshoot_correction * withinband_overshoot_correction)
     cap = config.COMBINED_SIZE_MULTIPLIER_CAP
     combined_signal = max(1.0 / cap, min(cap, combined_signal))
     # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a

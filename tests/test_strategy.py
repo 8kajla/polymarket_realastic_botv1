@@ -1356,7 +1356,11 @@ class TestDecideSizeDecisivenessTtcOvershootIntegration:
         # decisiveness_fraction also feeds the separate, still-enabled
         # DECISIVENESS_ONSET_MULTIPLIER -- isolate this flag's own effect
         # via the ratio between two fractions, not an absolute value.
+        # Solana HIGH is ALSO affected by DECISIVENESS_WITHINBAND_
+        # OVERSHOOT_CORRECTION (added 2026-09-21) -- disable that too so
+        # this stays an isolated test of the TTC correction alone.
         monkeypatch.setattr(config, "ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION", False)
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION", False)
         rng_a = random.Random(5)
         rng_b = random.Random(5)
         notional_low, _ = decide_size("Solana", "HIGH", "first", 0.95, rng_a,
@@ -1381,6 +1385,122 @@ class TestDecideSizeDecisivenessTtcOvershootIntegration:
         raw_decisiveness_ratio = (bc.decisiveness_onset_multiplier("Bitcoin", "HIGH", 0.10)
                                    / bc.decisiveness_onset_multiplier("Bitcoin", "HIGH", 0.80))
         assert abs((notional_a / notional_b) - raw_decisiveness_ratio) < 1e-6
+
+
+class TestDecisivenessWithinbandOvershootCorrection:
+    """2026-09-21: a SECOND, distinct double-counting bug from the
+    on-chain share-sizing audit -- decisiveness_fraction's collinearity
+    with raw price level (within_band's own axis), not TTC/seconds_
+    remaining like TestDecisivenessTtcOvershootCorrection above. Unlike
+    that one, this hits CORE as well as HIGH, confirmed via a real-vs-
+    predicted joint test holding price fixed and comparing early-vs-late
+    decisiveness_fraction, split-half-stable in direction across the
+    Sep-18 boundary."""
+
+    def test_noop_for_bitcoin(self):
+        # Bitcoin UNDERSHOOTS in the same joint test -- a separate,
+        # unexplained gap, not this correction's job.
+        assert bc.decisiveness_withinband_overshoot_correction("Bitcoin", "HIGH", 0.50) == 1.0
+        assert bc.decisiveness_withinband_overshoot_correction("Bitcoin", "CORE", 0.50) == 1.0
+
+    def test_noop_below_the_confirmed_overshoot_threshold(self):
+        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "HIGH", 0.30) == 1.0
+        assert bc.decisiveness_withinband_overshoot_correction("Solana", "CORE", 0.00) == 1.0
+
+    def test_noop_when_fraction_is_none(self):
+        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "HIGH", None) == 1.0
+
+    def test_noop_for_cheap_and_mid(self):
+        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "CHEAP", 0.50) == 1.0
+        assert bc.decisiveness_withinband_overshoot_correction("Solana", "MID", 0.50) == 1.0
+
+    def test_applies_to_both_core_and_high(self):
+        # Unlike the TTC correction, this one was confirmed for CORE too.
+        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "CORE", 0.50) == 0.793
+        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "HIGH", 0.50) == 0.789
+
+    def test_exact_values(self):
+        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "CORE", 0.50) == 0.793
+        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "HIGH", 0.50) == 0.789
+        assert bc.decisiveness_withinband_overshoot_correction("Solana", "CORE", 0.50) == 0.497
+        assert bc.decisiveness_withinband_overshoot_correction("Solana", "HIGH", 0.50) == 0.561
+
+    def test_flat_across_the_whole_late_bucket(self):
+        # Unlike the TTC correction's two sub-buckets, this uses one
+        # combined [0.45,1.00) bucket -- confirm it doesn't vary within it.
+        assert (bc.decisiveness_withinband_overshoot_correction("Solana", "HIGH", 0.46)
+                == bc.decisiveness_withinband_overshoot_correction("Solana", "HIGH", 0.99))
+
+    def test_correction_is_a_dampener_not_a_boost(self):
+        for asset, regimes in bc.DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION.items():
+            for regime, mult in regimes.items():
+                assert mult < 1.0, f"{asset} {regime} = {mult} is not a dampener"
+
+
+class TestDecideSizeDecisivenessWithinbandOvershootIntegration:
+    def test_dampens_ethereum_core_sizing_at_late_fraction_when_enabled(self, monkeypatch):
+        # decisiveness_onset_multiplier's OWN raw ratio (1.06->1.77 for
+        # Ethereum CORE's early->late buckets) is a bigger boost than this
+        # correction's 0.793x dampens away, so late can still net out
+        # larger than early in absolute terms -- isolate the correction's
+        # own effect via the ratio against the raw decisiveness ratio,
+        # same pattern as the sibling TTC-correction tests above, rather
+        # than asserting an absolute early-vs-late direction.
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION", False)
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION", True)
+        rng_a = random.Random(7)
+        rng_b = random.Random(7)
+        notional_early, _ = decide_size("Ethereum", "CORE", "first", 0.80, rng_a,
+                                         decisiveness_fraction=0.10)  # below threshold, no-op
+        notional_late, _ = decide_size("Ethereum", "CORE", "first", 0.80, rng_b,
+                                        decisiveness_fraction=0.50)  # 0.793x correction
+        raw_decisiveness_ratio = (bc.decisiveness_onset_multiplier("Ethereum", "CORE", 0.50)
+                                   / bc.decisiveness_onset_multiplier("Ethereum", "CORE", 0.10))
+        actual_ratio = notional_late / notional_early
+        assert actual_ratio < raw_decisiveness_ratio
+        assert abs(actual_ratio - raw_decisiveness_ratio * 0.793) < 1e-6
+
+    def test_flag_disabled_makes_decide_size_ignore_the_correction(self, monkeypatch):
+        # Solana HIGH is ALSO affected by DECISIVENESS_TTC_OVERSHOOT_
+        # CORRECTION -- disable that too so this stays an isolated test
+        # of the withinband correction alone.
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION", False)
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION", False)
+        rng_a = random.Random(9)
+        rng_b = random.Random(9)
+        notional_low, _ = decide_size("Solana", "HIGH", "first", 0.92, rng_a,
+                                       decisiveness_fraction=0.10)
+        notional_high, _ = decide_size("Solana", "HIGH", "first", 0.92, rng_b,
+                                        decisiveness_fraction=0.80)  # would be 0.561x if enabled
+        raw_decisiveness_ratio = (bc.decisiveness_onset_multiplier("Solana", "HIGH", 0.80)
+                                   / bc.decisiveness_onset_multiplier("Solana", "HIGH", 0.10))
+        assert abs((notional_high / notional_low) - raw_decisiveness_ratio) < 1e-6
+
+    def test_does_not_affect_bitcoin(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION", True)
+        rng_a = random.Random(13)
+        rng_b = random.Random(13)
+        notional_a, _ = decide_size("Bitcoin", "CORE", "first", 0.80, rng_a,
+                                     decisiveness_fraction=0.10)
+        notional_b, _ = decide_size("Bitcoin", "CORE", "first", 0.80, rng_b,
+                                     decisiveness_fraction=0.80)
+        raw_decisiveness_ratio = (bc.decisiveness_onset_multiplier("Bitcoin", "CORE", 0.10)
+                                   / bc.decisiveness_onset_multiplier("Bitcoin", "CORE", 0.80))
+        assert abs((notional_a / notional_b) - raw_decisiveness_ratio) < 1e-6
+
+    def test_composes_with_the_ttc_correction_on_ethereum_high(self, monkeypatch):
+        # Both corrections apply to Ethereum HIGH at late fraction -- they
+        # should multiply together, not one silently overriding the other.
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION", True)
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION", True)
+        rng_a = random.Random(17)
+        rng_b = random.Random(17)
+        notional_both, _ = decide_size("Ethereum", "HIGH", "first", 0.95, rng_a,
+                                        decisiveness_fraction=0.50)
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION", False)
+        notional_ttc_only, _ = decide_size("Ethereum", "HIGH", "first", 0.95, rng_b,
+                                            decisiveness_fraction=0.50)
+        assert notional_both < notional_ttc_only
 
 
 class TestActivityStatePersistence:

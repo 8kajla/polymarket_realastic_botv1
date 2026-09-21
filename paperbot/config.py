@@ -776,6 +776,18 @@ ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION (see its
+# docstring in behavior_config.py). Added 2026-09-21, closing a second
+# double-counting bug found via the on-chain share-sizing audit: unlike
+# the TTC correction above (decisiveness x seconds_remaining), this
+# corrects decisiveness_fraction's collinearity with raw price level
+# (within_band_size_multiplier's own axis), and hits CORE as well as
+# HIGH. Default TRUE everywhere.
+ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION = os.environ.get(
+    "ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Feature flag for CROSS_MARKET_SIDE_PERSISTENCE (see its docstring in
 # behavior_config.py). Added 2026-09-11 -- default TRUE everywhere,
 # explicit FALSE for paperbot-mini (the $100 control instance).
