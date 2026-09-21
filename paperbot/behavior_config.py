@@ -1034,10 +1034,29 @@ def cheap_joint_entry_multiplier(asset: str, price: float,
 # and applied the same way cheap_joint_entry_multiplier is -- a skip
 # roll at the call site, first entries only (not hedges, which target
 # the dominant side wherever it sits, not a fresh preference).
+# RECALIBRATED 2026-09-22 -- the original values above were WRONG, found via
+# a bot-vs-trader participation check (his HIGH first entries occur in 28% of
+# windows with a HIGH-priced side vs ~12% filled for the bots; this gate
+# blocked 102 of 358 such windows). Re-measured directly (bot's own crossing
+# definition: side bid first >= DECISIVENESS_THRESHOLD 0.70; "taken" = his
+# first decision of the market is on that side at price >= 0.70; equal-width
+# 60s buckets, at-risk hazard, dense book history Sep 12-21). Bucket-
+# normalized hazard ratios vs bucket 0 (table values were 0.15/0.05/0.02):
+#   PRE-boundary  n~2.2k crossings/asset: Bitcoin 0.67/0.46/0.18,
+#     Ethereum 0.94/0.75/0.44, Solana 1.48/1.15/0.57 (gentle decay at most)
+#   POST-Sep-18   n~1.35k/asset: Bitcoin 1.11/1.21/0.78, Ethereum
+#     1.18/1.35/1.02, Solana 2.22/2.58/1.58 (flat or INCREASING with age)
+# 64-80% of his CORE/HIGH first entries happen >=60s AFTER the decisive
+# crossing -- exactly what the old table suppressed by 85-98%. A skip-
+# probability gate cannot boost (>1.0), so the new values are the post-
+# boundary ratios capped at 1.0: only Bitcoin's 180s+ bucket (0.78, within
+# noise of 1.0) suppresses anything. The SAME failure mode as the CHEAP
+# freshness table (stale, pre-boundary, sharper than reality); both share the
+# lesson that freshness tables must be re-measured on recent data.
 DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER = {
-    "Bitcoin":  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.1468), (120.0, 180.0, 0.0459), (180.0, math.inf, 0.0163)],
-    "Ethereum": [(0.0, 60.0, 1.00), (60.0, 120.0, 0.2688), (120.0, 180.0, 0.1273), (180.0, math.inf, 0.0312)],
-    "Solana":   [(0.0, 60.0, 1.00), (60.0, 120.0, 0.1845), (120.0, 180.0, 0.0776), (180.0, math.inf, 0.0228)],
+    "Bitcoin":  [(0.0, 60.0, 1.00), (60.0, 120.0, 1.00), (120.0, 180.0, 1.00), (180.0, math.inf, 0.78)],
+    "Ethereum": [(0.0, 60.0, 1.00), (60.0, 120.0, 1.00), (120.0, 180.0, 1.00), (180.0, math.inf, 1.00)],
+    "Solana":   [(0.0, 60.0, 1.00), (60.0, 120.0, 1.00), (120.0, 180.0, 1.00), (180.0, math.inf, 1.00)],
 }
 
 

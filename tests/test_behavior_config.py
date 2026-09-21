@@ -1329,15 +1329,24 @@ class TestDecisiveEntryEligibilityMultiplier:
         assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 59.9) == 1.0
 
     def test_multiplier_applies_the_calibrated_value_in_later_buckets(self):
-        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 90.0) == pytest.approx(0.1468)
-        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 150.0) == pytest.approx(0.0459)
-        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 300.0) == pytest.approx(0.0163)
-        assert bc.decisive_entry_eligibility_multiplier("Ethereum", 90.0) == pytest.approx(0.2688)
-        assert bc.decisive_entry_eligibility_multiplier("Solana", 90.0) == pytest.approx(0.1845)
+        # RECALIBRATED 2026-09-22: post-Sep-18 his hazard is flat/increasing
+        # with age, so only Bitcoin's 180s+ bucket suppresses anything.
+        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 90.0) == pytest.approx(1.0)
+        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 150.0) == pytest.approx(1.0)
+        assert bc.decisive_entry_eligibility_multiplier("Bitcoin", 300.0) == pytest.approx(0.78)
+        assert bc.decisive_entry_eligibility_multiplier("Ethereum", 300.0) == pytest.approx(1.0)
+        assert bc.decisive_entry_eligibility_multiplier("Solana", 90.0) == pytest.approx(1.0)
 
-    def test_decay_is_monotonically_steeper_over_time(self):
-        # The trader's real hazard decays -- each later bucket must be
-        # <= the one before it, for every calibrated asset.
+    def test_old_sharp_decay_values_are_gone(self):
+        # The original 0.15/0.05/0.02-style values suppressed 85-98% of his
+        # real (>=60s-after-crossing) entries; nothing may go below 0.5 now.
+        for asset, buckets in bc.DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER.items():
+            for lo, hi, mult in buckets:
+                assert mult >= 0.5, (asset, lo, hi, mult)
+
+    def test_multiplier_never_increases_with_age(self):
+        # A skip gate can only suppress; each later bucket must be <= the
+        # one before it, for every calibrated asset.
         for asset in ("Bitcoin", "Ethereum", "Solana"):
             vals = [bc.decisive_entry_eligibility_multiplier(asset, t) for t in (30.0, 90.0, 150.0, 210.0)]
             assert vals == sorted(vals, reverse=True)
