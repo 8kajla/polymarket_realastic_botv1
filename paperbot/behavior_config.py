@@ -1549,9 +1549,24 @@ def decisiveness_ttc_overshoot_correction(asset: str, regime: str,
 # only supports a clean early/late split at current sample sizes, not a
 # finer one. [0.00,0.45) is left at the implicit 1.0 no-op, same "close to
 # 1:1 already" reasoning as the TTC correction's own early bucket.
+# CORRECTED 2026-09-22 (same-day-after-ship self-check, share-based-sizing
+# Phase 2 work): the original derivation above tested only within_band x
+# decisiveness_onset, but production ALSO multiplies ttc_mult and the
+# already-shipped DECISIVENESS_TTC_OVERSHOOT_CORRECTION (HIGH only, fit
+# against within_band x ttc x decisiveness). For HIGH that older correction
+# had ALREADY absorbed this overshoot, so the HIGH values here (0.789/0.561)
+# double-corrected: tested against the full live formula, Ethereum HIGH went
+# 1.05 -> 0.83 and Solana HIGH 1.03 -> 0.58 (predicted/real late-vs-early
+# ratio; 1.0 = calibrated). HIGH entries REMOVED. CORE has no older
+# correction, so its correction is real and was RE-FIT against the full
+# formula: Ethereum CORE 1/1.15 = 0.87 (was 0.793, which over-corrected to
+# 0.91); Solana CORE 0.497 stays (2.00 -> 0.99). With this table every
+# Ethereum/Solana CORE/HIGH cell lands at 0.92-1.05 on both the old base and
+# the share-based base (ENABLE_SHARE_BASED_SIZING), so the decisiveness
+# corrections need no separate re-derivation for the share-based base.
 DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION = {
-    "Ethereum": {"CORE": 0.793, "HIGH": 0.789},
-    "Solana": {"CORE": 0.497, "HIGH": 0.561},
+    "Ethereum": {"CORE": 0.87},
+    "Solana": {"CORE": 0.497},
 }
 
 
@@ -1562,9 +1577,9 @@ def decisiveness_withinband_overshoot_correction(asset: str, regime: str,
     CHEAP/MID (decisiveness_fraction is never populated there), or when
     fraction_consumed is None/below 0.45 (already close to 1:1, confirmed
     in the same joint test that found the overshoot above 0.45). Applies
-    to BOTH CORE and HIGH -- unlike the TTC correction, this collinearity
-    was confirmed present in CORE too."""
-    if regime not in ("CORE", "HIGH") or fraction_consumed is None or fraction_consumed < 0.45:
+    to CORE only (HIGH's overshoot is already handled by the TTC
+    correction -- see the 2026-09-22 note on the table)."""
+    if regime != "CORE" or fraction_consumed is None or fraction_consumed < 0.45:
         return 1.0
     return DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION.get(asset, {}).get(regime, 1.0)
 

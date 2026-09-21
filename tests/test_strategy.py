@@ -1414,22 +1414,21 @@ class TestDecisivenessWithinbandOvershootCorrection:
         assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "CHEAP", 0.50) == 1.0
         assert bc.decisiveness_withinband_overshoot_correction("Solana", "MID", 0.50) == 1.0
 
-    def test_applies_to_both_core_and_high(self):
-        # Unlike the TTC correction, this one was confirmed for CORE too.
-        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "CORE", 0.50) == 0.793
-        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "HIGH", 0.50) == 0.789
+    def test_high_is_noop_because_ttc_correction_already_covers_it(self):
+        # 2026-09-22: HIGH values double-corrected on top of
+        # DECISIVENESS_TTC_OVERSHOOT_CORRECTION and were removed.
+        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "HIGH", 0.50) == 1.0
+        assert bc.decisiveness_withinband_overshoot_correction("Solana", "HIGH", 0.80) == 1.0
 
     def test_exact_values(self):
-        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "CORE", 0.50) == 0.793
-        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "HIGH", 0.50) == 0.789
+        assert bc.decisiveness_withinband_overshoot_correction("Ethereum", "CORE", 0.50) == 0.87
         assert bc.decisiveness_withinband_overshoot_correction("Solana", "CORE", 0.50) == 0.497
-        assert bc.decisiveness_withinband_overshoot_correction("Solana", "HIGH", 0.50) == 0.561
 
     def test_flat_across_the_whole_late_bucket(self):
         # Unlike the TTC correction's two sub-buckets, this uses one
         # combined [0.45,1.00) bucket -- confirm it doesn't vary within it.
-        assert (bc.decisiveness_withinband_overshoot_correction("Solana", "HIGH", 0.46)
-                == bc.decisiveness_withinband_overshoot_correction("Solana", "HIGH", 0.99))
+        assert (bc.decisiveness_withinband_overshoot_correction("Solana", "CORE", 0.46)
+                == bc.decisiveness_withinband_overshoot_correction("Solana", "CORE", 0.99))
 
     def test_correction_is_a_dampener_not_a_boost(self):
         for asset, regimes in bc.DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION.items():
@@ -1453,12 +1452,12 @@ class TestDecideSizeDecisivenessWithinbandOvershootIntegration:
         notional_early, _ = decide_size("Ethereum", "CORE", "first", 0.80, rng_a,
                                          decisiveness_fraction=0.10)  # below threshold, no-op
         notional_late, _ = decide_size("Ethereum", "CORE", "first", 0.80, rng_b,
-                                        decisiveness_fraction=0.50)  # 0.793x correction
+                                        decisiveness_fraction=0.50)  # 0.87x correction
         raw_decisiveness_ratio = (bc.decisiveness_onset_multiplier("Ethereum", "CORE", 0.50)
                                    / bc.decisiveness_onset_multiplier("Ethereum", "CORE", 0.10))
         actual_ratio = notional_late / notional_early
         assert actual_ratio < raw_decisiveness_ratio
-        assert abs(actual_ratio - raw_decisiveness_ratio * 0.793) < 1e-6
+        assert abs(actual_ratio - raw_decisiveness_ratio * 0.87) < 1e-6
 
     def test_flag_disabled_makes_decide_size_ignore_the_correction(self, monkeypatch):
         # Solana HIGH is ALSO affected by DECISIVENESS_TTC_OVERSHOOT_
@@ -1468,12 +1467,12 @@ class TestDecideSizeDecisivenessWithinbandOvershootIntegration:
         monkeypatch.setattr(config, "ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION", False)
         rng_a = random.Random(9)
         rng_b = random.Random(9)
-        notional_low, _ = decide_size("Solana", "HIGH", "first", 0.92, rng_a,
+        notional_low, _ = decide_size("Solana", "CORE", "first", 0.80, rng_a,
                                        decisiveness_fraction=0.10)
-        notional_high, _ = decide_size("Solana", "HIGH", "first", 0.92, rng_b,
-                                        decisiveness_fraction=0.80)  # would be 0.561x if enabled
-        raw_decisiveness_ratio = (bc.decisiveness_onset_multiplier("Solana", "HIGH", 0.80)
-                                   / bc.decisiveness_onset_multiplier("Solana", "HIGH", 0.10))
+        notional_high, _ = decide_size("Solana", "CORE", "first", 0.80, rng_b,
+                                        decisiveness_fraction=0.80)  # would be 0.497x if enabled
+        raw_decisiveness_ratio = (bc.decisiveness_onset_multiplier("Solana", "CORE", 0.80)
+                                   / bc.decisiveness_onset_multiplier("Solana", "CORE", 0.10))
         assert abs((notional_high / notional_low) - raw_decisiveness_ratio) < 1e-6
 
     def test_does_not_affect_bitcoin(self, monkeypatch):
@@ -1488,9 +1487,10 @@ class TestDecideSizeDecisivenessWithinbandOvershootIntegration:
                                    / bc.decisiveness_onset_multiplier("Bitcoin", "CORE", 0.80))
         assert abs((notional_a / notional_b) - raw_decisiveness_ratio) < 1e-6
 
-    def test_composes_with_the_ttc_correction_on_ethereum_high(self, monkeypatch):
-        # Both corrections apply to Ethereum HIGH at late fraction -- they
-        # should multiply together, not one silently overriding the other.
+    def test_does_not_stack_on_the_ttc_correction_for_ethereum_high(self, monkeypatch):
+        # 2026-09-22: HIGH is covered by the TTC correction alone -- this
+        # correction must NOT further change HIGH sizing (it double-corrected
+        # before being removed for HIGH).
         monkeypatch.setattr(config, "ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION", True)
         monkeypatch.setattr(config, "ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION", True)
         rng_a = random.Random(17)
@@ -1500,7 +1500,7 @@ class TestDecideSizeDecisivenessWithinbandOvershootIntegration:
         monkeypatch.setattr(config, "ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION", False)
         notional_ttc_only, _ = decide_size("Ethereum", "HIGH", "first", 0.95, rng_b,
                                             decisiveness_fraction=0.50)
-        assert notional_both < notional_ttc_only
+        assert notional_both == notional_ttc_only
 
 
 class TestActivityStatePersistence:
