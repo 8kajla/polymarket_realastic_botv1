@@ -117,6 +117,14 @@ class BookState:
                 total += lvl_size
         return total
 
+    def depth_shares_at_price(self, side: str, price: float) -> float:
+        """Raw shares resting at exactly `price` (within half a tick) -- the queue
+        ahead of an order placed BELOW the touch: by the time price trades down to it,
+        every better level has already been swept, so only same-level size is ahead."""
+        levels = self.bids if side == "bid" else self.asks
+        half = max(self.tick_size, 1e-6) / 2.0
+        return sum(sz for lp, sz in levels if abs(lp - price) <= half)
+
     def total_depth_usd(self) -> float:
         bid_usd = sum(p * s for p, s in self.bids)
         ask_usd = sum(p * s for p, s in self.asks)

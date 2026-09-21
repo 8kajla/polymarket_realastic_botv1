@@ -1143,6 +1143,19 @@ ENABLE_RECENT_SIDE_PERSISTENCE = os.environ.get(
     "ENABLE_RECENT_SIDE_PERSISTENCE", "true"
 ).strip().lower() not in ("false", "0", "no")
 
+# ADDED 2026-09-22: EXPERIMENT -- companion (multi-level) orders. Real trader keeps ~3 concurrent
+# orders/market at ~3.5 price levels and fills ~4c below the pre-fill mid (on-chain, 44h); our bots
+# rest a single order at the best bid (88% of first-entry orders never fill). With this flag ON,
+# every ordinary (non-hedge/scout/floor-lot) entry also places ONE deeper same-side order,
+# COMPANION_OFFSETS[regime] below the best bid, sized COMPANION_SIZE_FRACTION of the main notional,
+# trailing the bid at that offset. Companions tag reason="companion", are excluded from
+# MAX_OPEN_ORDERS_PER_MARKET, and do NOT call record_entry. Default OFF; ON for paperbot-100 only.
+ENABLE_COMPANION_ORDERS = os.environ.get(
+    "ENABLE_COMPANION_ORDERS", "false"
+).strip().lower() not in ("false", "0", "no")
+COMPANION_SIZE_FRACTION = float(os.environ.get("COMPANION_SIZE_FRACTION", "0.5"))
+COMPANION_OFFSETS = {"CHEAP": 0.02, "MID": 0.03, "CORE": 0.03, "HIGH": 0.01}
+
 # ---------------------------------------------------------------------------
 # Feature flag for REGIME_ENGAGEMENT_MULTIPLIER (see its docstring in
 # behavior_config.py). Added 2026-09-21: a historical replay found the

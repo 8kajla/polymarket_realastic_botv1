@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import logging
 import math
 import random
@@ -645,9 +646,9 @@ class PaperBot:
             if cid in self.halted_conditions:
                 continue
             open_here = self.resting_order_ids.get(cid)
-            at_open_order_cap = bool(
-                open_here and len(open_here) >= config.MAX_OPEN_ORDERS_PER_MARKET
-            )
+            n_counted = sum(1 for oid in open_here
+                            if getattr(self.fill_sim.orders.get(oid), "reason", None) != "companion") if open_here else 0
+            at_open_order_cap = bool(open_here and n_counted >= config.MAX_OPEN_ORDERS_PER_MARKET)
             # CHANGED 2026-09-12 (bug audit #2): no longer a hard `continue`
             # here -- see _evaluate_one_market's docstring for why. The cap
             # is now enforced AFTER build_order_intent decides hedge vs.
@@ -867,6 +868,7 @@ class PaperBot:
 
         order = self.fill_sim.place_order(intent, order_book, now=now)
         self.resting_order_ids.setdefault(market.condition_id, set()).add(order.order_id)
+        self._maybe_place_companion(market, intent, order_book, now)
         activity.record_entry(intent.side, intent.notional_usd, intent.regime, is_hedge=intent.is_hedge,
                                price=intent.price)
         if is_first_entry:
@@ -898,6 +900,35 @@ class PaperBot:
                     + SIZE_MOMENTUM_EWMA_ALPHA * residual
                 )
         self._record_global_trade(now)
+
+    def _maybe_place_companion(self, market, intent, order_book, now) -> None:
+        """EXPERIMENT (config.ENABLE_COMPANION_ORDERS): one deeper same-side order per ordinary entry."""
+        if not config.ENABLE_COMPANION_ORDERS:
+            return
+        if intent.is_hedge or intent.is_scout or intent.is_floor_lot or intent.offset > 0:
+            return
+        off = config.COMPANION_OFFSETS.get(intent.regime)
+        if not off:
+            return
+        cid = market.condition_id
+        for oid in self.resting_order_ids.get(cid, ()):
+            o = self.fill_sim.orders.get(oid)
+            if o is not None and o.reason == "companion" and o.side == intent.side and o.is_open():
+                return  # already one open companion on this side
+        tick = max(order_book.tick_size, 1e-6)
+        price = round(round((intent.price - off) / tick) * tick, 4)
+        if price < tick or price >= intent.price - tick / 2:
+            return
+        notional = intent.notional_usd * config.COMPANION_SIZE_FRACTION
+        if notional <= 0:
+            return
+        cash = self.available_cash()
+        if cash is not None and notional > cash:
+            return
+        comp = dataclasses.replace(intent, price=price, notional_usd=notional, size_shares=notional / price,
+                                   reason="companion", offset=off)
+        order = self.fill_sim.place_order(comp, order_book, now=now)
+        self.resting_order_ids.setdefault(cid, set()).add(order.order_id)
 
     def available_cash(self) -> float | None:
         """

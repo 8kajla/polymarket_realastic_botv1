@@ -719,3 +719,53 @@ class TestStatsByAssetRegime:
         stats = sim.stats_by_asset_regime()
         assert ("Bitcoin", "CHEAP") in stats
         assert stats[("Bitcoin", "CHEAP")]["fill_rate"] == 1.0
+
+
+class TestOffsetCompanionOrders:
+    """Companion orders (config.ENABLE_COMPANION_ORDERS): rest `offset` below the best bid, trail it
+    instead of being dragged to the touch, and have only same-level size ahead of them."""
+
+    def _mk(self, offset):
+        intent = make_intent(price=0.17, size_shares=10.0, regime="CHEAP")
+        intent.offset = offset
+        return intent
+
+    def test_queue_ahead_is_same_level_only(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0, extra_bid_levels=[(0.19, 50.0), (0.17, 30.0)])
+        sim = FillSimulator(queue_safety_factor=1.0)
+        deep = sim.place_order(self._mk(0.03), book, now=0.0)
+        assert deep.queue_ahead_raw == pytest.approx(30.0)           # only the 0.17 level
+        touch = sim.place_order(make_intent(price=0.17), book, now=0.0)
+        assert touch.queue_ahead_raw == pytest.approx(180.0)         # everything at-or-better
+
+    def test_small_bid_move_does_not_reprice_but_big_move_trails_at_the_offset(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0, extra_bid_levels=[(0.17, 30.0)])
+        sim = FillSimulator(queue_safety_factor=1.0)
+        order = sim.place_order(self._mk(0.03), book, now=0.0)
+        secs = {"cond-1": 1000}
+        # bid moves up 2c: |0.22 - 0.03 - 0.17| = 0.02 <= 3 ticks -> no reprice
+        book.apply_snapshot(bids=[(0.22, 100.0), (0.17, 30.0)], asks=[(0.24, 100.0)])
+        sim.manage_open_orders({"tok-up": book}, secs, now=1.0)
+        assert order.price == pytest.approx(0.17) and order.reprice_count == 0
+        # bid moves up to 0.36 (MID band, drift 0.16 > 3 ticks) -> the price left the CHEAP band -> cancelled
+        book.apply_snapshot(bids=[(0.36, 100.0)], asks=[(0.38, 100.0)])
+        sim.manage_open_orders({"tok-up": book}, secs, now=2.0)
+        assert order.status == OrderStatus.CANCELLED
+
+    def test_reprice_within_band_keeps_the_offset(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0, extra_bid_levels=[(0.17, 30.0)])
+        sim = FillSimulator(queue_safety_factor=1.0)
+        order = sim.place_order(self._mk(0.03), book, now=0.0)
+        book.apply_snapshot(bids=[(0.12, 100.0), (0.09, 40.0)], asks=[(0.14, 100.0)])   # bid fell 8c, still CHEAP
+        sim.manage_open_orders({"tok-up": book}, {"cond-1": 1000}, now=1.0)
+        assert order.price == pytest.approx(0.09) and order.reprice_count == 1
+        assert order.queue_ahead_raw == pytest.approx(40.0)
+
+    def test_fills_only_when_price_trades_down_to_it(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0, extra_bid_levels=[(0.17, 0.0)])
+        sim = FillSimulator(queue_safety_factor=1.0)
+        order = sim.place_order(self._mk(0.03), book, now=0.0)
+        sim.on_trade_print("tok-up", TradePrint(price=0.20, size=500.0, side="SELL", ts=1.0))
+        assert order.filled_size == 0.0                                # a print at 0.20 is above our 0.17 bid
+        sim.on_trade_print("tok-up", TradePrint(price=0.17, size=500.0, side="SELL", ts=2.0))
+        assert order.filled_size > 0.0

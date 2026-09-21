@@ -2420,3 +2420,32 @@ class TestTickSeconds:
         import inspect
         sig = inspect.signature(PaperBot.run_forever)
         assert sig.parameters["tick_seconds"].default == config.TICK_SECONDS
+
+
+class TestCompanionOrders:
+    def _run(self, monkeypatch, enabled, regime_price=0.20, seed=3, ticks=40):
+        monkeypatch.setattr(config, "ENABLE_COMPANION_ORDERS", enabled)
+        bot = PaperBot(assets=["Bitcoin"], seed=seed)
+        market = make_bitcoin_market()
+        wire_market(bot, market, bid=regime_price, ask=regime_price + 0.01, depth=500.0)
+        for i in range(ticks):
+            bot._evaluate_one_market(market, now=1000.0 + 3 * i)
+        return bot, market
+
+    def test_off_by_default_places_no_companions(self, monkeypatch):
+        bot, _ = self._run(monkeypatch, False)
+        assert all(o.reason != "companion" for o in bot.fill_sim.orders.values())
+
+    def test_on_places_deeper_same_side_orders_without_touching_activity(self, monkeypatch):
+        bot, market = self._run(monkeypatch, True)
+        comps = [o for o in bot.fill_sim.orders.values() if o.reason == "companion"]
+        mains = [o for o in bot.fill_sim.orders.values() if o.reason != "companion" and not o.is_hedge]
+        if not mains:
+            pytest.skip("no ordinary entry fired for this seed")
+        assert comps, "expected at least one companion"
+        for c in comps:
+            assert c.offset > 0 and c.original_size > 0
+            same_token_mains = [m for m in mains if m.token_id == c.token_id]
+            assert same_token_mains and all(c.price < m.price for m in same_token_mains)
+        assert len(comps) <= len({(o.side) for o in mains})              # at most one open companion per side
+        assert bot.activity[market.condition_id].entry_count == len(mains)  # companions are not entries

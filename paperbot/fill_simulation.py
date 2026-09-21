@@ -121,6 +121,7 @@ class SimulatedOrder:
     first_fill_at: Optional[float] = None
     final_at: Optional[float] = None
     reprice_count: int = 0
+    offset: float = 0.0  # >0: companion order trailing this far below the best bid (never chased to the touch)
     # ADDED 2026-09-12 (bug audit #5): one-shot flag so bot.py's
     # manage_orders_tick can detect "this order just received its first-
     # ever fill" exactly once per order (regardless of how many separate
@@ -204,7 +205,11 @@ class FillSimulator:
                      now: Optional[float] = None) -> SimulatedOrder:
         now = now if now is not None else time.time()
         factor = self._queue_safety_factor_for(intent.regime, intent.asset)
-        raw_queue = book.depth_shares_at_or_better("bid", intent.price)
+        offset = getattr(intent, "offset", 0.0) or 0.0
+        # A deeper (companion) order only fills once price has traded down to it, so only the
+        # same-level size is ahead of it; a touch order has everything at-or-better ahead.
+        raw_queue = (book.depth_shares_at_price("bid", intent.price) if offset > 0
+                     else book.depth_shares_at_or_better("bid", intent.price))
         discounted_queue = raw_queue * factor
 
         order = SimulatedOrder(
@@ -225,6 +230,7 @@ class FillSimulator:
             remaining_size=intent.size_shares,
             queue_ahead_raw=raw_queue,
             queue_ahead_discounted=discounted_queue,
+            offset=offset,
         )
         self.orders[order.order_id] = order
         logger.info(
@@ -372,7 +378,7 @@ class FillSimulator:
             if book is None or book.best_bid is None:
                 continue
 
-            drift = abs(book.best_bid - order.price)
+            drift = abs(book.best_bid - order.offset - order.price)  # offset orders trail the bid, not sit on it
             if drift > config.DRIFT_REPRICE_TICKS * max(book.tick_size, 1e-6):
                 from . import behavior_config as bc
                 same_band = bc.classify_regime(book.best_bid) == order.regime
@@ -478,8 +484,14 @@ class FillSimulator:
 
     def _reprice(self, order: SimulatedOrder, book: BookState, now: float) -> None:
         old_price = order.price
-        new_raw_queue = book.depth_shares_at_or_better("bid", book.best_bid)
-        order.price = book.best_bid
+        if order.offset > 0:
+            tick = max(book.tick_size, 1e-6)
+            target = max(round((book.best_bid - order.offset) / tick) * tick, tick)
+            new_raw_queue = book.depth_shares_at_price("bid", target)
+            order.price = round(target, 4)
+        else:
+            new_raw_queue = book.depth_shares_at_or_better("bid", book.best_bid)
+            order.price = book.best_bid
         order.queue_ahead_raw = new_raw_queue
         order.queue_ahead_discounted = new_raw_queue * self._queue_safety_factor_for(order.regime, order.asset)
         order.reprice_count += 1

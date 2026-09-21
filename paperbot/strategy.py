@@ -394,6 +394,7 @@ class OrderIntent:
     is_hedge: bool = False
     is_scout: bool = False
     reason: str = ""
+    offset: float = 0.0  # >0: a companion resting this far BELOW the best bid (see config.ENABLE_COMPANION_ORDERS)
 
 
 def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
