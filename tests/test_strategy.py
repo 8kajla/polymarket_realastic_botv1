@@ -428,6 +428,23 @@ class TestSizingDecision:
         fourth = avg_notional("4th_plus")
         assert first < second < fourth
 
+    def test_share_based_sizing_is_scoped_to_mid_and_core(self, monkeypatch):
+        # 2026-09-22: CHEAP/HIGH stay on the old path even with the flag on
+        # (share base fits worse there -- see SHARE_BASED_SIZING_REGIMES).
+        assert bc.SHARE_BASED_SIZING_REGIMES == ("MID", "CORE")
+        monkeypatch.setattr(config, "ENABLE_SHARE_BASED_SIZING", True)
+        calls = []
+        real_median = bc.median_entry_notional
+        monkeypatch.setattr(bc, "median_entry_notional",
+                             lambda *a, **kw: (calls.append(a[1]), real_median(*a, **kw))[1])
+        for regime, price in (("CHEAP", 0.15), ("HIGH", 0.95)):
+            decide_size("Ethereum", regime, "first", price, random.Random(3))
+        assert calls == ["CHEAP", "HIGH"]          # old median path used
+        calls.clear()
+        for regime, price in (("MID", 0.45), ("CORE", 0.80)):
+            decide_size("Ethereum", regime, "first", price, random.Random(3))
+        assert calls == []                         # share path: old median never read
+
     def test_cross_market_size_momentum_defaults_to_a_noop_when_not_passed(self):
         rng_a = random.Random(37)
         rng_b = random.Random(37)

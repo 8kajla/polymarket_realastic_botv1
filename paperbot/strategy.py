@@ -909,7 +909,7 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # before -- Phase 1 only replaces the BASE curve, not those
     # separately-validated multipliers (see the design doc's own
     # "confirmed independent, no action needed" list).
-    if config.ENABLE_SHARE_BASED_SIZING:
+    if config.ENABLE_SHARE_BASED_SIZING and regime in bc.SHARE_BASED_SIZING_REGIMES:
         median = bc.notional_for_price(price, position_tier)
         within_band = 1.0  # subsumed by notional_for_price's own price-shape
     else:

@@ -630,6 +630,24 @@ POSITION_TIER_SHARE_MULTIPLIER = {
 }
 
 
+# REGIME SCOPE (2026-09-22, Phase 4 validation of Phase 1): the share-based
+# base only earns its keep in MID/CORE. Against the real trader's decision-
+# collapsed first-entry notionals (n=5102, Sep-12+; median |ln(real/pred)|,
+# lower = better): share base everywhere 0.493 (post-Sep-18: 0.616) is WORSE
+# than the old median x within_band path 0.417 (0.449); scoped to MID+CORE
+# with the old path elsewhere 0.396 (0.443) is best or tied on both windows.
+# MID/CORE gains are large for Ethereum/Solana (MID 0.12/0.04 vs 0.45/0.29,
+# CORE 0.21/0.10 vs 0.25/0.41, prices 0.30-0.90 bias ~0 vs +0.32..+0.47).
+# It LOSES in HIGH (0.56-0.80 vs 0.36-0.60 depending on asset) and at the
+# price extremes (price<0.05 underpredicts ~3x, price>=0.95 ~1.7x) -- the
+# same deep-tail region where 2026-09-21 on-chain data showed the formula
+# does not extrapolate (see hedge-size-ratio-confirmed-misspec-and-onchain-
+# deeptail-unblocked). CHEAP is mixed (Bitcoin worse, ETH/SOL slightly
+# better) so it stays on the old path. Regimes outside this tuple use the
+# old median x within_band path even when ENABLE_SHARE_BASED_SIZING is on.
+SHARE_BASED_SIZING_REGIMES = ("MID", "CORE")
+
+
 def shares_for_price(price: float) -> float:
     """The bare price->shares curve, no position-tier correction. Exposed
     separately from notional_for_price for direct testing against the
