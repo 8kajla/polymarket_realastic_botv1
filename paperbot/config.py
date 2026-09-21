@@ -1109,6 +1109,18 @@ ENABLE_SHARE_BASED_SIZING = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for PRICE-BASED HEDGE SIZING (see hedge_notional_for_price in
+# behavior_config.py). Added 2026-09-22 (share-based-sizing Phase 3): replaces
+# the dominant-cost-ratio hedge chain with a price-only model that fits the
+# real trader's hedge sizes far better out-of-sample. Default FALSE
+# everywhere; enabled on paperbot-100 first (controlled rollout, same
+# discipline as ENABLE_SHARE_BASED_SIZING) because it changes hedge dollars
+# materially (CORE/HIGH smaller, CHEAP larger than the legacy chain).
+ENABLE_PRICE_BASED_HEDGE_SIZING = os.environ.get(
+    "ENABLE_PRICE_BASED_HEDGE_SIZING", "false"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Feature flag for REGIME_ENGAGEMENT_MULTIPLIER (see its docstring in
 # behavior_config.py). Added 2026-09-21: a historical replay found the
 # real trader targets CHEAP/HIGH at 1.5-2.2x their natural occurrence

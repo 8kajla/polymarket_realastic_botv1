@@ -2493,6 +2493,40 @@ class TestBuildOrderIntentHedge:
             <= expected_notional * (1 + config.SIZING_JITTER_FRACTION) * 1.01
         assert intent.reason == "hedge"
 
+    def test_price_based_hedge_sizing_is_off_by_default(self):
+        assert config.ENABLE_PRICE_BASED_HEDGE_SIZING is False
+
+    def test_price_based_hedge_sizing_ignores_dominant_cost_and_uses_the_price_model(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_PRICE_BASED_HEDGE_SIZING", True)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None, seconds_remaining=None: "Down")
+        sizes = []
+        for dominant in (10.0, 400.0):   # 40x different dominant cost, same hedge price
+            market = make_market(end_time=1000.0, asset="Bitcoin")
+            up_book = make_liquid_book(price=0.80, token_id="up")
+            down_book = make_liquid_book(price=0.15, token_id="down")
+            activity = MarketActivityState()
+            record_filled_entry(activity, "Up", notional_usd=dominant, regime="CORE")
+            intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=0.0)
+            assert intent is not None and intent.is_hedge is True
+            sizes.append(intent.notional_usd)
+        expected = bc.hedge_notional_for_price("Bitcoin", 0.15) * config.SIZE_SCALE_FACTOR
+        for n in sizes:
+            assert expected * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= n \
+                <= expected * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+        assert sizes[0] == sizes[1]   # same seed, no dominant-cost dependence at all
+
+    def test_price_based_hedge_sizing_falls_back_to_legacy_for_an_uncalibrated_asset(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_PRICE_BASED_HEDGE_SIZING", True)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None, seconds_remaining=None: "Down")
+        market = make_market(end_time=1000.0, asset="BNB")   # not in HEDGE_PRICE_SIZING_SCALE
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=10.0, regime="CORE")
+        intent = build_order_intent(market, make_liquid_book(price=0.80, token_id="up"),
+                                     make_liquid_book(price=0.15, token_id="down"), activity, random.Random(0), now=0.0)
+        expected = 10.0 * bc.hedge_size_ratio("BNB", "CORE")
+        assert expected * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= intent.notional_usd \
+            <= expected * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
     def test_a_second_hedge_uses_continuation_size_ratio_not_hedge_size_ratio(self, monkeypatch):
         """hedge_count==1 (this would be the market's 2nd hedge-shaped
         entry) must size off HEDGE_CONTINUATION_SIZE_RATIO, a real,
@@ -4582,3 +4616,24 @@ class TestBuildOrderIntentCrossAssetCarryover:
         assert intent is not None
         assert intent.side == "Down"
         assert intent.reason != "cross_asset_carryover"
+
+
+class TestHedgeNotionalForPrice:
+    def test_none_for_uncalibrated_asset_or_bad_price(self):
+        assert bc.hedge_notional_for_price("BNB", 0.5) is None
+        assert bc.hedge_notional_for_price("Bitcoin", None) is None
+        assert bc.hedge_notional_for_price("Bitcoin", 0.0) is None
+        assert bc.hedge_notional_for_price("Bitcoin", 1.0) is None
+
+    def test_matches_the_documented_formula(self):
+        import math
+        for asset, scale in bc.HEDGE_PRICE_SIZING_SCALE.items():
+            for p in (0.05, 0.3, 0.5, 0.9, 0.97):
+                expected = scale * (bc.shares_for_price(p) * p) ** bc.HEDGE_PRICE_SIZING_BETA
+                assert bc.hedge_notional_for_price(asset, p) == pytest.approx(expected)
+
+    def test_asset_ordering_and_price_growth_toward_the_extremes(self):
+        assert (bc.hedge_notional_for_price("Bitcoin", 0.9) > bc.hedge_notional_for_price("Ethereum", 0.9)
+                > bc.hedge_notional_for_price("Solana", 0.9))
+        assert bc.hedge_notional_for_price("Bitcoin", 0.97) > bc.hedge_notional_for_price("Bitcoin", 0.5) \
+            > bc.hedge_notional_for_price("Bitcoin", 0.05)

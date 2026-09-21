@@ -1484,6 +1484,17 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)
         notional = max(dominant_cost * ratio * jitter, 0.0)
         is_floor_lot = False
+        # PRICE-BASED HEDGE SIZING (2026-09-22, Phase 3): replaces the whole
+        # dominant-cost-ratio result above (first AND continuation hedges)
+        # with the price-only model -- see hedge_notional_for_price's
+        # comment in behavior_config.py for the out-of-sample evidence.
+        # SIZE_SCALE_FACTOR is applied explicitly here because the legacy
+        # chain got it implicitly through dominant_cost (itself built from
+        # scaled entries).
+        if config.ENABLE_PRICE_BASED_HEDGE_SIZING:
+            price_notional = bc.hedge_notional_for_price(market.asset, price)
+            if price_notional is not None:
+                notional = max(price_notional * config.SIZE_SCALE_FACTOR * jitter, 0.0)
 
         if min_size is not None and notional < min_size * price:
             # CONFIRMED LIVE (2026-09-08): hedge notional -- deliberately

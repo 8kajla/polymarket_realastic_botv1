@@ -670,6 +670,42 @@ def notional_for_price(price: float, position_tier: str = "first") -> float:
     return shares * price
 
 
+# PRICE-BASED HEDGE SIZING (2026-09-22, share-based-sizing Phase 3). The
+# production hedge chain (dominant_cost x HEDGE_SIZE_RATIO x adverse_move x
+# absolute_price x hedge_ttc, or the continuation ratio for 2nd+ hedges) was
+# tested out-of-sample against the real trader's 21,101 first hedges and
+# 23,636 continuation hedges (fit on the first 70% of pre-Sep-18 data, tested
+# on the last 30% and on post-Sep-18): it is WORSE than predicting a per-asset
+# constant (median |ln(real/pred)| 0.94-1.25 by regime vs 0.56-0.64; R2 down to
+# -3.4), because real hedge size is essentially independent of the dominant
+# position's cost (see hedge-size-ratio-confirmed-misspec-...). A single
+# price-only form fits far better and generalizes across periods:
+#     hedge_usd = HEDGE_PRICE_SIZING_SCALE[asset] * (shares_for_price(p)*p) ** BETA
+# (MALE 0.555-0.573 pre, 0.52 post-Sep-18; fitted beta 0.926 on all 44.7k
+# hedges, 0.94-0.96 pre-only, 0.90 post-only; per-asset scales stable pre vs
+# post: BTC 2.99/3.47, ETH 1.92/2.05, SOL 1.53/1.75). One model covers first
+# AND continuation hedges (hedge index adds nothing, bias flat across k<5);
+# dominant cost, adverse move and time-to-close add <=0.015 MALE each and are
+# dropped. Median-neutral like every other table here, so aggregate hedge
+# dollars come out ~0.6-0.85x of real (heavy right tail) -- production over-
+# sized CORE/HIGH by 1.6-1.9x and under-sized CHEAP by half. Not applied to the
+# floor of the exchange minimum (callers keep their existing min-size
+# fall-through). Gated by ENABLE_PRICE_BASED_HEDGE_SIZING.
+HEDGE_PRICE_SIZING_BETA = 0.926
+HEDGE_PRICE_SIZING_SCALE = {"Bitcoin": 2.992, "Ethereum": 1.919, "Solana": 1.525}
+
+
+def hedge_notional_for_price(asset: str, price: float) -> Optional[float]:
+    """Unscaled hedge notional (USD) for a hedge buying at `price`, or None
+    for an asset with no calibration (caller falls back to the legacy
+    dominant-cost-ratio chain). The caller applies SIZE_SCALE_FACTOR and
+    jitter, same as the ordinary entry path."""
+    scale = HEDGE_PRICE_SIZING_SCALE.get(asset)
+    if scale is None or price is None or not (0.0 < price < 1.0):
+        return None
+    return scale * (shares_for_price(price) * price) ** HEDGE_PRICE_SIZING_BETA
+
+
 # ---------------------------------------------------------------------------
 # Continuous within-band size scaling. Added 2026-09-08: ENTRY_SIZING_USD
 # only conditions on the discrete (regime, position_tier) bucket -- but a
