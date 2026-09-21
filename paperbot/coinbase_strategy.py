@@ -15,20 +15,26 @@ PaperBot's full pipeline unchanged and overrides only the
 _forced_first_entry_side hook (see its docstring in bot.py) using this
 module's momentum_forced_side().
 
-Research basis (see claude_memory.md, "real SPOT-momentum alignment
-predicts win rate"): a first entry whose side matches the direction of
-the real, trailing 3-minute Coinbase spot return wins meaningfully more
-often than one against it -- CHEAP 40.5% vs 14.5% (z=9.78), MID 63.1% vs
-36.4% (z=14.58), both regime-controlled and temporally stable. CORE/HIGH
-were NOT part of the validated edge (those bands are already mostly
-decided by price alone) and are excluded here -- momentum_forced_side
-returns None for them, falling back to the normal trader-replica
-decide_side/cross-market-persistence logic exactly as if this bot were
-paperbot. A follow-up check confirmed the real trader does not actively
-hunt this signal for entry TIMING (it's a passive calibration fact about
-market truth, not something that predicts when he trades) -- this
-module only ever touches WHICH side a first entry takes, never whether
-or when one happens.
+ORIGINAL research basis (INVALIDATED 2026-09-22, see project memory
+coinbase-momentum-edge-is-lookahead-artifact.md): a first entry whose
+side matches the trailing 3-minute Coinbase spot return was believed to
+win far more often than one against it -- CHEAP 40.5% vs 14.5%, MID 63.1%
+vs 36.4%. That result is reproduced ONLY when the momentum is computed
+from the 1-min candle CONTAINING the entry (its close is up to 60s in the
+future -- look-ahead). With fully-closed candles (all a live bot can know),
+at every lookback tested (1/2/3/5 min) the edge vanishes: CHEAP aligned
+17.6% vs against 14.6% win, and in ROI terms aligned CHEAP is WORSE than
+against (e.g. 3m: +9.6% vs +35.1%; the trader's profitable pattern is the
+cheap side AGAINST momentum); MID shows no edge. This override therefore
+has no demonstrated causal edge; it is kept only because this bot exists
+to run that experiment. CORE/HIGH are excluded (momentum_forced_side
+returns None, falling back to decide_side exactly as paperbot would).
+That fallthrough is NOT a defect: 72% of the real trader's first-entry
+markets are ones where the momentum side is already CORE/HIGH, and his
+dominant, most profitable first entry there is the cheap side against
+momentum, which is exactly what the fallthrough reproduces. This module
+only ever touches WHICH side a first entry takes, never whether or when
+one happens.
 """
 from __future__ import annotations
 
