@@ -1873,6 +1873,26 @@ def side_persistence_for(asset: str, held_side_regime: str) -> float:
         raise BehaviorLookupError(asset, held_side_regime) from exc
 
 
+# RECENT_SIDE_PERSISTENCE_OVERRIDE -- ADDED 2026-09-22. SIDE_PERSISTENCE above was fitted on the
+# full history (~117k of its 139k decisions are Jul-Sep8 when he flipped sides often). His pooled
+# persistence has since risen in steps: 72.5% (Jul-Sep8) -> 80.7% (Sep8-18) -> 90.6% (post-Sep18,
+# n=1,792), i.e. his flip rate halved twice. Our bots' two-sided-market rate (22-27%) is ~2x his
+# (12.5%), and ~90% of that two-sidedness is ordinary entries flipping sides, not hedge orders.
+# Only cells with >=100 post-Sep18 observations are overridden, each shrunk toward the table
+# by treating the table as 100 prior observations: new = (n*post + 100*table)/(n+100).
+# Bitcoin (n=403/299/208/440): CHEAP .864, MID .943, CORE .942, HIGH .966 (table .773/.825/.866/.884);
+# Ethereum CHEAP .767 (n=116), HIGH .936 (n=141). Thin cells (Solana, Ethereum MID/CORE) unchanged.
+# Re-fit as post-Sep18 data accumulates; verify via the live scorecard's dual-sided rate.
+RECENT_SIDE_PERSISTENCE_OVERRIDE = {
+    "Bitcoin": {"CHEAP": 0.846, "MID": 0.913, "CORE": 0.917, "HIGH": 0.951},
+    "Ethereum": {"CHEAP": 0.794, "HIGH": 0.882},
+}
+
+
+def recent_side_persistence(asset: str, held_side_regime: str, default: float) -> float:
+    return RECENT_SIDE_PERSISTENCE_OVERRIDE.get(asset, {}).get(held_side_regime, default)
+
+
 # ---------------------------------------------------------------------------
 # CROSS-MARKET first-entry side persistence. Added 2026-09-11: real,
 # cross-asset-generalizing finding that a market's FIRST entry side isn't

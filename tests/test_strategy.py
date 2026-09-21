@@ -161,6 +161,11 @@ class TestAvailabilityCheck:
 
 
 class TestSidePersistence:
+    @pytest.fixture(autouse=True)
+    def _isolate_recent_override(self, monkeypatch):
+        # These tests pin the raw SIDE_PERSISTENCE table; the recent override has its own class.
+        monkeypatch.setattr(config, "ENABLE_RECENT_SIDE_PERSISTENCE", False)
+
     def test_no_prior_entry_picks_a_side(self):
         rng = random.Random(0)
         activity = MarketActivityState()
@@ -4666,3 +4671,22 @@ class TestEntrySizeLevelCorrection:
     def test_lookup_defaults_to_one(self):
         assert bc.entry_size_level_correction("Ethereum", "first") == 1.0
         assert bc.entry_size_level_correction("Bitcoin", "no_such_tier") == 1.0
+
+
+class TestRecentSidePersistence:
+    def _rate(self, asset, held_price, monkeypatch, enabled, n=6000):
+        monkeypatch.setattr(config, "ENABLE_RECENT_SIDE_PERSISTENCE", enabled)
+        act = stratmod.MarketActivityState(); act.last_side = "Up"
+        rng = random.Random(42)
+        return sum(stratmod.decide_side(asset, act, rng, held_side_price=held_price) == "Up" for _ in range(n)) / n
+
+    def test_bitcoin_mid_persists_more_when_enabled(self, monkeypatch):
+        on = self._rate("Bitcoin", 0.5, monkeypatch, True); off = self._rate("Bitcoin", 0.5, monkeypatch, False)
+        assert abs(on - 0.913) < 0.02 and abs(off - bc.SIDE_PERSISTENCE["Bitcoin"]["MID"]) < 0.02 and on > off + 0.05
+
+    def test_solana_untouched(self, monkeypatch):
+        assert self._rate("Solana", 0.5, monkeypatch, True) == self._rate("Solana", 0.5, monkeypatch, False)
+
+    def test_lookup_falls_back_to_default(self):
+        assert bc.recent_side_persistence("Solana", "MID", 0.7239) == 0.7239
+        assert bc.recent_side_persistence("Bitcoin", "HIGH", 0.5) == 0.951

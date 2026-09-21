@@ -1137,6 +1137,12 @@ ENABLE_ENTRY_SIZE_LEVEL_CORRECTION = os.environ.get(
     "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", "true"
 ).strip().lower() not in ("false", "0", "no")
 
+# ADDED 2026-09-22: recent (post-Sep18) side-persistence override (see
+# RECENT_SIDE_PERSISTENCE_OVERRIDE in behavior_config.py). Default ON.
+ENABLE_RECENT_SIDE_PERSISTENCE = os.environ.get(
+    "ENABLE_RECENT_SIDE_PERSISTENCE", "true"
+).strip().lower() not in ("false", "0", "no")
+
 # ---------------------------------------------------------------------------
 # Feature flag for REGIME_ENGAGEMENT_MULTIPLIER (see its docstring in
 # behavior_config.py). Added 2026-09-21: a historical replay found the

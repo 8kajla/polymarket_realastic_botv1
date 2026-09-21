@@ -450,6 +450,8 @@ def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
         return rng.choice(["Up", "Down"])
     held_regime = bc.classify_regime(held_side_price) if held_side_price is not None else "CHEAP"
     persistence = bc.side_persistence_for(asset, held_regime)
+    if config.ENABLE_RECENT_SIDE_PERSISTENCE:
+        persistence = bc.recent_side_persistence(asset, held_regime, persistence)
     if rng.random() < persistence:
         return activity.last_side
     return "Down" if activity.last_side == "Up" else "Up"
