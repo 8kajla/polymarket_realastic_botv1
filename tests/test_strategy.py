@@ -3298,34 +3298,41 @@ class TestCheapJointDampener:
     joint model proved the two axes interact and independent
     multiplication mis-suppressed the joint (deep, stale) cells by up to
     7x). A first CHEAP entry gets probabilistically skipped based on its
-    (is_deep, seconds-since-crossing) cell. DEEP_LONGSHOT suppression
-    itself is currently disabled (reversed post-boundary, see
-    hedge-rate-secular-decline.md), so both is_deep rows are currently
-    identical -- these tests cover the merged mechanism's gating,
-    exclusions and feature flag, which are unchanged by that. See
-    CHEAP_JOINT_ENTRY_MULTIPLIER's docstring in behavior_config.py."""
+    (is_deep, seconds-since-crossing) cell.
+
+    RECALIBRATED 2026-09-21: the two is_deep rows were previously
+    identical placeholders (DEEP_LONGSHOT itself was disabled), which
+    turned out to be a real bug -- the shared freshness clock (measured
+    from the original ~0.30 CHEAP crossing, not from reaching whatever
+    price the episode is currently at) meant deep-price entries were
+    getting killed by staleness accumulated while price was still
+    shallow. Fixed by differentiating is_deep=True/False using fresh,
+    well-powered post-boundary hazard data (not the clock itself -- two
+    clock-redefinition attempts were tried and rejected in favor of this
+    price-axis fix, see CHEAP_JOINT_ENTRY_MULTIPLIER's docstring in
+    behavior_config.py for why). These tests cover the mechanism's
+    gating, exclusions and feature flag against the new calibration."""
 
     def test_multiplier_is_a_noop_within_the_first_bucket(self):
         assert bc.cheap_joint_entry_multiplier("Bitcoin", 0.10, 0.0) == 1.0
         assert bc.cheap_joint_entry_multiplier("Bitcoin", 0.10, 59.9) == 1.0
 
     def test_multiplier_applies_the_calibrated_value_in_later_buckets(self):
-        assert bc.cheap_joint_entry_multiplier("Bitcoin", 0.10, 90.0) == pytest.approx(0.15)
-        assert bc.cheap_joint_entry_multiplier("Bitcoin", 0.10, 150.0) == pytest.approx(0.05)
-        assert bc.cheap_joint_entry_multiplier("Bitcoin", 0.10, 300.0) == pytest.approx(0.02)
-        assert bc.cheap_joint_entry_multiplier("Ethereum", 0.10, 90.0) == pytest.approx(0.27)
-        assert bc.cheap_joint_entry_multiplier("Solana", 0.10, 90.0) == pytest.approx(0.18)
+        assert bc.cheap_joint_entry_multiplier("Bitcoin", 0.10, 90.0) == pytest.approx(0.7225)
+        assert bc.cheap_joint_entry_multiplier("Bitcoin", 0.10, 150.0) == pytest.approx(0.7997)
+        assert bc.cheap_joint_entry_multiplier("Bitcoin", 0.10, 300.0) == pytest.approx(0.1002)
+        assert bc.cheap_joint_entry_multiplier("Ethereum", 0.10, 90.0) == pytest.approx(0.8059)
+        assert bc.cheap_joint_entry_multiplier("Solana", 0.10, 90.0) == pytest.approx(0.5222)
 
-    def test_deep_and_rest_rows_are_currently_identical(self):
-        # DEEP_LONGSHOT suppression is disabled post-boundary (see
-        # behavior_config.py's docstring) -- a deep-priced (<0.05) entry
-        # must currently experience the EXACT SAME per-bucket rate as a
-        # shallow one, not extra suppression on top.
+    def test_deep_prices_get_meaningfully_more_room_than_shallow_at_the_harshest_bucket(self):
+        # The 180s+ bucket is where the old identical-rows placeholder did
+        # the most damage (crushed both rows to 0.02-0.03x). Now deep
+        # (<0.05) must be meaningfully LESS suppressed than shallow there,
+        # on every asset -- this is the core bug this recalibration fixes.
         for asset in ("Bitcoin", "Ethereum", "Solana"):
-            for elapsed in (0.0, 90.0, 150.0, 300.0):
-                deep = bc.cheap_joint_entry_multiplier(asset, 0.03, elapsed)
-                rest = bc.cheap_joint_entry_multiplier(asset, 0.10, elapsed)
-                assert deep == rest
+            deep = bc.cheap_joint_entry_multiplier(asset, 0.03, 300.0)
+            shallow = bc.cheap_joint_entry_multiplier(asset, 0.10, 300.0)
+            assert deep > shallow
 
     def test_multiplier_defaults_to_noop_for_an_uncalibrated_asset(self):
         assert bc.cheap_joint_entry_multiplier("Dogecoin", 0.10, 300.0) == 1.0
@@ -3336,6 +3343,12 @@ class TestCheapJointDampener:
     def test_multiplier_treats_a_negative_elapsed_as_the_first_bucket(self):
         # Defensive: a crossing timestamp somehow after `now` shouldn't crash.
         assert bc.cheap_joint_entry_multiplier("Bitcoin", 0.10, -5.0) == 1.0
+
+    def test_every_calibrated_value_is_a_valid_probability(self):
+        for asset, rows in bc.CHEAP_JOINT_ENTRY_MULTIPLIER.items():
+            for is_deep, buckets in rows.items():
+                for lo, hi, mult in buckets:
+                    assert 0.0 <= mult <= 1.0, (asset, is_deep, lo, hi, mult)
 
     def test_dampener_can_skip_a_stale_cheap_first_entry(self, monkeypatch):
         market = make_market(end_time=1000.0, asset="Bitcoin")

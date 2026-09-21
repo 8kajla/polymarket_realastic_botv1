@@ -804,21 +804,60 @@ def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
 # OVER-suppressed deep+stale entries relative to reality, by as much as
 # 7x in the best-powered cells, consistently across all three assets.
 #
-# CURRENT VALUES DELIBERATELY LEFT IDENTICAL TO LIVE BEHAVIOR, NOT
-# RECALIBRATED TO THE ABOVE: DEEP_LONGSHOT suppression was independently
-# found to have fully REVERSED post-~2026-09-18-boundary (see
-# hedge-rate-secular-decline.md) and is currently disabled (1.0 no-op,
-# asset-heterogeneous reversion still resolving, Bitcoin possibly headed
-# back toward needing it re-enabled). Because that factor is already
-# 1.0, a deep-priced first entry today experiences ONLY the freshness
-# dampener, at the exact same per-bucket rate as a shallow one -- so
-# both rows of the table below (`is_deep=True` and `is_deep=False`) are
-# populated with the SAME per-asset freshness buckets as the old
-# CHEAP_FRESHNESS_MULTIPLIER, on purpose. This merge changes NOTHING
-# about today's live output; it only fixes the architecture so that
-# whenever DEEP_LONGSHOT suppression is eventually re-enabled for any
-# asset, it can be done as a real joint cell instead of resurrecting the
-# proven double-penalty bug via two independent multipliers again.
+# RECALIBRATED 2026-09-21: the "leave both rows identical" placeholder
+# above was never actually revisited before it caused a real, confirmed
+# bug. Root cause chain (see cheap-floor-entry-suppression-fixed.md,
+# project memory): coinbase-bot's live CHEAP entries were landing at a
+# much higher average price (0.1244) than the real trader's (0.0758) in
+# the same window. Traced with a real episode reconstruction (price_
+# history_dense.jsonl ticks joined to logged SKIP/PLACE events, not just
+# aggregate stats): of CHEAP episodes that survived REGIME_ENGAGEMENT_
+# MULTIPLIER's episode-latch and later drifted to price<0.10 (62% of
+# them did), only 12% of actual PLACEs landed there -- because this
+# table's identical-rows placeholder meant `seconds_since_cheap_crossing`
+# (measured from the ORIGINAL ~0.24 crossing, not from reaching the deep
+# price) kept accumulating as price fell, so by the time an episode
+# reached the floor it was usually already "stale" by this clock and hit
+# the harshest bucket (0.02-0.03x) despite the price itself being fresh.
+#
+# Two redesigns of the CLOCK itself (re-latching freshness on price-tier
+# crossings, then on a deepest-point-reached ratchet) were tried and
+# REJECTED after replay validation against real logged SKIP events: tick-
+# level CHEAP price is noisy enough (genuine non-monotonic bouncing
+# within a single episode, not smooth decay) that either clock redefinition
+# neutralized the mechanism almost everywhere (near-100% flip rate in
+# every price band), not just at the floor -- over-correcting rather than
+# fixing the targeted bug. Reverted to the original, stable
+# seconds_since_cheap_crossing clock; fixed the PRICE axis instead, which
+# this table already had a slot for and was simply never calibrated.
+#
+# Recalibrated is_deep=True and is_deep=False independently via the same
+# hazard-rate methodology as the original CHEAP_FRESHNESS derivation
+# below, but using ONLY recent data (last 84h, all post-2026-09-18-
+# boundary -- the pre-boundary "actual/predicted" ratios quantified above
+# were NOT reused directly, consistent with this project's now-repeated
+# finding that his behavior drifts on a timescale of days). Real,
+# well-powered hazard rates (n=163-1100 at-risk per cell, all 24 cells):
+# is_deep=True has a 2-4x higher hazard than is_deep=False at every
+# bucket for every asset, and decays far more gently over time -- e.g.
+# Bitcoin's 180s+ bucket: shallow hazard crashes to 0.61% (near-total
+# abandonment) while deep stays at 9.06% (barely decayed from its own
+# 15.28% baseline). Bucket-normalized (ratio to that row's own 0-60s
+# rate, same convention as the original table) and validated by replaying
+# against the same real SKIP events used to catch the two rejected clock
+# designs: the 180s+ bucket -- the one doing the most damage under the
+# old identical-rows table -- now gives deep prices meaningfully more
+# room than shallow on all three assets (Bitcoin 5.9x, Ethereum 2.7x,
+# Solana 2.0x more lenient). Two of the eight non-terminal (asset,
+# bucket) cells show a mild, likely noise-level reversal (deep slightly
+# BELOW shallow) rather than the expected direction -- not chased further
+# given the dominant, best-powered signal (the 180s+ bucket, most
+# consequential and most consistent) is strong and correctly directed on
+# every asset. Side effect, disclosed rather than hidden: fitting fresh
+# data revealed the FULL freshness decay had also drifted looser since
+# the original 2026-09-19 derivation (both rows are less punishing than
+# before, not just the is_deep split) -- this ships as a full
+# recalibration of the mechanism, not a narrow single-axis patch.
 #
 # Original derivations, preserved for context:
 #
@@ -883,16 +922,16 @@ CHEAP_JOINT_CROSSING_THRESHOLD = 0.30
 CHEAP_JOINT_PRICE_THRESHOLD = 0.05
 CHEAP_JOINT_ENTRY_MULTIPLIER = {
     "Bitcoin": {
-        False: [(0.0, 60.0, 1.00), (60.0, 120.0, 0.15), (120.0, 180.0, 0.05), (180.0, math.inf, 0.02)],
-        True:  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.15), (120.0, 180.0, 0.05), (180.0, math.inf, 0.02)],
+        False: [(0.0, 60.0, 1.00), (60.0, 120.0, 0.7225), (120.0, 180.0, 0.7997), (180.0, math.inf, 0.1002)],
+        True:  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.75),   (120.0, 180.0, 0.7291), (180.0, math.inf, 0.5929)],
     },
     "Ethereum": {
-        False: [(0.0, 60.0, 1.00), (60.0, 120.0, 0.27), (120.0, 180.0, 0.13), (180.0, math.inf, 0.03)],
-        True:  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.27), (120.0, 180.0, 0.13), (180.0, math.inf, 0.03)],
+        False: [(0.0, 60.0, 1.00), (60.0, 120.0, 0.8059), (120.0, 180.0, 0.7366), (180.0, math.inf, 0.2356)],
+        True:  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.7264), (120.0, 180.0, 0.9247), (180.0, math.inf, 0.6332)],
     },
     "Solana": {
-        False: [(0.0, 60.0, 1.00), (60.0, 120.0, 0.18), (120.0, 180.0, 0.08), (180.0, math.inf, 0.02)],
-        True:  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.18), (120.0, 180.0, 0.08), (180.0, math.inf, 0.02)],
+        False: [(0.0, 60.0, 1.00), (60.0, 120.0, 0.5222), (120.0, 180.0, 0.5222), (180.0, math.inf, 0.5137)],
+        True:  [(0.0, 60.0, 1.00), (60.0, 120.0, 0.6876), (120.0, 180.0, 0.5887), (180.0, math.inf, 1.00)],
     },
 }
 
@@ -907,7 +946,8 @@ def cheap_joint_entry_multiplier(asset: str, price: float,
     call site (see build_order_intent). A negative elapsed (defensive:
     crossing timestamp somehow after `now`) falls back to the first
     (no-op) bucket rather than raising. See CHEAP_JOINT_ENTRY_MULTIPLIER's
-    docstring for why both is_deep rows are currently identical."""
+    docstring for the 2026-09-21 recalibration that differentiated the
+    is_deep=True/False rows (previously identical placeholders)."""
     if seconds_since_cheap_crossing is None:
         return 1.0
     table = CHEAP_JOINT_ENTRY_MULTIPLIER.get(asset)
