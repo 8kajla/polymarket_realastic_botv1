@@ -1040,6 +1040,23 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # reasoning as the TTC correction).
     withinband_overshoot_correction = bc.decisiveness_withinband_overshoot_correction(
         asset, regime, decisiveness_fraction) if config.ENABLE_DECISIVENESS_WITHINBAND_OVERSHOOT_CORRECTION else 1.0
+    # CHEAP EARLY DEEP-TOUCH SIZE BOOST (2026-09-22): the SIZE half of
+    # bc.cheap_deep_touch_edge_multiplier -- see its docstring for the full
+    # derivation. A structural market fact (an early collapse to a deep
+    # price tends to overshoot and partially revert), not a trader-
+    # fidelity signal, so it's independent of and composes with every
+    # multiplier above. Only ever a boost (>=1.0) or a no-op here -- the
+    # proven-negative late-touch case is a SKIP dampener instead, applied
+    # in build_order_intent before decide_size is even called (a skip
+    # can't be expressed as a size multiplier). Scoped to first entries
+    # only, matching what was actually measured (a touch is a first-
+    # crossing event).
+    cheap_deep_touch_mult = 1.0
+    if (config.ENABLE_CHEAP_DEEP_TOUCH_EDGE and position_tier == "first"
+            and regime == "CHEAP" and seconds_remaining is not None):
+        raw = bc.cheap_deep_touch_edge_multiplier(price, 300.0 - seconds_remaining)
+        if raw > 1.0:  # only the early (boost) case -- the late (skip) case is handled entirely
+            cheap_deep_touch_mult = raw  # in build_order_intent's entry-eligibility gate, not here
     # COMBINED-MULTIPLIER SAFETY BOUND (2026-09-12, bug audit #4): each of
     # within_band/momentum_mult/bankroll_mult/ttc_mult/resumption_mult/
     # reentry_fatigue_mult/hedge_count_reinforcement_mult/decisiveness_mult
@@ -1067,7 +1084,8 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     combined_signal = (within_band * momentum_mult * bankroll_mult * ttc_mult
                         * resumption_mult * reentry_fatigue_mult
                         * hedge_count_reinforcement_mult * decisiveness_mult
-                        * overshoot_correction * withinband_overshoot_correction)
+                        * overshoot_correction * withinband_overshoot_correction
+                        * cheap_deep_touch_mult)
     cap = config.COMBINED_SIZE_MULTIPLIER_CAP
     combined_signal = max(1.0 / cap, min(cap, combined_signal))
     # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a
@@ -1375,6 +1393,23 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                     "SKIP asset=%s regime=%s price=%.4f: cheap-ttc-selectivity dampener "
                     "(seconds_remaining=%s, mult=%.2f)",
                     market.asset, regime, price, seconds_remaining, ttc_selectivity_mult)
+                return None
+        # CHEAP LATE DEEP-TOUCH SKIP dampener (2026-09-22): the SKIP half
+        # of bc.cheap_deep_touch_edge_multiplier -- see its docstring for
+        # the full derivation. A structural market fact (a LATE collapse
+        # to a deep price is closer to genuine information and already
+        # priced fairly-to-generously -- buying it loses on average,
+        # -2.57pp [-4.03,-0.86] window-clustered), independent of the two
+        # dampeners just above. The EARLY case (proven positive) is a
+        # SIZE boost in decide_size instead -- a skip-probability gate
+        # can only reduce, never increase, an entry rate.
+        if config.ENABLE_CHEAP_DEEP_TOUCH_EDGE and seconds_remaining is not None:
+            deep_touch_mult = bc.cheap_deep_touch_edge_multiplier(price, 300.0 - seconds_remaining)
+            if deep_touch_mult < 1.0 and rng.random() > deep_touch_mult:
+                logger.info(
+                    "SKIP asset=%s regime=%s price=%.4f: cheap-late-deep-touch dampener "
+                    "(seconds_into_window=%.0f, mult=%.2f)",
+                    market.asset, regime, price, 300.0 - seconds_remaining, deep_touch_mult)
                 return None
 
     # DECISIVE-ENTRY ELIGIBILITY (2026-09-20): the CORE/HIGH sibling of

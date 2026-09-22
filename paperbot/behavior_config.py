@@ -1037,6 +1037,83 @@ def cheap_joint_entry_multiplier(asset: str, price: float,
 
 
 # ---------------------------------------------------------------------------
+# CHEAP EARLY/LATE DEEP-TOUCH EDGE (2026-09-22). Independent of everything
+# above: a STRUCTURAL MARKET FACT, not a behavioral-fidelity finding --
+# confirmed on both eras (Sep 12-18 and post-Sep-18) and re-verified through
+# 2026-09-22 with window-clustered bootstrap CIs that exclude zero in BOTH
+# directions. Measures the UNCONDITIONAL win rate of buying EITHER side the
+# moment its bid first falls to <= CHEAP_DEEP_TOUCH_PRICE_THRESHOLD (not
+# specific to the real trader's own selection), split by how far into the
+# 5-minute window that collapse happens:
+#   touch at 30-150s into the window: wins MORE than its price implies
+#     (+6.68pp [95% CI +2.89,+10.86], n=402 touch events / 295 windows,
+#     window-clustered bootstrap) -- an early collapse to a deep price
+#     tends to be an overshoot that partially reverts.
+#   touch at 150-270s: wins LESS than its price implies (-2.57pp
+#     [-4.03,-0.86], n=811/520) -- a late collapse is closer to genuine
+#     information (the side really is fading) and is already priced
+#     fairly-to-generously.
+# This is NOT about matching the real trader's own behaviour (see
+# CHEAP_JOINT_ENTRY_MULTIPLIER above for that -- a freshness-since-crossing
+# axis, keyed to HIS crossing timestamp). This is a fact about the market
+# itself, true for any buyer, which is exactly why it's actionable even
+# though the trader's own late-touch selection edge (see project memory
+# cheap-early-late-touch-edge.md) has no observable predictor we could
+# copy. Full derivation: trader_master/out/loop/FINDINGS.md, 2026-09-22
+# entries "STRUCTURAL CHEAP EDGE" and the same-day re-verification pass.
+#
+# Two DIFFERENT responses, not one multiplier applied two ways, because a
+# skip-probability gate (this file's usual dampener pattern) can only ever
+# REDUCE a probability, never increase it past whatever the rest of the
+# stack already decided:
+#   - EARLY (proven positive): a SIZE multiplier (decide_size) -- keep
+#     participation as-is, just stake more on it.
+#   - LATE (proven negative): a SKIP-probability multiplier (entry
+#     eligibility, same convention as cheap_joint_entry_multiplier: < 1.0
+#     means rng.random() > mult skips the entry) -- the correct response
+#     to a proven-negative edge is fewer trades there, not smaller ones.
+# Both values are shrunk to roughly 60-70% of what the raw point estimate
+# would imply on a naive edge/price translation, deliberately conservative
+# given the CIs are wide on a few hundred clustered windows and CHEAP's
+# level has been shown to drift (see analysis-loop-2026-09-22-findings.md
+# project memory) -- re-verify before trusting these numbers past a few
+# weeks. Scoped to FIRST entries only (position_tier == "first"), matching
+# exactly what was measured (a touch is a first-crossing event).
+# ---------------------------------------------------------------------------
+CHEAP_DEEP_TOUCH_PRICE_THRESHOLD = 0.08
+CHEAP_EARLY_TOUCH_WINDOW_SECONDS = (30.0, 150.0)
+CHEAP_LATE_TOUCH_WINDOW_SECONDS = (150.0, 270.0)
+CHEAP_EARLY_TOUCH_SIZE_MULTIPLIER = 1.75
+CHEAP_LATE_TOUCH_SKIP_MULTIPLIER = 0.35
+
+
+def cheap_deep_touch_edge_multiplier(price: float, seconds_into_window: Optional[float]) -> float:
+    """Returns CHEAP_EARLY_TOUCH_SIZE_MULTIPLIER (>1.0, apply as a size
+    boost) if price is at/below the deep threshold and seconds_into_window
+    falls in the proven-positive early zone; CHEAP_LATE_TOUCH_SKIP_
+    MULTIPLIER (<1.0, apply as a skip-probability dampener) if it falls in
+    the proven-negative late zone; 1.0 (no-op) otherwise -- including
+    price above the threshold, seconds_into_window unknown (None), or
+    before 30s / after 270s (outside what was actually measured).
+
+    Approximates "the moment of the touch" with "current price and current
+    time" at first-entry evaluation -- exact for a market being evaluated
+    right as it enters CHEAP, a reasonable proxy otherwise. A dedicated
+    crossing-timestamp tracker (mirroring MarketActivityState.up_cheap_
+    crossed_at) would be more precise but wasn't built for this first cut.
+    """
+    if seconds_into_window is None or price > CHEAP_DEEP_TOUCH_PRICE_THRESHOLD:
+        return 1.0
+    lo1, hi1 = CHEAP_EARLY_TOUCH_WINDOW_SECONDS
+    if lo1 <= seconds_into_window < hi1:
+        return CHEAP_EARLY_TOUCH_SIZE_MULTIPLIER
+    lo2, hi2 = CHEAP_LATE_TOUCH_WINDOW_SECONDS
+    if lo2 <= seconds_into_window < hi2:
+        return CHEAP_LATE_TOUCH_SKIP_MULTIPLIER
+    return 1.0
+
+
+# ---------------------------------------------------------------------------
 # DECISIVE-ENTRY ELIGIBILITY (CORE/HIGH). Added 2026-09-20, closing a gap
 # found while checking whether the CHEAP win-rate investigation's
 # findings generalized: they did, worse. DECISIVENESS_ONSET_MULTIPLIER

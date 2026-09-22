@@ -4690,3 +4690,107 @@ class TestRecentSidePersistence:
     def test_lookup_falls_back_to_default(self):
         assert bc.recent_side_persistence("Solana", "MID", 0.7239) == 0.7239
         assert bc.recent_side_persistence("Bitcoin", "HIGH", 0.5) == 0.951
+
+
+class TestCheapDeepTouchSizeBoost:
+    """decide_size's wiring of bc.cheap_deep_touch_edge_multiplier's EARLY
+    (size-boost) half -- see TestCheapDeepTouchEdgeMultiplier in
+    test_behavior_config.py for the function itself. Bitcoin has no
+    floor-lot probability in CHEAP (left unmodeled), so a fixed seed's
+    only remaining randomness is the sizing jitter, identical on both
+    sides of the comparison -- the ratio isolates the multiplier exactly."""
+
+    def test_boosts_size_in_the_early_zone(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", True)
+        on, _ = decide_size("Bitcoin", "CHEAP", "first", 0.05, random.Random(1), seconds_remaining=300.0 - 90.0)
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", False)
+        off, _ = decide_size("Bitcoin", "CHEAP", "first", 0.05, random.Random(1), seconds_remaining=300.0 - 90.0)
+        assert abs(on / off - bc.CHEAP_EARLY_TOUCH_SIZE_MULTIPLIER) < 1e-6
+
+    def test_no_boost_in_the_late_zone_size_stays_flat(self, monkeypatch):
+        # the late zone is a SKIP dampener (build_order_intent), not a size change -- decide_size itself is a no-op there
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", True)
+        on, _ = decide_size("Bitcoin", "CHEAP", "first", 0.05, random.Random(2), seconds_remaining=300.0 - 200.0)
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", False)
+        off, _ = decide_size("Bitcoin", "CHEAP", "first", 0.05, random.Random(2), seconds_remaining=300.0 - 200.0)
+        assert on == off
+
+    def test_no_boost_above_price_threshold(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", True)
+        on, _ = decide_size("Bitcoin", "CHEAP", "first", 0.20, random.Random(3), seconds_remaining=300.0 - 90.0)
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", False)
+        off, _ = decide_size("Bitcoin", "CHEAP", "first", 0.20, random.Random(3), seconds_remaining=300.0 - 90.0)
+        assert on == off
+
+    def test_not_applied_outside_first_tier(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", True)
+        on, _ = decide_size("Bitcoin", "CHEAP", "2nd_3rd", 0.05, random.Random(4), seconds_remaining=300.0 - 90.0)
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", False)
+        off, _ = decide_size("Bitcoin", "CHEAP", "2nd_3rd", 0.05, random.Random(4), seconds_remaining=300.0 - 90.0)
+        assert on == off
+
+    def test_not_applied_outside_cheap_regime(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", True)
+        on, _ = decide_size("Bitcoin", "MID", "first", 0.05, random.Random(5), seconds_remaining=300.0 - 90.0)
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", False)
+        off, _ = decide_size("Bitcoin", "MID", "first", 0.05, random.Random(5), seconds_remaining=300.0 - 90.0)
+        assert on == off
+
+
+class TestCheapDeepTouchSkipDampenerWiring:
+    """build_order_intent's wiring of bc.cheap_deep_touch_edge_multiplier's
+    LATE (skip-dampener) half. window_start defaults to 0 (make_market's
+    default slug), so seconds_into_window == now directly."""
+
+    def test_skips_more_often_in_the_late_zone_at_a_deep_price(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", True)
+        market = make_market(end_time=300.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.05, token_id="up")
+        down_book = make_liquid_book(price=0.95, token_id="down")
+
+        def n_placed(now):
+            n = 0
+            for seed in range(400):
+                activity = MarketActivityState()
+                intent = build_order_intent(market, up_book, down_book, activity, random.Random(seed), now=now)
+                if intent is not None:
+                    n += 1
+            return n
+
+        n_early = n_placed(now=90.0)   # seconds_into_window=90 -- early zone, no skip dampener
+        n_late = n_placed(now=200.0)   # seconds_into_window=200 -- late zone, skip dampener fires
+        assert n_late < n_early, "the late-zone skip dampener should reduce the entry rate at a deep price"
+
+    def test_does_not_apply_above_the_price_threshold(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", True)
+        market = make_market(end_time=300.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.20, token_id="up")
+        down_book = make_liquid_book(price=0.80, token_id="down")
+
+        def n_placed(now):
+            n = 0
+            for seed in range(400):
+                activity = MarketActivityState()
+                intent = build_order_intent(market, up_book, down_book, activity, random.Random(seed), now=now)
+                if intent is not None:
+                    n += 1
+            return n
+
+        assert n_placed(now=90.0) == n_placed(now=200.0)
+
+    def test_respects_its_own_feature_flag(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_CHEAP_DEEP_TOUCH_EDGE", False)
+        market = make_market(end_time=300.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.05, token_id="up")
+        down_book = make_liquid_book(price=0.95, token_id="down")
+
+        def n_placed(now):
+            n = 0
+            for seed in range(400):
+                activity = MarketActivityState()
+                intent = build_order_intent(market, up_book, down_book, activity, random.Random(seed), now=now)
+                if intent is not None:
+                    n += 1
+            return n
+
+        assert n_placed(now=90.0) == n_placed(now=200.0), "with the flag off, timing must not move the skip rate"

@@ -1502,3 +1502,19 @@ class TestRegimeEngagementMultiplier:
         for asset, table in bc.REGIME_ENGAGEMENT_MULTIPLIER.items():
             for regime, mult in table.items():
                 assert 0.0 < mult <= 1.0
+
+
+class TestCheapDeepTouchEdgeMultiplier:
+    def test_early_zone_returns_size_boost(self):
+        assert bc.cheap_deep_touch_edge_multiplier(0.05, 30.0) == bc.CHEAP_EARLY_TOUCH_SIZE_MULTIPLIER
+        assert bc.cheap_deep_touch_edge_multiplier(0.08, 149.9) == bc.CHEAP_EARLY_TOUCH_SIZE_MULTIPLIER
+
+    def test_late_zone_returns_skip_dampener(self):
+        assert bc.cheap_deep_touch_edge_multiplier(0.05, 150.0) == bc.CHEAP_LATE_TOUCH_SKIP_MULTIPLIER
+        assert bc.cheap_deep_touch_edge_multiplier(0.08, 269.9) == bc.CHEAP_LATE_TOUCH_SKIP_MULTIPLIER
+
+    def test_no_op_outside_measured_range_or_above_price_threshold(self):
+        assert bc.cheap_deep_touch_edge_multiplier(0.05, 10.0) == 1.0   # before 30s
+        assert bc.cheap_deep_touch_edge_multiplier(0.05, 280.0) == 1.0  # after 270s
+        assert bc.cheap_deep_touch_edge_multiplier(0.15, 60.0) == 1.0   # price above threshold
+        assert bc.cheap_deep_touch_edge_multiplier(0.05, None) == 1.0   # unknown timing

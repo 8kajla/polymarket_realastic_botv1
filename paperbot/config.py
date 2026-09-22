@@ -1143,6 +1143,16 @@ ENABLE_RECENT_SIDE_PERSISTENCE = os.environ.get(
     "ENABLE_RECENT_SIDE_PERSISTENCE", "true"
 ).strip().lower() not in ("false", "0", "no")
 
+# ADDED 2026-09-22: CHEAP early/late deep-touch structural edge (see
+# cheap_deep_touch_edge_multiplier in behavior_config.py) -- a market-wide
+# fact (not trader-fidelity), split into an early SIZE boost and a late
+# SKIP dampener. Default OFF; enabled on paperbot only for the initial
+# paper A/B (P1 of the implementation spec, trader_master/out/loop/
+# IMPLEMENTATION_SPEC.md).
+ENABLE_CHEAP_DEEP_TOUCH_EDGE = os.environ.get(
+    "ENABLE_CHEAP_DEEP_TOUCH_EDGE", "false"
+).strip().lower() not in ("false", "0", "no")
+
 # ADDED 2026-09-22: EXPERIMENT -- companion (multi-level) orders. Real trader keeps ~3 concurrent
 # orders/market at ~3.5 price levels and fills ~4c below the pre-fill mid (on-chain, 44h); our bots
 # rest a single order at the best bid (88% of first-entry orders never fill). With this flag ON,
