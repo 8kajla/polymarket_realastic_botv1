@@ -1108,18 +1108,21 @@ class TestConvictionHedgeMultiplier:
 class TestCrossMarketSizeMomentumMultiplier:
     """Cross-market sizing momentum, added 2026-09-11 -- real, cross-asset,
     slow EWMA-like decay, temporally stable across the Aug 7 TWAP change.
-    Scoped to first-entry size only."""
+    Scoped to first-entry size only. Bitcoin/Ethereum already removed at
+    the 2026-09-13 post-halt check; Solana (the last survivor) RETIRED
+    2026-09-23 (systematic post-Sep-18 audit) -- a proper regime-
+    normalized re-derivation found the effect has genuinely vanished
+    (r=0.0531, t=1.27, null in both split halves). Table now empty."""
 
     def test_noop_for_unknown_asset_or_missing_residual(self):
         assert bc.cross_market_size_momentum_multiplier("Dogecoin", 0.5) == 1.0
         assert bc.cross_market_size_momentum_multiplier("Bitcoin", None) == 1.0
 
-    def test_increases_with_prior_residual(self):
-        for asset, curve in bc.CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER.items():
-            xs = sorted(curve.keys())
-            low = bc.cross_market_size_momentum_multiplier(asset, xs[0])
-            high = bc.cross_market_size_momentum_multiplier(asset, xs[-1])
-            assert low < high, f"{asset}: expected increasing multiplier, got {low}/{high}"
+    def test_table_is_empty_and_every_asset_is_now_a_noop(self):
+        assert bc.CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER == {}
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            assert bc.cross_market_size_momentum_multiplier(asset, -5.0) == 1.0
+            assert bc.cross_market_size_momentum_multiplier(asset, 5.0) == 1.0
 
 
 class TestBankrollPnlSizeMultiplier:

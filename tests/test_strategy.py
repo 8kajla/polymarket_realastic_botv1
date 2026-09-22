@@ -515,13 +515,14 @@ class TestSizingDecision:
                                                  size_momentum_residual=None)
         assert notional_no_arg == notional_explicit_none
 
-    def test_cross_market_size_momentum_scales_first_entry_size(self):
-        # Bitcoin (and Ethereum) were REMOVED from CROSS_MARKET_SIZE_
-        # MOMENTUM_MULTIPLIER in the 2026-09-13 post-halt recalibration --
-        # their autocorrelation genuinely vanished post-halt (see the
-        # table's own docstring). Solana is the one asset where the
-        # effect is still real, so it's the one this test needs to use to
-        # actually exercise the scaling behavior rather than a no-op.
+    def test_cross_market_size_momentum_is_now_a_noop_for_every_asset(self):
+        # Bitcoin/Ethereum were REMOVED at the 2026-09-13 post-halt
+        # recalibration; Solana (the last survivor) RETIRED 2026-09-23
+        # (systematic post-Sep-18 audit) -- a proper regime-normalized
+        # re-derivation found the effect has genuinely vanished (r=0.0531,
+        # t=1.27, null in both split halves). Table is now empty for
+        # every asset -- see CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER's
+        # docstring in behavior_config.py.
         def avg_notional(residual, n=400):
             rng = random.Random(41)
             total = 0.0
@@ -531,10 +532,9 @@ class TestSizingDecision:
                 total += notional
             return total / n
 
-        keys = sorted(bc.CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER["Solana"])
-        low = avg_notional(keys[0])
-        high = avg_notional(keys[-1])
-        assert low < high
+        low = avg_notional(-5.0)
+        high = avg_notional(5.0)
+        assert low == high
 
     def test_cross_market_size_momentum_only_applies_to_the_first_tier(self):
         # The finding was measured on first-entry size specifically --

@@ -2502,9 +2502,20 @@ def cross_market_side_persistence(asset: str, previous_market_won: Optional[bool
 # anything, slightly STRONGER post-halt (r=0.1385 vs 0.1445 pre-halt) --
 # kept and refreshed with the current quartile shape (not monotonic --
 # kept exactly as measured, not smoothed).
-CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER = {
-    "Solana": {-5.052: 0.8333, -0.519: 1.1636, 0.164: 1.0923, 0.534: 0.9108},
-}
+# Solana RETIRED 2026-09-23 (systematic post-Sep-18 audit): the last
+# surviving asset in this table (Bitcoin/Ethereum already removed at the
+# 2026-09-13 post-halt check, same effect-vanishing pattern). Re-derived
+# with the PROPER regime-normalized methodology this table's own
+# original build used (log-residual vs each regime's own median, not a
+# crude pooled-median proxy) on fresh post-boundary data: lag-1
+# autocorrelation r=0.0531, t=1.27, n=571 -- well below this file's own
+# |t|>=2.58 bar, and null in BOTH split halves independently (first half
+# t=0.40, second half t=0.94), not just pooled. Shipped calibration was
+# r=0.1385-0.1445; the effect has genuinely vanished, matching what
+# already happened to Bitcoin/Ethereum's versions. Table emptied --
+# cross_market_size_momentum_multiplier() already returns 1.0 (no-op)
+# for any asset not present.
+CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER = {}
 _CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER_CAP = 3.0
 
 
