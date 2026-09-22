@@ -1162,6 +1162,16 @@ ENABLE_PARTICIPATION_ASSET_SCALE = os.environ.get(
     "ENABLE_PARTICIPATION_ASSET_SCALE", "false"
 ).strip().lower() not in ("false", "0", "no")
 
+# ADDED 2026-09-22: MID boundary-adjacency structural edge (see
+# mid_boundary_edge_multiplier in behavior_config.py) -- a narrow,
+# price-sub-band overlay within MID, deliberately NOT a change to
+# REGIME_ENGAGEMENT_MULTIPLIER's overall MID rate (pooled MID edge is
+# not established; the sub-band split is). Default OFF; enabled on
+# paperbot only for the initial paper A/B.
+ENABLE_MID_BOUNDARY_EDGE = os.environ.get(
+    "ENABLE_MID_BOUNDARY_EDGE", "false"
+).strip().lower() not in ("false", "0", "no")
+
 # ADDED 2026-09-22: EXPERIMENT -- companion (multi-level) orders. Real trader keeps ~3 concurrent
 # orders/market at ~3.5 price levels and fills ~4c below the pre-fill mid (on-chain, 44h); our bots
 # rest a single order at the best bid (88% of first-entry orders never fill). With this flag ON,

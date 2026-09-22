@@ -4882,3 +4882,96 @@ class TestParticipationAssetScaleWiring:
         monkeypatch.setattr(config, "ENABLE_PARTICIPATION_ASSET_SCALE", True)
         with_flag_on = n_placed(range(400))
         assert with_flag_on > with_flag_off, "sanity: the scale DOES do something when the flag is on"
+
+
+class TestMidBoundarySizeBoost:
+    """decide_size's wiring of bc.mid_boundary_edge_multiplier's low-MID
+    (size-boost) half. Not scoped to position_tier (unlike the CHEAP
+    deep-touch boost), matching what was actually measured."""
+
+    def test_boosts_size_at_the_low_mid_boundary(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", True)
+        on, _ = decide_size("Bitcoin", "MID", "first", 0.35, random.Random(1))
+        monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", False)
+        off, _ = decide_size("Bitcoin", "MID", "first", 0.35, random.Random(1))
+        assert abs(on / off - bc.MID_LOW_BOUNDARY_SIZE_MULTIPLIER) < 1e-6
+
+    def test_boost_applies_to_later_tiers_too(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", True)
+        on, _ = decide_size("Bitcoin", "MID", "4th_plus", 0.35, random.Random(2))
+        monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", False)
+        off, _ = decide_size("Bitcoin", "MID", "4th_plus", 0.35, random.Random(2))
+        assert abs(on / off - bc.MID_LOW_BOUNDARY_SIZE_MULTIPLIER) < 1e-6
+
+    def test_no_boost_at_the_high_boundary_size_stays_flat(self, monkeypatch):
+        # the high-boundary case is a SKIP dampener (build_order_intent), not a size change
+        monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", True)
+        on, _ = decide_size("Bitcoin", "MID", "first", 0.65, random.Random(3))
+        monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", False)
+        off, _ = decide_size("Bitcoin", "MID", "first", 0.65, random.Random(3))
+        assert on == off
+
+    def test_no_boost_outside_mid(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", True)
+        on, _ = decide_size("Bitcoin", "CHEAP", "first", 0.20, random.Random(4))
+        monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", False)
+        off, _ = decide_size("Bitcoin", "CHEAP", "first", 0.20, random.Random(4))
+        assert on == off
+
+
+class TestMidBoundarySkipDampenerWiring:
+    """build_order_intent's wiring of bc.mid_boundary_edge_multiplier's
+    high-MID (skip-dampener) half."""
+
+    def test_skips_more_often_at_the_high_mid_boundary(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", True)
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.65, token_id="up")   # high-MID boundary
+        down_book = make_liquid_book(price=0.35, token_id="down")  # low-MID boundary
+
+        def n_placed(price_up):
+            book = make_liquid_book(price=price_up, token_id="up")
+            n = 0
+            for seed in range(400):
+                activity = MarketActivityState()
+                intent = build_order_intent(market, book, down_book, activity, random.Random(seed), now=100.0)
+                if intent is not None:
+                    n += 1
+            return n
+
+        assert n_placed(0.65) < n_placed(0.50)
+
+    def test_does_not_apply_in_the_coin_flip_center(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", True)
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+
+        def n_placed(flag):
+            monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", flag)
+            n = 0
+            for seed in range(400):
+                activity = MarketActivityState()
+                intent = build_order_intent(market, up_book, down_book, activity, random.Random(seed), now=100.0)
+                if intent is not None:
+                    n += 1
+            return n
+
+        assert n_placed(True) == n_placed(False)
+
+    def test_respects_its_own_feature_flag(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.65, token_id="up")
+        down_book = make_liquid_book(price=0.35, token_id="down")
+
+        def n_placed(flag):
+            monkeypatch.setattr(config, "ENABLE_MID_BOUNDARY_EDGE", flag)
+            n = 0
+            for seed in range(400):
+                activity = MarketActivityState()
+                intent = build_order_intent(market, up_book, down_book, activity, random.Random(seed), now=100.0)
+                if intent is not None:
+                    n += 1
+            return n
+
+        assert n_placed(False) > n_placed(True), "the dampener should reduce placements only when the flag is on"

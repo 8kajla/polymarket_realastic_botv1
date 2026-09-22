@@ -1137,6 +1137,63 @@ def cheap_deep_touch_edge_multiplier(price: float, seconds_into_window: Optional
 
 
 # ---------------------------------------------------------------------------
+# MID BOUNDARY-ADJACENCY EDGE (2026-09-22). A SECOND, independent structural
+# market fact discovered by deliberately researching whether "increase MID
+# engagement to match his mix" (the original P3 idea) would help or hurt
+# before touching REGIME_ENGAGEMENT_MULTIPLIER's MID rate at all -- pooled
+# MID edge is NOT established (ROI -4.6% [95% CI -30,+23], window-clustered
+# bootstrap), so a blanket mix retarget was correctly NOT built. Splitting
+# MID (price 0.30-0.70) by price sub-band instead found the pooled null
+# hides a real, opposite-signed pair of pockets -- the same "overshoot near
+# a regime boundary" shape CHEAP_DEEP_TOUCH_PRICE_THRESHOLD already
+# captures, recurring at MID's own two boundaries:
+#   0.30-0.40 (adjacent to CHEAP): excess +18.97pp [95% CI +4.5,+33.2],
+#     EXCLUDES ZERO; split-half stable (+12.9pp -> +25.2pp, same
+#     direction, strengthening). n=115 decisions/61 windows.
+#   0.60-0.70 (adjacent to CORE): ROI -33.5% [95% CI -61.6,-2.8], EXCLUDES
+#     ZERO (negative); split-half stable (-26.7% -> -41.3% ROI, negative
+#     both halves). n=70/44 windows.
+#   0.40-0.60 (the coin-flip center): no signal either direction --
+#     economically sensible, this is where the market should be hardest
+#     to beat, and left untouched.
+# Checked whether this generalizes to CORE's own two boundaries (0.70-0.80
+# adjacent to MID, 0.80-0.90 adjacent to HIGH) and it does NOT -- both CIs
+# include zero. CORE sits between two already-decisive prices; MID
+# straddles genuine 50/50 uncertainty, which is why the boundary effect
+# concentrates there and not in every regime edge.
+# Same two-response design as CHEAP_DEEP_TOUCH_PRICE_THRESHOLD, for the
+# same reason (a skip gate can only reduce, never increase, a probability):
+# low-MID -> SIZE boost (decide_size); high-MID -> SKIP dampener
+# (build_order_intent entry eligibility). Deliberately does NOT touch
+# REGIME_ENGAGEMENT_MULTIPLIER's overall MID rate -- this is a narrower,
+# price-conditioned overlay, not a mix retarget. Full derivation:
+# trader_master/out/loop/FINDINGS.md, 2026-09-22 "[P3 PROPER RESEARCH]".
+# ---------------------------------------------------------------------------
+MID_LOW_BOUNDARY_WINDOW = (0.30, 0.40)
+MID_HIGH_BOUNDARY_WINDOW = (0.60, 0.70)
+MID_LOW_BOUNDARY_SIZE_MULTIPLIER = 1.55
+MID_HIGH_BOUNDARY_SKIP_MULTIPLIER = 0.40
+
+
+def mid_boundary_edge_multiplier(regime: str, price: float) -> float:
+    """Returns MID_LOW_BOUNDARY_SIZE_MULTIPLIER (>1.0, apply as a size
+    boost) if regime is MID and price is in the proven-positive band
+    adjacent to CHEAP; MID_HIGH_BOUNDARY_SKIP_MULTIPLIER (<1.0, apply as
+    a skip-probability dampener) if price is in the proven-negative band
+    adjacent to CORE; 1.0 (no-op) otherwise, including the coin-flip
+    center band and every other regime."""
+    if regime != "MID":
+        return 1.0
+    lo1, hi1 = MID_LOW_BOUNDARY_WINDOW
+    if lo1 <= price < hi1:
+        return MID_LOW_BOUNDARY_SIZE_MULTIPLIER
+    lo2, hi2 = MID_HIGH_BOUNDARY_WINDOW
+    if lo2 <= price < hi2:
+        return MID_HIGH_BOUNDARY_SKIP_MULTIPLIER
+    return 1.0
+
+
+# ---------------------------------------------------------------------------
 # DECISIVE-ENTRY ELIGIBILITY (CORE/HIGH). Added 2026-09-20, closing a gap
 # found while checking whether the CHEAP win-rate investigation's
 # findings generalized: they did, worse. DECISIVENESS_ONSET_MULTIPLIER

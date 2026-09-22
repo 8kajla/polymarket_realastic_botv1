@@ -1057,6 +1057,20 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
         raw = bc.cheap_deep_touch_edge_multiplier(price, 300.0 - seconds_remaining)
         if raw > 1.0:  # only the early (boost) case -- the late (skip) case is handled entirely
             cheap_deep_touch_mult = raw  # in build_order_intent's entry-eligibility gate, not here
+    # MID BOUNDARY-ADJACENCY SIZE BOOST (2026-09-22): the SIZE half of
+    # bc.mid_boundary_edge_multiplier -- see its docstring for the full
+    # derivation. Same design as the CHEAP deep-touch boost just above:
+    # only ever a boost (>=1.0) or a no-op here -- the proven-negative
+    # high-MID case is a SKIP dampener in build_order_intent instead.
+    mid_boundary_mult = 1.0
+    if config.ENABLE_MID_BOUNDARY_EDGE:
+        # not scoped to position_tier=="first" -- unlike the CHEAP
+        # deep-touch edge (a first-crossing event), this was measured
+        # across every decision tier pooled, matching REGIME_ENGAGEMENT_
+        # MULTIPLIER's own precedent of applying to a market's whole life.
+        raw_mid = bc.mid_boundary_edge_multiplier(regime, price)
+        if raw_mid > 1.0:
+            mid_boundary_mult = raw_mid
     # COMBINED-MULTIPLIER SAFETY BOUND (2026-09-12, bug audit #4): each of
     # within_band/momentum_mult/bankroll_mult/ttc_mult/resumption_mult/
     # reentry_fatigue_mult/hedge_count_reinforcement_mult/decisiveness_mult
@@ -1085,7 +1099,7 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
                         * resumption_mult * reentry_fatigue_mult
                         * hedge_count_reinforcement_mult * decisiveness_mult
                         * overshoot_correction * withinband_overshoot_correction
-                        * cheap_deep_touch_mult)
+                        * cheap_deep_touch_mult * mid_boundary_mult)
     cap = config.COMBINED_SIZE_MULTIPLIER_CAP
     combined_signal = max(1.0 / cap, min(cap, combined_signal))
     # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a
@@ -1353,6 +1367,23 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             logger.info(
                 "SKIP asset=%s regime=%s price=%.4f: regime engagement dampener (mult=%.2f)",
                 market.asset, regime, price, engagement_mult)
+            return None
+
+    # MID BOUNDARY-ADJACENCY SKIP dampener (2026-09-22): the SKIP half of
+    # bc.mid_boundary_edge_multiplier -- see its docstring for the full
+    # derivation. A structural market fact (MID prices adjacent to CORE,
+    # 0.60-0.70, are systematically overpriced relative to their real win
+    # rate: ROI -33.5% [-61.6,-2.8], split-half stable), independent of
+    # and deliberately separate from REGIME_ENGAGEMENT_MULTIPLIER's own
+    # MID rate just above (that table's overall MID edge is NOT
+    # established -- this narrower sub-band is). Not scoped to real_fill_
+    # count==0 or is_hedge, same reasoning as the regime-engagement gate.
+    if config.ENABLE_MID_BOUNDARY_EDGE and not is_hedge:
+        boundary_mult = bc.mid_boundary_edge_multiplier(regime, price)
+        if boundary_mult < 1.0 and rng.random() > boundary_mult:
+            logger.info(
+                "SKIP asset=%s regime=%s price=%.4f: mid-boundary-adjacency dampener (mult=%.2f)",
+                market.asset, regime, price, boundary_mult)
             return None
 
     # CHEAP-JOINT entry dampener (2026-09-18, merged into one joint

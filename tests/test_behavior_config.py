@@ -1528,3 +1528,18 @@ class TestParticipationAssetScale:
     def test_ethereum_and_unknown_default_to_one(self):
         assert bc.participation_asset_scale("Ethereum") == 1.0
         assert bc.participation_asset_scale("Dogecoin") == 1.0
+
+
+class TestMidBoundaryEdgeMultiplier:
+    def test_low_boundary_returns_size_boost(self):
+        assert bc.mid_boundary_edge_multiplier("MID", 0.30) == bc.MID_LOW_BOUNDARY_SIZE_MULTIPLIER
+        assert bc.mid_boundary_edge_multiplier("MID", 0.39) == bc.MID_LOW_BOUNDARY_SIZE_MULTIPLIER
+
+    def test_high_boundary_returns_skip_dampener(self):
+        assert bc.mid_boundary_edge_multiplier("MID", 0.60) == bc.MID_HIGH_BOUNDARY_SKIP_MULTIPLIER
+        assert bc.mid_boundary_edge_multiplier("MID", 0.69) == bc.MID_HIGH_BOUNDARY_SKIP_MULTIPLIER
+
+    def test_no_op_in_the_coin_flip_center_or_outside_mid(self):
+        assert bc.mid_boundary_edge_multiplier("MID", 0.50) == 1.0
+        assert bc.mid_boundary_edge_multiplier("CHEAP", 0.35) == 1.0
+        assert bc.mid_boundary_edge_multiplier("CORE", 0.75) == 1.0
