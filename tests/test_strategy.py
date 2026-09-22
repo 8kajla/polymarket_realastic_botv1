@@ -4651,26 +4651,33 @@ class TestHedgeNotionalForPrice:
 
 
 class TestEntrySizeLevelCorrection:
-    def test_bitcoin_scaled_per_tier_when_enabled(self, monkeypatch):
-        for tier in ("first", "2nd_3rd", "4th_plus"):
-            monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", True)
-            on, _ = decide_size("Bitcoin", "MID", tier, 0.5, random.Random(3))
-            monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", False)
-            off, _ = decide_size("Bitcoin", "MID", tier, 0.5, random.Random(3))
-            assert abs(on / off - bc.entry_size_level_correction("Bitcoin", tier)) < 1e-6
-            assert on > off
+    """Keyed by (asset, regime) as of the 2026-09-22 redesign -- a flat
+    per-tier factor was over/under-correcting because the real gap moves
+    with regime, not tier (see the table's own docstring)."""
 
-    def test_ethereum_and_solana_untouched(self, monkeypatch):
-        for asset in ("Ethereum", "Solana"):
-            monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", True)
-            on, _ = decide_size(asset, "MID", "first", 0.5, random.Random(3))
+    def test_scaled_per_regime_when_enabled_for_every_covered_asset(self, monkeypatch):
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            for regime in ("CHEAP", "MID", "CORE", "HIGH"):
+                monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", True)
+                on, _ = decide_size(asset, regime, "first", 0.5, random.Random(3))
+                monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", False)
+                off, _ = decide_size(asset, regime, "first", 0.5, random.Random(3))
+                assert abs(on / off - bc.entry_size_level_correction(asset, regime)) < 1e-6
+
+    def test_uniform_across_tiers_within_a_regime(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", True)
+        seen = set()
+        for tier in ("first", "2nd_3rd", "4th_plus"):
+            on, _ = decide_size("Ethereum", "CORE", tier, 0.8, random.Random(7))
             monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", False)
-            off, _ = decide_size(asset, "MID", "first", 0.5, random.Random(3))
-            assert on == off
+            off, _ = decide_size("Ethereum", "CORE", tier, 0.8, random.Random(7))
+            monkeypatch.setattr(config, "ENABLE_ENTRY_SIZE_LEVEL_CORRECTION", True)
+            seen.add(round(on / off, 6))
+        assert len(seen) == 1  # same ratio regardless of tier
 
     def test_lookup_defaults_to_one(self):
-        assert bc.entry_size_level_correction("Ethereum", "first") == 1.0
-        assert bc.entry_size_level_correction("Bitcoin", "no_such_tier") == 1.0
+        assert bc.entry_size_level_correction("Ethereum", "no_such_regime") == 1.0
+        assert bc.entry_size_level_correction("Dogecoin", "CHEAP") == 1.0
 
 
 class TestRecentSidePersistence:

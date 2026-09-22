@@ -576,25 +576,48 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
         raise BehaviorLookupError(asset, regime) from exc
 
 
-# ENTRY_SIZE_LEVEL_CORRECTION -- ADDED 2026-09-22. ENTRY_SIZING_USD was last
-# calibrated 2026-09-08 on ~2.3 days of trading right after the 13.6-day
-# silence (its own comment asked for a recheck once more time had passed).
-# Rechecked on Sep 12-21 (5,112 real first entries): the Bitcoin base is
-# stale -- real base bias ln(real/pred) is +0.14..+0.85 in EVERY Bitcoin
-# regime, positive on all 10 days and both sides of the Sep-18 boundary.
-# FULL-STACK check (what the bots actually place vs what he really filled,
-# matched by price band, n-weighted, post-boundary): Bitcoin first x1.53,
-# 2nd_3rd x1.99, 4th_plus x1.50. Ethereum/Solana already match (first x1.11
-# / x1.04) and are left alone. Values below are shrunk to 80% of the log gap.
+# ENTRY_SIZE_LEVEL_CORRECTION -- ADDED 2026-09-22, REDESIGNED 2026-09-22
+# (same day, second pass). ENTRY_SIZING_USD was last calibrated 2026-09-08
+# on ~2.3 days of trading right after the 13.6-day silence (its own comment
+# asked for a recheck once more time had passed).
+#
+# FIRST PASS (superseded, do not resurrect): keyed by position_tier ONLY,
+# applied identically across every regime for an asset. Verified against
+# the COMPLETE trader collector (see trader-master-pipeline-mac and
+# analysis-loop-2026-09-22-findings project memory -- the collector this
+# was originally measured against lost fill fragments and understated
+# real sizes) the day it shipped: the gap does NOT move uniformly with
+# tier, it moves with REGIME, and a flat per-tier factor was actively
+# OVER-correcting Bitcoin CHEAP (ratio ~0.96, needs ~no correction, was
+# getting the full 1.40x) while badly UNDER-correcting Bitcoin MID (ratio
+# ~2.96, was only getting 1.40x). Re-measured cleanly this time: bot
+# PLACED first-entry sizes (live logs, since the 94f42a5/companion-order
+# deploys) vs the real trader's COMPLETE post-Sep-18 filled medians,
+# matched by (asset, regime), n>=8 both sides:
+#   Bitcoin  CHEAP 0.96 | MID 2.96 | CORE 1.22 | HIGH 1.43
+#   Ethereum CHEAP 0.82 | MID 2.33 | CORE 2.75 | HIGH 1.84
+#   Solana   CHEAP 0.79 | MID 1.83 | CORE 3.73 | HIGH 1.44
+# (Solana CORE is thin -- n=11 bot / 24 trader -- treat with more caution
+# than the rest.) Values below are shrunk to 80% of the log gap, same
+# convention as the first pass. Keyed by (asset, regime) now, applied
+# uniformly across tiers within a regime (a coarser approximation than a
+# full (asset, regime, tier) grid, but a real fix for the regime-blindness
+# bug above; full grid data is in trader_master/out/loop/spec_data/
+# size_correction_ratios_asset_regime_p2.csv if this needs refining).
 # Applied to the base, outside COMBINED_SIZE_MULTIPLIER_CAP (a level
-# recalibration, not a cross-market signal). Re-measure after ~2 days.
+# recalibration, not a cross-market signal). Re-measure after ~1 week --
+# CHEAP already composes with cheap_deep_touch_edge_multiplier's own,
+# separately-targeted size boost (a different mechanism: a narrow
+# early-window/deep-price condition, not a general CHEAP level).
 ENTRY_SIZE_LEVEL_CORRECTION = {
-    "Bitcoin": {"first": 1.40, "2nd_3rd": 1.74, "4th_plus": 1.38},
+    "Bitcoin":  {"CHEAP": 0.968, "MID": 2.383, "CORE": 1.172, "HIGH": 1.331},
+    "Ethereum": {"CHEAP": 0.853, "MID": 1.967, "CORE": 2.246, "HIGH": 1.629},
+    "Solana":   {"CHEAP": 0.828, "MID": 1.622, "CORE": 2.867, "HIGH": 1.339},
 }
 
 
-def entry_size_level_correction(asset: str, position_tier: str) -> float:
-    return ENTRY_SIZE_LEVEL_CORRECTION.get(asset, {}).get(position_tier, 1.0)
+def entry_size_level_correction(asset: str, regime: str) -> float:
+    return ENTRY_SIZE_LEVEL_CORRECTION.get(asset, {}).get(regime, 1.0)
 
 
 # ---------------------------------------------------------------------------
