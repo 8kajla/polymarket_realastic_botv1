@@ -4306,12 +4306,24 @@ def adverse_move_continuation_size_multiplier(asset: str, adverse_move: Optional
 # 0.945-1.268 (a ~1.3x spread) vs the original 0.413-1.875 (a ~4.5x
 # spread) -- another instance of the broad post-halt flattening pattern,
 # just with an added sign reversal this table alone shows.
-ACCURACY_SCOUT_MULTIPLIER = {
-    0.3: 0.9450,
-    0.6: 0.8749,
-    0.8: 1.1082,
-    1.0: 1.2676,
-}
+# RETIRED 2026-09-23 (systematic post-Sep-18 audit, follow-up on the
+# SCOUT_PROBABILITY/SCOUT_SIZE_RATIO recalibration this composes on top
+# of). This mechanism's own track record across two regime boundaries:
+# pre-halt NEGATIVE relationship (1.8753 -> 0.4133, declining), post-halt
+# (2026-09-13) REVERSED to POSITIVE (0.9450 -> 1.2676, rising) -- and now,
+# re-derived with the correct scout definition on fresh post-Sep-18 data
+# (rolling last-10-market accuracy per asset, pooled, n=259): NULL. Pooled
+# r=-0.0173, t=-0.28; circularity-checked (accuracy from non-scout
+# markets only, matching the original build's own confound check) r=0.0381,
+# t=0.60 -- both far below this file's own |t|>=2.58 bar, and note the
+# sign isn't even consistent between the two versions of the same check.
+# Also: post-boundary rolling accuracy never drops below ~0.6 in this
+# window, so most of the shipped table's own range (0.3-0.6) is currently
+# unreachable regardless. A relationship that has now been negative,
+# positive, and null across three different windows isn't a stable trait
+# being measured with noise -- it's noise being re-fit each time. Retired
+# rather than recalibrated a third time.
+ACCURACY_SCOUT_MULTIPLIER = {}
 _ACCURACY_SCOUT_MULTIPLIER_CAP = 3.0
 
 
@@ -4320,10 +4332,11 @@ def accuracy_scout_multiplier(rolling_accuracy: Optional[float]) -> float:
     as a function of a per-asset rolling recent-accuracy fraction
     (caller-maintained, last ~10 resolved markets' dominant-side
     correctness). 1.0 (no-op) when rolling_accuracy is unavailable (e.g.
-    fewer than a few resolved markets observed yet this run). Flat
-    beyond the measured range, same discipline as every other multiplier
-    in this file."""
-    if rolling_accuracy is None:
+    fewer than a few resolved markets observed yet this run), or when
+    ACCURACY_SCOUT_MULTIPLIER is empty (RETIRED 2026-09-23 -- see its
+    docstring). Flat beyond the measured range, same discipline as every
+    other multiplier in this file."""
+    if rolling_accuracy is None or not ACCURACY_SCOUT_MULTIPLIER:
         return 1.0
     points = sorted(ACCURACY_SCOUT_MULTIPLIER.items())
     lo_x, lo_val = points[0]

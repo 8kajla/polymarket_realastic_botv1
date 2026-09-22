@@ -1029,6 +1029,9 @@ class TestHedgeCalibration:
         for asset in bc.ASSET_NAMES:
             assert set(bc.HEDGE_SIZE_RATIO[asset].keys()) == set(bc.REGIME_NAMES)
 
+    def test_size_ratio_falls_back_to_default_for_an_unknown_asset(self):
+        assert bc.hedge_size_ratio("NotAnAsset", "CHEAP") == bc._DEFAULT_HEDGE_SIZE_RATIO
+
     def test_probabilities_are_valid_and_asset_specific(self):
         cheap_probs = {a: bc.hedge_trigger_probability(a, "CHEAP") for a in bc.ASSET_NAMES}
         for p in cheap_probs.values():
@@ -1301,34 +1304,24 @@ class TestHedgeTriggerAfterBigLossMultiplier:
 
 
 class TestAccuracyScoutMultiplier:
-    """Accuracy-conditioned scout rate, added 2026-09-11 -- real, cross-
-    asset-POOLED (only the pooled version was circularity-checked), so
-    this multiplier is a single shared curve, not per-asset.
-    Recalibrated 2026-09-13 (post-halt) -- the sign of the relationship
-    reversed post-halt (better accuracy now predicts MORE scouting), a
-    real, circularity-checked, time-stable finding, not noise."""
+    """Accuracy-conditioned scout rate, added 2026-09-11, RETIRED
+    2026-09-23 (systematic post-Sep-18 audit, follow-up on the
+    SCOUT_PROBABILITY recalibration this composes on top of). Track
+    record across two boundaries: pre-halt negative, post-halt
+    (2026-09-13) reversed to positive, post-Sep-18 (now) null (pooled
+    r=-0.0173 t=-0.28; circularity-checked r=0.0381 t=0.60, both far
+    below this file's own |t|>=2.58 bar). A relationship that's been
+    negative, positive, and null across three windows isn't a stable
+    trait -- retired rather than recalibrated a third time."""
 
     def test_noop_when_accuracy_unavailable(self):
         assert bc.accuracy_scout_multiplier(None) == 1.0
 
-    def test_increases_with_accuracy(self):
-        # RECALIBRATED 2026-09-13 (post-halt, /loop cycle 8): the
-        # relationship reversed sign post-halt, confirmed via the same
-        # circularity check (non-scout-only rolling accuracy) the
-        # original build used -- survives, same sign, even slightly
-        # stronger. Better recent accuracy now predicts MORE scouting,
-        # not less; see ACCURACY_SCOUT_MULTIPLIER's docstring for the
-        # full stability check (time-split, per-asset breakdown).
-        xs = sorted(bc.ACCURACY_SCOUT_MULTIPLIER.keys())
-        low_acc = bc.accuracy_scout_multiplier(xs[0])
-        high_acc = bc.accuracy_scout_multiplier(xs[-1])
-        assert high_acc > low_acc
-
-    def test_flat_beyond_the_measured_range(self):
-        xs = sorted(bc.ACCURACY_SCOUT_MULTIPLIER.keys())
-        assert bc.accuracy_scout_multiplier(0.0) == bc.accuracy_scout_multiplier(xs[0])
-        assert bc.accuracy_scout_multiplier(1.5) == bc.accuracy_scout_multiplier(xs[-1])
-        assert bc.hedge_size_ratio("NotAnAsset", "CHEAP") == bc._DEFAULT_HEDGE_SIZE_RATIO
+    def test_table_is_empty_and_every_accuracy_is_now_a_noop(self):
+        assert bc.ACCURACY_SCOUT_MULTIPLIER == {}
+        assert bc.accuracy_scout_multiplier(0.0) == 1.0
+        assert bc.accuracy_scout_multiplier(0.5) == 1.0
+        assert bc.accuracy_scout_multiplier(1.0) == 1.0
 
 
 class TestDecisiveEntryEligibilityMultiplier:
