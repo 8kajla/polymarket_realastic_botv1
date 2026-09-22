@@ -3873,11 +3873,25 @@ def mid_favorable_hedge_trigger_multiplier(asset: str, adverse_move: Optional[fl
 # points instead of its previous 3 -- the post-halt sample supports it
 # cleanly. Same real, increasing shape as before (more likely to hedge
 # after a market that itself hedged a lot).
-CROSS_MARKET_HEDGE_RATE_MULTIPLIER = {
-    "Bitcoin": {0.0: 0.7746, 0.1667: 1.0911, 0.3333: 1.0106, 0.5: 1.1237},
-    "Ethereum": {0.0: 0.8037, 0.2: 1.0122, 0.3333: 1.1400, 0.5: 1.0441},
-    "Solana": {0.0: 0.7523, 0.2222: 1.0001, 0.375: 1.0683, 0.5: 1.1792},
-}
+# RETIRED 2026-09-23 (systematic post-Sep-18 audit). A first, quicker
+# check (rolling 5-market hedge-rate average as a proxy for "previous
+# market's hedge rate") found Bitcoin still holding up (t=2.90) while
+# Ethereum/Solana had weakened -- not confident enough to act on
+# partial results, so redone properly using this table's OWN actual
+# definition (a single market's own hedges/total-decisions fraction,
+# not a rolling multi-market average): corr(previous market's own hedge
+# rate, current market hedged) for all three assets, fresh post-boundary
+# data --
+#   Bitcoin  n=915: r=+0.0016, t=0.05 -- completely null (the earlier
+#     "confirmed" result was an artifact of the wrong proxy definition).
+#   Ethereum n=666: r=-0.0614, t=-1.59 -- null, and wrong-signed (shipped
+#     table implies a positive relationship).
+#   Solana   n=571: r=+0.0163, t=0.39 -- null.
+# All well below this file's own |t|>=2.58 bar. Split-half checked for
+# all three (n=285-458/half): every half independently null too, not
+# just the pooled number. The effect has genuinely vanished for every
+# asset under the correct methodology -- table emptied entirely.
+CROSS_MARKET_HEDGE_RATE_MULTIPLIER = {}
 _CROSS_MARKET_HEDGE_RATE_MULTIPLIER_CAP = 3.0  # same cap tier as HEDGE_LIQUIDITY_MULTIPLIER
 
 

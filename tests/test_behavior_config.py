@@ -1049,38 +1049,23 @@ class TestHedgeCalibration:
 
 
 class TestCrossMarketHedgeRateMultiplier:
-    """Cross-market hedge-RATE persistence, added 2026-09-11 -- real
-    (r=0.25-0.35 all three assets on raw count), calibrated on the
-    RATE version specifically to avoid double-counting general activity
-    clustering. Most speculative of this session's cross-market
-    multipliers (mechanism not fully pinned down) -- see
-    cross_market_hedge_rate_multiplier's docstring."""
+    """Cross-market hedge-RATE persistence, added 2026-09-11, RETIRED
+    2026-09-23 (systematic post-Sep-18 audit). A quick check with a
+    wrong proxy definition (rolling multi-market average) found Bitcoin
+    still holding up -- redone properly using this table's own actual
+    definition (a single market's own hedges/total-decisions fraction)
+    and all three assets came back a clean, well-powered null (t=0.05/
+    -1.59/0.39), split-half confirmed. Table now empty for every asset."""
 
     def test_noop_for_unknown_asset_or_missing_rate(self):
         assert bc.cross_market_hedge_rate_multiplier("Dogecoin", 0.3) == 1.0
         assert bc.cross_market_hedge_rate_multiplier("Bitcoin", None) == 1.0
 
-    def test_mean_neutral_at_the_lowest_calibrated_point_is_below_one(self):
-        # A prior market with ZERO hedging predicts BELOW-average hedging
-        # this market (the whole point of the finding: hedge-heavy
-        # markets predict hedge-heavy markets, and vice versa).
-        for asset in bc.CROSS_MARKET_HEDGE_RATE_MULTIPLIER:
-            assert bc.cross_market_hedge_rate_multiplier(asset, 0.0) < 1.0
-
-    def test_increases_with_prev_hedge_rate(self):
-        for asset, curve in bc.CROSS_MARKET_HEDGE_RATE_MULTIPLIER.items():
-            rates = sorted(curve.keys())
-            low = bc.cross_market_hedge_rate_multiplier(asset, rates[0])
-            high = bc.cross_market_hedge_rate_multiplier(asset, rates[-1])
-            assert low < high, f"{asset}: expected increasing multiplier, got {low}/{high}"
-
-    def test_flat_beyond_the_measured_range(self):
-        for asset, curve in bc.CROSS_MARKET_HEDGE_RATE_MULTIPLIER.items():
-            rates = sorted(curve.keys())
-            assert (bc.cross_market_hedge_rate_multiplier(asset, -5.0)
-                    == bc.cross_market_hedge_rate_multiplier(asset, rates[0]))
-            assert (bc.cross_market_hedge_rate_multiplier(asset, 5.0)
-                    == bc.cross_market_hedge_rate_multiplier(asset, rates[-1]))
+    def test_table_is_empty_and_every_asset_is_now_a_noop(self):
+        assert bc.CROSS_MARKET_HEDGE_RATE_MULTIPLIER == {}
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            assert bc.cross_market_hedge_rate_multiplier(asset, 0.0) == 1.0
+            assert bc.cross_market_hedge_rate_multiplier(asset, 0.5) == 1.0
 
 
 class TestConvictionHedgeMultiplier:
