@@ -303,6 +303,28 @@ class TestWithinBandSizeMultiplier:
         assert mult <= 5.0
 
 
+class TestDeepCheapTailMultiplier:
+    """ADDED 2026-09-23 -- corrects the deep CHEAP tail (price<0.08), where
+    WITHIN_BAND_SIZE_SLOPE's single whole-band slope badly under-corrects
+    (real sizes there run 1.4-4.2x smaller than predicted). See
+    DEEP_CHEAP_TAIL_MULTIPLIER's docstring for the on-chain derivation."""
+
+    def test_matches_documented_calibration(self):
+        assert bc.deep_cheap_tail_multiplier("Bitcoin") == pytest.approx(0.759)
+        assert bc.deep_cheap_tail_multiplier("Ethereum") == pytest.approx(0.433)
+        assert bc.deep_cheap_tail_multiplier("Solana") == pytest.approx(0.319)
+
+    def test_every_calibrated_value_dampens_not_boosts(self):
+        for asset, mult in bc.DEEP_CHEAP_TAIL_MULTIPLIER.items():
+            assert 0.0 < mult < 1.0
+
+    def test_unknown_asset_is_a_noop(self):
+        assert bc.deep_cheap_tail_multiplier("Dogecoin") == 1.0
+
+    def test_threshold_matches_documented_value(self):
+        assert bc.DEEP_CHEAP_TAIL_PRICE_THRESHOLD == pytest.approx(0.08)
+
+
 class TestTtcSizeMultiplier:
     """Time-to-close size scaling, added 2026-09-10 -- confirmed the
     trader actually SIZES differently by time remaining (not just present

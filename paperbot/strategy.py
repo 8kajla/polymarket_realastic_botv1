@@ -938,6 +938,17 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
         # never imports config, same discipline as every other multiplier.
         if regime in ("CHEAP", "MID") and not config.ENABLE_CHEAP_MID_WITHIN_BAND_SCALING:
             within_band = 1.0
+        # DEEP CHEAP TAIL correction (2026-09-23 finding): WITHIN_BAND_SIZE_
+        # SLOPE's single whole-band CHEAP slope badly under-corrects the
+        # deepest part of that band (price<0.08, ~28-30% of all CHEAP
+        # entries by count) -- real sizes there run 1.4-4.2x smaller than
+        # median_entry_notional * within_band_size_multiplier predicts. See
+        # DEEP_CHEAP_TAIL_MULTIPLIER's docstring in behavior_config.py.
+        # Composes with (doesn't replace) within_band, same layering as
+        # HIGH_TAIL_SHARE_MULTIPLIER on the share-based path.
+        if (regime == "CHEAP" and price < bc.DEEP_CHEAP_TAIL_PRICE_THRESHOLD
+                and config.ENABLE_DEEP_CHEAP_TAIL_CORRECTION):
+            within_band *= bc.deep_cheap_tail_multiplier(asset)
     # CROSS-MARKET sizing momentum (2026-09-11 finding): a market's first
     # entry echoes the PREVIOUS market's own size residual (slow EWMA
     # decay, not lag-1-only) -- see CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER's

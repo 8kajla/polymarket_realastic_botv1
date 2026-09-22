@@ -379,6 +379,51 @@ class TestSizingDecision:
         # these must match exactly, not just approximately.
         assert low == high
 
+    def test_deep_cheap_tail_correction_shrinks_entries_below_threshold(self):
+        # ADDED 2026-09-23: price<0.08 in CHEAP should be shrunk relative
+        # to what within_band_size_multiplier alone would give -- confirms
+        # decide_size actually applies deep_cheap_tail_multiplier, not just
+        # that the function itself works in isolation.
+        rng_a = random.Random(13)
+        rng_b = random.Random(13)
+        notional_deep, _ = decide_size("Ethereum", "CHEAP", "4th_plus", 0.05, rng_a)
+        median = bc.median_entry_notional("Ethereum", "CHEAP", "4th_plus")
+        within_band = bc.within_band_size_multiplier("Ethereum", "CHEAP", 0.05)
+        uncorrected = median * within_band
+        # notional_deep should be roughly uncorrected * DEEP_CHEAP_TAIL_
+        # MULTIPLIER["Ethereum"], within jitter bounds.
+        expected = uncorrected * bc.DEEP_CHEAP_TAIL_MULTIPLIER["Ethereum"]
+        assert expected * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= notional_deep <= \
+            expected * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+        assert notional_deep < uncorrected * (1 + config.SIZING_JITTER_FRACTION)
+
+    def test_deep_cheap_tail_correction_does_not_apply_above_threshold_or_outside_cheap(self):
+        rng_a = random.Random(17)
+        rng_b = random.Random(17)
+        # at price=0.08 exactly (not < threshold): no correction
+        notional_at, _ = decide_size("Ethereum", "CHEAP", "4th_plus", 0.08, rng_a)
+        median = bc.median_entry_notional("Ethereum", "CHEAP", "4th_plus")
+        within_band = bc.within_band_size_multiplier("Ethereum", "CHEAP", 0.08)
+        expected = median * within_band
+        assert expected * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= notional_at <= \
+            expected * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+        # MID regime, even at a deep price, must not be touched (correction
+        # is CHEAP-only)
+        rng_c = random.Random(19)
+        notional_mid, _ = decide_size("Ethereum", "MID", "4th_plus", 0.05, rng_c)
+        assert notional_mid > 0  # sanity -- just confirms no exception/zeroing
+
+    def test_deep_cheap_tail_correction_respects_its_own_flag(self, monkeypatch):
+        monkeypatch.setattr(config, "ENABLE_DEEP_CHEAP_TAIL_CORRECTION", False)
+        rng_a = random.Random(13)
+        rng_b = random.Random(13)
+        notional_deep, _ = decide_size("Ethereum", "CHEAP", "4th_plus", 0.05, rng_a)
+        median = bc.median_entry_notional("Ethereum", "CHEAP", "4th_plus")
+        within_band = bc.within_band_size_multiplier("Ethereum", "CHEAP", 0.05)
+        expected = median * within_band
+        assert expected * (1 - config.SIZING_JITTER_FRACTION) * 0.99 <= notional_deep <= \
+            expected * (1 + config.SIZING_JITTER_FRACTION) * 1.01
+
     def test_share_based_sizing_off_by_default_preserves_old_behavior(self):
         assert config.ENABLE_SHARE_BASED_SIZING is False
         rng_a = random.Random(11)

@@ -1016,6 +1016,57 @@ def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
     return max(1.0 / _WITHIN_BAND_MULTIPLIER_CAP, min(_WITHIN_BAND_MULTIPLIER_CAP, raw))
 
 
+# DEEP_CHEAP_TAIL_MULTIPLIER -- ADDED 2026-09-23. WITHIN_BAND_SIZE_SLOPE's
+# CHEAP cells were fit as ONE log-linear slope across the whole 0.00-0.30
+# band (that table's own docstring already flags this as an approximation,
+# noting Ethereum's true shape isn't log-linear). The deepest part of that
+# band -- price<0.08 -- turns out to be badly underserved by that single
+# slope: real (on-chain) sizes there are 1.4-4.2x smaller than what
+# median_entry_notional * within_band_size_multiplier predicts, and this
+# ISN'T a rare edge case -- it's ~28-30% of every CHEAP-regime entry by
+# count (16-24% by dollar volume) across all three live bots.
+#
+# Found while investigating the same on-chain "LOW tail" region the share-
+# based sizing project's deep-tail work covers for its OWN formula (see
+# HIGH_TAIL_SHARE_MULTIPLIER) -- but that work doesn't touch this OLD path
+# at all (CHEAP stays on median_entry_notional/within_band_size_multiplier
+# even where share-based sizing is enabled, see SHARE_BASED_SIZING_REGIMES).
+# An initial "it's just market liquidity" hypothesis was tested and
+# REFUTED once asset was properly controlled for (pooled corr with
+# liquidity was a between-asset confound, not a real effect -- Bitcoin/
+# Ethereum/Solana individually showed no significant liquidity relationship,
+# t=0.37/0.79/1.29). What DOES hold up is price itself, once each asset's
+# own baseline is accounted for -- exactly what this per-asset multiplier
+# adds on top of the existing (asset-blind-within-band) slope.
+#
+# Measured directly against real, decision-collapsed on-chain fills
+# (n=315/184/101 BTC/ETH/SOL, price<0.08, verified via
+# eth_getTransactionReceipt): median log(real / (median_entry_notional *
+# within_band_size_multiplier)) = -0.344 / -1.047 / -1.430. Split-half
+# checked (calendar, ~half each): Bitcoin -0.225/-0.653 (real spread, but
+# always negative i.e. always oversizing), Ethereum -1.012/-1.136 (tight),
+# Solana -1.462/-1.214 (reasonably tight). 80%-of-log-gap shrinkage (this
+# file's standard convention, applied here given Bitcoin's real split
+# spread): Bitcoin exp(0.8*-0.344)=0.759, Ethereum exp(0.8*-1.047)=0.433,
+# Solana exp(0.8*-1.430)=0.319.
+#
+# Applied ONLY for regime=="CHEAP" and price<0.08, multiplying into the
+# existing within_band value at the OLD-path call site in decide_size --
+# composes with (doesn't replace) WITHIN_BAND_SIZE_SLOPE's own CHEAP
+# dampening, same layering pattern HIGH_TAIL_SHARE_MULTIPLIER uses for the
+# share-based path. Not applied when ENABLE_SHARE_BASED_SIZING routes
+# CHEAP through the share-based base instead (it currently never does --
+# CHEAP is not in SHARE_BASED_SIZING_REGIMES -- but scoped this way in
+# case that changes).
+DEEP_CHEAP_TAIL_PRICE_THRESHOLD = 0.08
+DEEP_CHEAP_TAIL_MULTIPLIER = {"Bitcoin": 0.759, "Ethereum": 0.433, "Solana": 0.319}
+
+
+def deep_cheap_tail_multiplier(asset: str) -> float:
+    """1.0 (no-op) for an asset with no calibration."""
+    return DEEP_CHEAP_TAIL_MULTIPLIER.get(asset, 1.0)
+
+
 # ---------------------------------------------------------------------------
 # CHEAP JOINT entry dampener (price-band x freshness-bucket). Formerly
 # two SEPARATE mechanisms -- DEEP_LONGSHOT_ENTRY_MULTIPLIER (price only)

@@ -821,6 +821,18 @@ ENABLE_CHEAP_MID_WITHIN_BAND_SCALING = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for DEEP_CHEAP_TAIL_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-23 -- corrects a real, currently-live
+# oversizing bug (1.4-4.2x, ~28-30% of all CHEAP-regime entries) in the OLD
+# sizing path's deep tail (price<0.08), where WITHIN_BAND_SIZE_SLOPE's
+# single whole-band CHEAP slope badly under-corrects. Default TRUE
+# everywhere -- this fixes an active bug on the path every bot currently
+# uses for CHEAP, not a speculative new mechanism to roll out cautiously.
+ENABLE_DEEP_CHEAP_TAIL_CORRECTION = os.environ.get(
+    "ENABLE_DEEP_CHEAP_TAIL_CORRECTION", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Feature flag for CROSS_MARKET_HEDGE_RATE_MULTIPLIER (see its docstring
 # in behavior_config.py). Added 2026-09-11 -- the most speculative of
 # this pass's cross-market multipliers (real r=0.25-0.35 on raw hedge
