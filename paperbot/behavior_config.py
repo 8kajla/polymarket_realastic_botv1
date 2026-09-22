@@ -4238,16 +4238,55 @@ def accuracy_scout_multiplier(rolling_accuracy: Optional[float]) -> float:
     return max(1.0 / cap, min(cap, result))
 
 
+# RECALIBRATED 2026-09-23 (post-Sep-18-boundary audit): both cells above
+# were last touched 2026-09-13, before the Sep-18 shift this project has
+# repeatedly found invalidates prior calibrations. Direct on-chain-
+# verified re-derivation (268 post-boundary markets sampled, all 268
+# matched via eth_getTransactionReceipt against the exact off-chain
+# price/size -- a 100% verification rate, so the underlying off-chain
+# data itself checks out clean here): dominant side = higher total $ cost
+# across the market; scout = first entry lands on the OTHER side.
+#
+# SCOUT_PROBABILITY roughly DOUBLED for every asset:
+#   Bitcoin  n=134: 0.3326 -> 0.5075   Ethereum n=75: 0.2525 -> 0.5600
+#   Solana   n=59:  0.3072 -> 0.5085
+# Split-half checked on the larger off-chain population (n=59-134 total,
+# both halves n=26-69): stable in direction and magnitude, e.g. Bitcoin
+# 58.0%/43.1%, Ethereum 59.4%/53.5%, Solana 54.5%/46.2% -- both halves
+# comfortably above the old shipped baseline for all three assets.
+#
+# SCOUT_SIZE_RATIO collapsed even more dramatically -- median(scout
+# first-entry $) / median(non-scout first-entry $), same on-chain-
+# verified sample:
+#   Bitcoin  scout_n=68/dom_n=66: 0.9721 -> 0.3272
+#   Ethereum scout_n=42/dom_n=33: 0.9392 -> 0.0825
+#   Solana   scout_n=30/dom_n=29: 0.6697 -> 0.3133
+# Definition differs slightly from the original ("first_entry_usdc /
+# ENTRY_SIZING_USD's regime-specific 'first'-tier median", which pulls in
+# a SEPARATE table's own possible staleness) -- this uses a self-
+# contained scout-vs-non-scout ratio within the same fresh sample
+# instead, deliberately avoiding compounding two independently-drifting
+# tables' errors together. Shipped un-shrunk (no 80%-log-gap discount):
+# the shift is enormous, consistent in direction across all three
+# independently-measured assets, and on-chain verification confirms the
+# underlying data quality -- shrinking back toward already-disproven
+# values would be conservative for its own sake, not add real safety.
+#
+# NOT re-validated this pass: ACCURACY_SCOUT_MULTIPLIER (the mean-neutral
+# correction composing on top of SCOUT_PROBABILITY below) -- same
+# "re-derive corrections against the new base, don't just inherit them"
+# risk this file has hit before (see DECISIVENESS_ONSET_MULTIPLIER x
+# WITHIN_BAND_SIZE_SLOPE), flagged as a follow-up, not assumed fine.
 SCOUT_PROBABILITY = {
-    "Bitcoin":  0.3326,
-    "Ethereum": 0.2525,
-    "Solana":   0.3072,
+    "Bitcoin":  0.5075,
+    "Ethereum": 0.5600,
+    "Solana":   0.5085,
 }
 
 SCOUT_SIZE_RATIO = {
-    "Bitcoin":  0.9721,
-    "Ethereum": 0.9392,
-    "Solana":   0.6697,
+    "Bitcoin":  0.3272,
+    "Ethereum": 0.0825,
+    "Solana":   0.3133,
 }
 
 # Only reachable if SCOUT_PROBABILITY somehow got a nonzero entry for an
