@@ -2016,12 +2016,27 @@ def decisiveness_onset_multiplier(asset: str, regime: str, fraction_consumed: Op
 # history gives 1.03 (first half) vs 1.56 (second half), and even
 # restricting to just the last 3 days shows 1.41 (first day and a half)
 # vs 1.87 (most recent) -- a real, still-ongoing upward drift, not a
-# settled step-change. Shipping the last-3-days median (1.567) as the
-# best current estimate, but this should be RE-CHECKED WITHIN DAYS, not
-# the usual ~1 week -- if the drift continues, today's value will
-# already be stale by the time it's next reviewed.
+# settled step-change. Shipped the last-3-days median (1.567) as the
+# best current estimate, flagged "RE-CHECK WITHIN DAYS."
+#
+# BITCOIN RETIRED 2026-09-23 (systematic post-Sep-18 audit, same-day
+# re-check as flagged above): the predicted drift didn't just continue,
+# it REVERSED DIRECTION entirely. Fresh reconstruction (n=209, full
+# median*within_band*ttc*decisiveness_onset chain, TTC included this
+# time -- an earlier same-day check that omitted TTC gave a spuriously
+# different number, since fraction_consumed and seconds_remaining are
+# mechanically correlated r=-0.82, the exact collinearity this whole
+# correction exists to handle): median real/pred(uncorrected) = 0.821,
+# split-half 0.725/0.937 -- BOTH halves now below 1.0, meaning the fresh
+# data wants a DAMPENER, not the shipped 1.567 BOOST. Keeping a boost
+# that reality has flipped away from would be actively wrong, worse than
+# no correction. Reverted to 1.0 (no-op) rather than chase a number that
+# has now reversed sign within about a day -- this bucket needs a much
+# longer, more stable baseline before any correction is trustworthy
+# again. Ethereum/Solana checked the same way and stayed reasonably
+# consistent with their shipped values (same direction, same order of
+# magnitude, more noise than drift) -- left unchanged.
 DECISIVENESS_TTC_OVERSHOOT_CORRECTION = {
-    "Bitcoin": [(0.00, 0.45, 1.567)],
     "Ethereum": [(0.45, 0.60, 0.567), (0.60, 1.00, 0.878)],
     "Solana": [(0.45, 0.60, 0.516), (0.60, 1.00, 0.461)],
 }
