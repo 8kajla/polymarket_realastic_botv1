@@ -4801,3 +4801,84 @@ class TestCheapDeepTouchSkipDampenerWiring:
             return n
 
         assert n_placed(now=90.0) == n_placed(now=200.0), "with the flag off, timing must not move the skip rate"
+
+
+class TestParticipationAssetScaleWiring:
+    """build_order_intent's wiring of bc.participation_asset_scale on top
+    of the regime-engagement dampener -- see TestRegimeEngagementDampener
+    above for that mechanism itself."""
+
+    def test_raises_the_effective_engagement_rate_toward_one(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 0.3)
+        monkeypatch.setattr(bc, "participation_asset_scale", lambda asset: 2.0)
+
+        def n_placed(scale_on):
+            monkeypatch.setattr(config, "ENABLE_PARTICIPATION_ASSET_SCALE", scale_on)
+            n = 0
+            for seed in range(400):
+                activity = MarketActivityState()
+                intent = build_order_intent(market, up_book, down_book, activity, random.Random(seed), now=100.0)
+                if intent is not None:
+                    n += 1
+            return n
+
+        assert n_placed(True) > n_placed(False)
+
+    def test_never_pushes_the_effective_rate_above_one(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 0.9)
+        monkeypatch.setattr(bc, "participation_asset_scale", lambda asset: 5.0)  # would overshoot 1.0 if not clamped
+        monkeypatch.setattr(config, "ENABLE_PARTICIPATION_ASSET_SCALE", True)
+
+        n = 0
+        for seed in range(400):
+            activity = MarketActivityState()
+            intent = build_order_intent(market, up_book, down_book, activity, random.Random(seed), now=100.0)
+            if intent is not None:
+                n += 1
+        assert n == 400  # never skips once the scaled multiplier clamps to 1.0
+
+    def test_respects_its_own_feature_flag(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 0.3)
+        monkeypatch.setattr(bc, "participation_asset_scale", lambda asset: 2.0)
+        monkeypatch.setattr(config, "ENABLE_PARTICIPATION_ASSET_SCALE", False)
+
+        def n_placed(seed_range):
+            n = 0
+            for seed in seed_range:
+                activity = MarketActivityState()
+                intent = build_order_intent(market, up_book, down_book, activity, random.Random(seed), now=100.0)
+                if intent is not None:
+                    n += 1
+            return n
+
+        with_flag_off = n_placed(range(400))
+        monkeypatch.setattr(config, "ENABLE_PARTICIPATION_ASSET_SCALE", True)
+        with_flag_on = n_placed(range(400))
+        assert with_flag_on > with_flag_off, "sanity: the scale DOES do something when the flag is on"

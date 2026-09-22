@@ -1153,6 +1153,15 @@ ENABLE_CHEAP_DEEP_TOUCH_EDGE = os.environ.get(
     "ENABLE_CHEAP_DEEP_TOUCH_EDGE", "false"
 ).strip().lower() not in ("false", "0", "no")
 
+# ADDED 2026-09-22: per-asset participation scale on top of
+# REGIME_ENGAGEMENT_MULTIPLIER (see participation_asset_scale in
+# behavior_config.py) -- closes the P4 participation gap (BTC/SOL
+# under-participated, ETH already correct) without touching regime mix.
+# Default OFF; enabled on paperbot only for the initial paper A/B.
+ENABLE_PARTICIPATION_ASSET_SCALE = os.environ.get(
+    "ENABLE_PARTICIPATION_ASSET_SCALE", "false"
+).strip().lower() not in ("false", "0", "no")
+
 # ADDED 2026-09-22: EXPERIMENT -- companion (multi-level) orders. Real trader keeps ~3 concurrent
 # orders/market at ~3.5 price levels and fills ~4c below the pre-fill mid (on-chain, 44h); our bots
 # rest a single order at the best bid (88% of first-entry orders never fill). With this flag ON,

@@ -1518,3 +1518,13 @@ class TestCheapDeepTouchEdgeMultiplier:
         assert bc.cheap_deep_touch_edge_multiplier(0.05, 280.0) == 1.0  # after 270s
         assert bc.cheap_deep_touch_edge_multiplier(0.15, 60.0) == 1.0   # price above threshold
         assert bc.cheap_deep_touch_edge_multiplier(0.05, None) == 1.0   # unknown timing
+
+
+class TestParticipationAssetScale:
+    def test_known_assets(self):
+        assert bc.participation_asset_scale("Bitcoin") == bc.PARTICIPATION_ASSET_SCALE["Bitcoin"]
+        assert bc.participation_asset_scale("Solana") == bc.PARTICIPATION_ASSET_SCALE["Solana"]
+
+    def test_ethereum_and_unknown_default_to_one(self):
+        assert bc.participation_asset_scale("Ethereum") == 1.0
+        assert bc.participation_asset_scale("Dogecoin") == 1.0

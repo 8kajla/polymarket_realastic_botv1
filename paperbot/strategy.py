@@ -1341,6 +1341,13 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         if activity.is_regime_episode_rejected(side, regime):
             return None
         engagement_mult = bc.regime_engagement_multiplier(market.asset, regime)
+        # PARTICIPATION_ASSET_SCALE (2026-09-22): a per-asset overlay on
+        # top of the regime-mix table above -- see its docstring in
+        # behavior_config.py. Scales toward 1.0 (less skip), never past
+        # it, so it can only raise overall engagement, never distort the
+        # regime-mix ratios the base table was calibrated for.
+        if config.ENABLE_PARTICIPATION_ASSET_SCALE:
+            engagement_mult = min(1.0, engagement_mult * bc.participation_asset_scale(market.asset))
         if engagement_mult < 1.0 and rng.random() > engagement_mult:
             activity.reject_regime_episode(side, regime)
             logger.info(

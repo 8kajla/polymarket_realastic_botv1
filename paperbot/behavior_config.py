@@ -1263,6 +1263,33 @@ REGIME_ENGAGEMENT_MULTIPLIER = {
 }
 
 
+# PARTICIPATION_ASSET_SCALE -- ADDED 2026-09-22. A DIFFERENT axis from
+# REGIME_ENGAGEMENT_MULTIPLIER just above: that table governs the MIX
+# (which regime, once engaged) and, as a side effect, overall engagement
+# rate too, but the two aren't separable within one table -- pushing
+# overall participation up by raising every cell uniformly would also
+# distort the regime mix that table was carefully calibrated for. This is
+# a plain per-asset SCALE on top of it (min(1.0, base * scale) at the
+# call site), leaving the regime-mix ratios between CHEAP/MID/CORE/HIGH
+# exactly as calibrated -- only how often the asset gets engaged at all.
+#
+# Measured fresh 2026-09-22 (paperbot, since its current deploy, vs the
+# real trader over the identical window, COMPLETE collector): Bitcoin bot
+# 52.0% of windows vs his 84.0% (ratio 1.62); Ethereum bot 41.6% vs his
+# 41.6% (ratio 1.00 -- already correct, left out of the table below,
+# defaults to a no-op); Solana bot 26.4% vs his 44.8% (ratio 1.70).
+# Shrunk to 80% of the log gap, same convention as every other level
+# correction in this file.
+PARTICIPATION_ASSET_SCALE = {
+    "Bitcoin": 1.471,
+    "Solana": 1.529,
+}
+
+
+def participation_asset_scale(asset: str) -> float:
+    return PARTICIPATION_ASSET_SCALE.get(asset, 1.0)
+
+
 def regime_engagement_multiplier(asset: str, regime: str) -> float:
     """1.0 (no-op) for any asset/regime with no calibration -- otherwise
     the per-asset targeting multiplier for this regime, applied as a
