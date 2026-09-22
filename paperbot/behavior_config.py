@@ -2430,8 +2430,24 @@ def recent_side_persistence(asset: str, held_side_regime: str, default: float) -
 # frequency-matching (this table's actual design) remains the only
 # defensible choice, not a mistake to correct. Closes that memory's
 # recommendation #1 as "attempted, not viable" rather than open-ended.
+# Bitcoin after_loss RECALIBRATED 2026-09-23 (systematic post-Sep-18
+# audit): fresh post-boundary rate (n=302) is 0.4900, a real -12.3pp
+# drop from the shipped 0.6128 -- Bitcoin has lost most of its
+# persist-after-a-loss bias, now close to a coin flip. after_win barely
+# moved (0.5182->0.5333, within noise, left unchanged). Ethereum/Solana
+# both checked fresh too and stayed close to shipped (within ~3.5pp on
+# both cells) -- left unchanged.
+# HONEST CAVEAT: split-half WITHIN the post-boundary window itself shows
+# this is still moving, not settled -- 0.525 (first half, n=179) -> 0.439
+# (second half, n=123), an ongoing decline rather than a one-time step.
+# Shipped the pooled estimate rather than the thinner, more-recent half
+# alone. Style-only mechanism (already established non-predictive of win
+# rate -- see this section's own docstring above), so this affects
+# behavioral-frequency fidelity only, not PnL. RE-CHECK WITHIN DAYS if
+# the decline continues, same discipline as ENTRY_SIZE_LEVEL_CORRECTION's
+# CHEAP cells.
 CROSS_MARKET_SIDE_PERSISTENCE = {
-    "Bitcoin": {"after_win": 0.5182, "after_loss": 0.6128},
+    "Bitcoin": {"after_win": 0.5182, "after_loss": 0.4900},
     "Ethereum": {"after_win": 0.4874, "after_loss": 0.5515},
     "Solana": {"after_win": 0.4990, "after_loss": 0.5853},
 }
@@ -2603,10 +2619,36 @@ def cross_market_size_momentum_multiplier(asset: str, prev_size_residual: Option
 # detrended significance actually weakened and softened toward zero
 # (t=-3.802 -> t=1.864). This reinforces, not reverses, the "genuinely
 # unstable" verdict -- kept unchanged.
-BANKROLL_PNL_SIZE_MULTIPLIER = {
-    "Ethereum": {-238.98: 1.1724, -17.38: 0.9851, 191.66: 0.9824, 416.47: 0.8601},
-    "Solana": {-356.36: 1.2420, -262.25: 1.1362, -87.82: 0.8390, 54.75: 0.7830},
-}
+# RETIRED 2026-09-23 (systematic post-Sep-18 audit): this table's own
+# history is a repeated pattern of "borderline/unstable, keep pending
+# more data" (2026-09-08 raw-vs-detrended confound caught, 2026-09-13
+# temporal-half-stability failed twice, both times kept anyway "revisit
+# once more post-halt time accumulates"). Also separately found to be
+# INERT for our own bots regardless of validity: paperbot's live
+# cumulative Ethereum PnL (-894.44) sits far below the calibrated floor
+# (-238.98), permanently clamping this multiplier at 1.1724x rather than
+# ever discriminating dynamically.
+#
+# Re-derived with a genuinely different, leak-free methodology this time
+# (rolling 48h trailing realized PnL using only prior, already-settled
+# markets, rather than the original's presumably-longer or differently-
+# windowed cumulative measure) to get a clean, independent read rather
+# than re-litigating the same borderline number a third time:
+#   Ethereum (n=450): corr(rolling_48h_pnl, log(entry_usd)) = +0.0503,
+#     t=1.07 -- null, and positive (shipped claims a NEGATIVE relationship,
+#     bigger size after a drawdown).
+#   Solana (n=417): corr = +0.1248, t=2.56 -- just under this file's own
+#     |t|>=2.58 bar, and again POSITIVE, the same wrong-sign direction as
+#     Ethereum.
+# Both assets, independently, fail to replicate the claimed direction
+# under a cleaner methodology -- not just "still borderline," now
+# actively wrong-signed. Combined with the mechanism's own repeated
+# instability history and its confirmed inertness on live bots, this
+# crosses from "revisit later" to "retire." Table emptied rather than
+# left with stale (asset, breakpoint) keys -- bankroll_pnl_size_
+# multiplier() already returns 1.0 (no-op) for any asset not present,
+# same fallback every other retired table in this file uses.
+BANKROLL_PNL_SIZE_MULTIPLIER = {}
 _BANKROLL_PNL_SIZE_MULTIPLIER_CAP = 3.0
 
 

@@ -186,22 +186,37 @@ class TestCrossMarketSidePersistence:
             assert bc.cross_market_side_persistence(asset) == expected
 
     def test_exact_values_for_the_three_calibrated_assets(self):
-        # RECALIBRATED 2026-09-13 (post-halt, /loop cycle 9) -- see
-        # CROSS_MARKET_SIDE_PERSISTENCE's docstring.
+        # Bitcoin's after_loss RECALIBRATED 2026-09-23 (systematic post-
+        # Sep-18 audit) -- see CROSS_MARKET_SIDE_PERSISTENCE's docstring:
+        # fresh post-boundary rate is 0.4900, a real -12.3pp drop from the
+        # 2026-09-13 value. Ethereum/Solana checked fresh too, stayed
+        # close, left unchanged.
         assert bc.cross_market_side_persistence("Bitcoin", True) == 0.5182
-        assert bc.cross_market_side_persistence("Bitcoin", False) == 0.6128
+        assert bc.cross_market_side_persistence("Bitcoin", False) == 0.4900
         assert bc.cross_market_side_persistence("Ethereum", True) == 0.4874
         assert bc.cross_market_side_persistence("Ethereum", False) == 0.5515
         assert bc.cross_market_side_persistence("Solana", True) == 0.4990
         assert bc.cross_market_side_persistence("Solana", False) == 0.5853
 
-    def test_persistence_is_stronger_after_a_loss_than_after_a_win(self):
-        # The whole finding: NOT hot-hand, NOT gambler's fallacy -- he
+    def test_persistence_is_stronger_after_a_loss_for_ethereum_and_solana(self):
+        # The original finding: NOT hot-hand, NOT gambler's fallacy -- he
         # sticks with his read MORE after a setback than after a win.
-        for asset, spec in bc.CROSS_MARKET_SIDE_PERSISTENCE.items():
+        # RECALIBRATED 2026-09-23: Bitcoin's version of this has
+        # genuinely reversed post-Sep-18 (after_loss 0.49 < after_win
+        # 0.5182, now close to a coin flip) -- excluded here, not a test
+        # bug. Ethereum/Solana still show the original pattern.
+        for asset in ("Ethereum", "Solana"):
+            spec = bc.CROSS_MARKET_SIDE_PERSISTENCE[asset]
             assert spec["after_loss"] > spec["after_win"], (
                 f"{asset}: expected after_loss > after_win, got {spec}"
             )
+
+    def test_bitcoin_persistence_no_longer_shows_the_after_loss_boost(self):
+        # RECALIBRATED 2026-09-23 -- explicit regression guard for the
+        # reversal found in the systematic post-Sep-18 audit, so this
+        # doesn't silently drift back without comment.
+        spec = bc.CROSS_MARKET_SIDE_PERSISTENCE["Bitcoin"]
+        assert spec["after_loss"] < spec["after_win"]
 
 
 class TestFloorLotProbability:
@@ -1108,13 +1123,18 @@ class TestCrossMarketSizeMomentumMultiplier:
 
 
 class TestBankrollPnlSizeMultiplier:
-    """Bankroll-linked sizing, added 2026-09-12 -- real, well-powered
-    finding for Ethereum/Solana ONLY (Bitcoin deliberately excluded, not
-    just uncalibrated -- see the docstring in behavior_config.py): first-
-    entry size scales DOWN after his own accumulated realized profit and
-    UP after a drawdown. Survived time-detrending, a partial-correlation
-    confound check against ADVERSE_MOVE_SIZE_MULTIPLIER, and a temporal-
-    stability check across the Aug 7 TWAP change."""
+    """Bankroll-linked sizing, added 2026-09-12, RETIRED 2026-09-23
+    (systematic post-Sep-18 audit) -- the original Ethereum/Solana
+    finding (size scales down after accumulated profit, up after a
+    drawdown) had a repeated history of borderline/unstable re-checks
+    (2026-09-08, 2026-09-13) and was separately found permanently inert
+    on live bots (paperbot's Ethereum PnL sits far below the calibrated
+    floor). A fresh, leak-free, rolling-window re-derivation found BOTH
+    assets independently fail to replicate the claimed direction (null
+    for Ethereum, wrong-signed for Solana) -- see
+    BANKROLL_PNL_SIZE_MULTIPLIER's docstring in behavior_config.py.
+    Table emptied; these tests now confirm the no-op state, not the
+    original (retracted) finding."""
 
     def test_noop_for_unknown_asset_or_missing_pnl(self):
         assert bc.bankroll_pnl_size_multiplier("Bitcoin", 100.0) == 1.0
@@ -1124,25 +1144,11 @@ class TestBankrollPnlSizeMultiplier:
     def test_bitcoin_is_deliberately_excluded_not_just_uncalibrated(self):
         assert "Bitcoin" not in bc.BANKROLL_PNL_SIZE_MULTIPLIER
 
-    def test_decreases_as_realized_pnl_increases(self):
-        # The whole finding: sizes DOWN after accumulated profit, UP
-        # after a drawdown -- multiplier must be strictly decreasing.
-        for asset, curve in bc.BANKROLL_PNL_SIZE_MULTIPLIER.items():
-            xs = sorted(curve.keys())
-            low_pnl_mult = bc.bankroll_pnl_size_multiplier(asset, xs[0])
-            high_pnl_mult = bc.bankroll_pnl_size_multiplier(asset, xs[-1])
-            assert low_pnl_mult > high_pnl_mult, (
-                f"{asset}: expected a lower-pnl point to size bigger than a higher-pnl "
-                f"point, got {low_pnl_mult}/{high_pnl_mult}"
-            )
-
-    def test_flat_beyond_the_measured_range(self):
-        for asset, curve in bc.BANKROLL_PNL_SIZE_MULTIPLIER.items():
-            xs = sorted(curve.keys())
-            assert (bc.bankroll_pnl_size_multiplier(asset, xs[0] - 10000)
-                    == bc.bankroll_pnl_size_multiplier(asset, xs[0]))
-            assert (bc.bankroll_pnl_size_multiplier(asset, xs[-1] + 10000)
-                    == bc.bankroll_pnl_size_multiplier(asset, xs[-1]))
+    def test_table_is_empty_and_every_asset_is_now_a_noop(self):
+        assert bc.BANKROLL_PNL_SIZE_MULTIPLIER == {}
+        for asset in ("Bitcoin", "Ethereum", "Solana", "Dogecoin"):
+            assert bc.bankroll_pnl_size_multiplier(asset, -1000.0) == 1.0
+            assert bc.bankroll_pnl_size_multiplier(asset, 1000.0) == 1.0
 
 
 class TestReentryFatigueMultiplier:

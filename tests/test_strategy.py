@@ -568,9 +568,13 @@ class TestSizingDecision:
                                                  bankroll_pnl_residual=None)
         assert notional_no_arg == notional_explicit_none
 
-    def test_bankroll_pnl_scales_first_entry_size_down_as_pnl_rises(self):
-        # The whole finding: sizes DOWN after accumulated profit, UP after
-        # a drawdown.
+    def test_bankroll_pnl_is_now_a_noop_regardless_of_pnl(self):
+        # RETIRED 2026-09-23 (systematic post-Sep-18 audit): the original
+        # finding (sizes DOWN after profit, UP after a drawdown) failed a
+        # fresh, leak-free, rolling-window re-derivation for both
+        # Ethereum and Solana -- see BANKROLL_PNL_SIZE_MULTIPLIER's
+        # docstring in behavior_config.py. Table emptied; pnl no longer
+        # moves size at all.
         def avg_notional(pnl, n=400):
             rng = random.Random(59)
             total = 0.0
@@ -582,7 +586,7 @@ class TestSizingDecision:
 
         after_drawdown = avg_notional(-200.0)
         after_profit = avg_notional(400.0)
-        assert after_profit < after_drawdown
+        assert after_profit == after_drawdown
 
     def test_bankroll_pnl_is_a_noop_for_bitcoin(self):
         # Deliberately excluded, not just uncalibrated -- see
