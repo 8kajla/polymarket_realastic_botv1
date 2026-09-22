@@ -439,20 +439,21 @@ class TestSizingDecision:
         fourth = avg_notional("4th_plus")
         assert first < second < fourth
 
-    def test_share_based_sizing_is_scoped_to_mid_and_core(self, monkeypatch):
-        # 2026-09-22: CHEAP/HIGH stay on the old path even with the flag on
+    def test_share_based_sizing_is_scoped_to_mid_core_and_high(self, monkeypatch):
+        # 2026-09-22: CHEAP stays on the old path even with the flag on
         # (share base fits worse there -- see SHARE_BASED_SIZING_REGIMES).
-        assert bc.SHARE_BASED_SIZING_REGIMES == ("MID", "CORE")
+        # 2026-09-23: HIGH was added once HIGH_TAIL_SHARE_MULTIPLIER made
+        # the share base competitive with the old path there too.
+        assert bc.SHARE_BASED_SIZING_REGIMES == ("MID", "CORE", "HIGH")
         monkeypatch.setattr(config, "ENABLE_SHARE_BASED_SIZING", True)
         calls = []
         real_median = bc.median_entry_notional
         monkeypatch.setattr(bc, "median_entry_notional",
                              lambda *a, **kw: (calls.append(a[1]), real_median(*a, **kw))[1])
-        for regime, price in (("CHEAP", 0.15), ("HIGH", 0.95)):
-            decide_size("Ethereum", regime, "first", price, random.Random(3))
-        assert calls == ["CHEAP", "HIGH"]          # old median path used
+        decide_size("Ethereum", "CHEAP", "first", 0.15, random.Random(3))
+        assert calls == ["CHEAP"]                  # old median path used
         calls.clear()
-        for regime, price in (("MID", 0.45), ("CORE", 0.80)):
+        for regime, price in (("MID", 0.45), ("CORE", 0.80), ("HIGH", 0.95)):
             decide_size("Ethereum", regime, "first", price, random.Random(3))
         assert calls == []                         # share path: old median never read
 

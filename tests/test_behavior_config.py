@@ -1439,6 +1439,54 @@ class TestNotionalForPrice:
         assert bc.POSITION_TIER_SHARE_MULTIPLIER["4th_plus"] == pytest.approx(1.30)
 
 
+class TestHighTailShareMultiplier:
+    """ADDED 2026-09-23 -- corrects a real, on-chain-confirmed asymmetry in
+    the deep HIGH tail (price>0.92) that shares_for_price's single
+    symmetric curve underpredicts. See HIGH_TAIL_SHARE_MULTIPLIER's
+    docstring for the full derivation (360 on-chain-verified fills,
+    split-half stability check)."""
+
+    def test_shares_for_price_itself_is_unaffected(self):
+        # the bare curve must stay uncorrected -- hedge_notional_for_price
+        # depends on it directly and was calibrated against the
+        # uncorrected curve.
+        assert bc.shares_for_price(0.95) == bc.shares_for_price(0.05)
+        assert bc.shares_for_price(0.99) == bc.shares_for_price(0.01)
+
+    def test_notional_for_price_applies_the_multiplier_above_threshold(self):
+        price = 0.95
+        uncorrected = bc.shares_for_price(price) * price
+        assert bc.notional_for_price(price, "first") == pytest.approx(
+            uncorrected * bc.HIGH_TAIL_SHARE_MULTIPLIER)
+
+    def test_notional_for_price_leaves_the_low_tail_uncorrected(self):
+        # the LOW side (price<0.08) was found unstable across split-half
+        # and is deliberately NOT corrected.
+        price = 0.05
+        assert bc.notional_for_price(price, "first") == pytest.approx(
+            bc.shares_for_price(price) * price)
+
+    def test_threshold_is_exclusive(self):
+        at = bc.notional_for_price(bc.HIGH_TAIL_SHARE_PRICE_THRESHOLD, "first")
+        uncorrected_at = bc.shares_for_price(bc.HIGH_TAIL_SHARE_PRICE_THRESHOLD) * bc.HIGH_TAIL_SHARE_PRICE_THRESHOLD
+        assert at == pytest.approx(uncorrected_at)  # exactly at threshold: no correction
+        just_above = bc.notional_for_price(bc.HIGH_TAIL_SHARE_PRICE_THRESHOLD + 1e-6, "first")
+        assert just_above > at
+
+    def test_hedge_notional_for_price_is_not_affected(self):
+        # hedge_notional_for_price calls shares_for_price directly, not
+        # notional_for_price -- must stay on the uncorrected curve. Cross-
+        # check against the documented formula directly.
+        price = 0.95
+        expected = (bc.HEDGE_PRICE_SIZING_SCALE["Bitcoin"]
+                    * (bc.shares_for_price(price) * price) ** bc.HEDGE_PRICE_SIZING_BETA)
+        assert bc.hedge_notional_for_price("Bitcoin", price) == pytest.approx(expected)
+
+    def test_multiplier_matches_documented_calibration(self):
+        assert bc.HIGH_TAIL_SHARE_MULTIPLIER == pytest.approx(1.61)
+        assert bc.HIGH_TAIL_SHARE_PRICE_THRESHOLD == pytest.approx(0.92)
+
+
 class TestRegimeEngagementMultiplier:
     """Added 2026-09-21 -- see REGIME_ENGAGEMENT_MULTIPLIER's docstring
     for the historical-replay derivation. conftest.py's autouse

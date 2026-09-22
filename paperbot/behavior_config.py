@@ -711,15 +711,83 @@ POSITION_TIER_SHARE_MULTIPLIER = {
 # same deep-tail region where 2026-09-21 on-chain data showed the formula
 # does not extrapolate (see hedge-size-ratio-confirmed-misspec-and-onchain-
 # deeptail-unblocked). CHEAP is mixed (Bitcoin worse, ETH/SOL slightly
-# better) so it stays on the old path. Regimes outside this tuple use the
+# better) so it stays on the old path.
+#
+# HIGH ADDED 2026-09-23, via HIGH_TAIL_SHARE_MULTIPLIER below: a much
+# bigger on-chain re-collection (360 verified fills, up from the original
+# handful in the deep tail) found the HIGH-side underprediction is a real,
+# well-powered, DIRECTIONALLY stable asymmetry -- not just noise -- so it's
+# now corrected rather than treated as a reason to exclude HIGH outright.
+# See that constant's own docstring for the full derivation. With the
+# correction applied, HIGH's real-vs-predicted fit matches or beats the old
+# path (MALE 0.490-0.596 corrected vs OLD 0.497/0.661, ALL/post-boundary)
+# and the whole-dataset HYBRID fit improves too (0.437/0.598 vs the
+# MID+CORE-only hybrid's 0.449/0.608). Regimes outside this tuple use the
 # old median x within_band path even when ENABLE_SHARE_BASED_SIZING is on.
-SHARE_BASED_SIZING_REGIMES = ("MID", "CORE")
+SHARE_BASED_SIZING_REGIMES = ("MID", "CORE", "HIGH")
+
+
+# HIGH_TAIL_SHARE_MULTIPLIER -- ADDED 2026-09-23. shares_for_price's single
+# symmetric curve (dist = |price-0.5|) was built on a thin original sample
+# (4 points beyond dist=0.35) and its own docstring already flagged the
+# deep tail as unverified. Re-collected on-chain via the tx-hash lookup
+# method (no eth_getLogs retention limit): 280 new receipts fetched
+# (154 Solana-targeted, 84 very-deep dist>0.45, 42 deep dist 0.42-0.45),
+# yielding 309 new verified fills, combined with the prior 63 into 360
+# matched, hedge/dominant-labeled points via trades.jsonl sequence join.
+#
+# Finding: the deep tail is NOT symmetric around 0.5 the way the shipped
+# formula assumes. Split by price side, dist>0.42, DOMINANT (non-hedge)
+# fills only (n=240, hedge composition checked and ruled out as the
+# explanation -- the asymmetry survives within dominant-only and is even
+# stronger within the small hedge-only subset):
+#   LOW  (price<0.08):  median real/predicted = 0.630  (formula OVER-predicts)
+#   HIGH (price>0.92):  median real/predicted = 1.816  (formula UNDER-predicts)
+# A full continuous re-fit (log(shares) ~ dist, separately per side) was
+# tried and abandoned -- r^2 = 0.03-0.16, i.e. distance from 0.5 explains
+# almost none of the per-trade variance out here, consistent with this
+# project's established "predictability ceiling" (per-decision replication
+# is not achievable from public data; only distributional/average
+# calibration is). Split-half checked: the LOW side is NOT stable (median
+# ratio flips 0.52 -> 1.39 between halves) and is deliberately left
+# UNCORRECTED -- not safe to ship a fix there. The HIGH side IS
+# directionally stable (2.61 -> 1.82 across halves, always >1, i.e. always
+# underpredicting) even though its exact magnitude still moves -- a
+# multiplicative bias correction is justified, a precise per-trade curve
+# is not.
+#
+# Value: 80%-of-log-gap shrinkage (this file's standard convention) on the
+# full-sample HIGH-side median ratio: exp(0.8 * ln(1.816)) = 1.61. Verified
+# against the real trader's decision-collapsed first entries (same method
+# as SHARE_BASED_SIZING_REGIMES's own derivation): this lands within the
+# best-or-near-best tested range (x1.6-x1.8 both close to optimal on both
+# the ALL and post-boundary windows; x1.6 chosen as the principled shrunk
+# value rather than hand-picking whichever backtested best, given the
+# magnitude instability noted above). Applies ONLY to price>0.92 (the side
+# confirmed stable) -- price<0.08 is deliberately left as the bare,
+# uncorrected curve.
+#
+# DELIBERATELY applied in notional_for_price (the entry-only wrapper), NOT
+# in shares_for_price itself -- hedge_notional_for_price also calls
+# shares_for_price internally (hedge_usd = scale * (shares_for_price(p)*p)
+# ** beta), and its own scale/beta constants (Phase 3, 2026-09-22) were
+# fit against the UNCORRECTED curve. Baking this correction into
+# shares_for_price would have silently shifted hedge sizing in the deep-
+# HIGH tail too, on an entry-side finding never checked against hedges --
+# exactly the kind of unintended cross-mechanism coupling this project has
+# been bitten by before. If a future pass wants this for hedges too, it
+# needs its own hedge-side validation, not inheritance by accident.
+HIGH_TAIL_SHARE_MULTIPLIER = 1.61
+HIGH_TAIL_SHARE_PRICE_THRESHOLD = 0.92
 
 
 def shares_for_price(price: float) -> float:
-    """The bare price->shares curve, no position-tier correction. Exposed
-    separately from notional_for_price for direct testing against the
-    on-chain discovery's own numbers."""
+    """The bare price->shares curve, no position-tier correction and no
+    HIGH-tail correction (see notional_for_price and
+    HIGH_TAIL_SHARE_MULTIPLIER for that) -- also used directly by
+    hedge_notional_for_price, which must stay on the uncorrected curve.
+    Exposed separately from notional_for_price for direct testing against
+    the on-chain discovery's own numbers."""
     dist = abs(price - 0.5)
     if dist <= 0.20:
         raw = 5.05 * math.exp(0.873 * dist)
@@ -730,11 +798,17 @@ def shares_for_price(price: float) -> float:
 
 def notional_for_price(price: float, position_tier: str = "first") -> float:
     """shares_for_price(price), corrected for position_tier (see this
-    section's docstring above), converted to a USD notional. position_
-    tier defaults to "first" (multiplier 1.0, a no-op) so any call site
-    that doesn't know its own tier degrades to the bare price-only curve
-    rather than raising."""
+    section's docstring above) and for the HIGH-tail asymmetry (see
+    HIGH_TAIL_SHARE_MULTIPLIER, price>0.92 only), converted to a USD
+    notional. position_tier defaults to "first" (multiplier 1.0, a no-op)
+    so any call site that doesn't know its own tier degrades to the
+    bare price-only curve rather than raising. Entry-only wrapper --
+    hedge_notional_for_price does NOT call this, it uses shares_for_price
+    directly and stays uncorrected (see HIGH_TAIL_SHARE_MULTIPLIER's
+    docstring for why)."""
     shares = shares_for_price(price) * POSITION_TIER_SHARE_MULTIPLIER.get(position_tier, 1.0)
+    if price > HIGH_TAIL_SHARE_PRICE_THRESHOLD:
+        shares *= HIGH_TAIL_SHARE_MULTIPLIER
     return shares * price
 
 
