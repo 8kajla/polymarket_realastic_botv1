@@ -1337,10 +1337,32 @@ def decisive_entry_eligibility_multiplier(asset: str, seconds_since_decisive_cro
 # other tables in this file, which have stayed stable for weeks once
 # validated. Revisit if a future live comparison shows a similar-sized
 # gap reopening.
+#
+# REFRESHED 2026-09-22, exactly the drift this table's own risk note
+# predicted: the live fidelity scorecard flagged CORE as a "barely
+# traded" cell (n<8) for Bitcoin/Ethereum across all three active bots.
+# Re-derived with the identical methodology (ratio_regime/ratio_anchor,
+# last 72h natural rate from price_history_dense.jsonl pooled up/down
+# ticks, real trader's first-entry share over the same window), split-
+# half checked before shipping (same discipline as the 09-21 version):
+#   Bitcoin  n=593:  CHEAP 0.40/0.37 half-split, MID 0.09/0.09, CORE
+#                     0.34/0.33 -- all stable.
+#   Ethereum n=410:  CHEAP 0.59/0.43 (more spread but same direction,
+#                     both well below the old 0.83), MID 0.05/0.03,
+#                     CORE 0.14/0.15 -- stable.
+#   Solana   n=361:  CHEAP 0.55/0.46, MID 0.05/0.03, CORE 0.08/0.12 --
+#                     CORE direction stable (both above old 0.08), some
+#                     magnitude spread.
+# Net effect vs the 09-21 table: CORE moves UP for every asset (0.23->
+# 0.339 Bitcoin, 0.11->0.139 Ethereum, 0.08->0.104 Solana) -- directly
+# targeting the scorecard's flagged gap. CHEAP moves DOWN meaningfully
+# for Ethereum/Solana (0.83->0.50, 0.76->0.509) and mildly for Bitcoin
+# (0.45->0.39). MID drops further for all three. HIGH stays the anchor
+# (1.0) for every asset, unchanged.
 REGIME_ENGAGEMENT_MULTIPLIER = {
-    "Bitcoin":  {"CHEAP": 0.45, "MID": 0.10, "CORE": 0.23, "HIGH": 1.00},
-    "Ethereum": {"CHEAP": 0.83, "MID": 0.06, "CORE": 0.11, "HIGH": 1.00},
-    "Solana":   {"CHEAP": 0.76, "MID": 0.05, "CORE": 0.08, "HIGH": 1.00},
+    "Bitcoin":  {"CHEAP": 0.39, "MID": 0.09, "CORE": 0.339, "HIGH": 1.00},
+    "Ethereum": {"CHEAP": 0.50, "MID": 0.037, "CORE": 0.139, "HIGH": 1.00},
+    "Solana":   {"CHEAP": 0.509, "MID": 0.037, "CORE": 0.104, "HIGH": 1.00},
 }
 
 

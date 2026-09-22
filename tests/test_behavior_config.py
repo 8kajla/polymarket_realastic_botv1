@@ -1482,15 +1482,19 @@ class TestRegimeEngagementMultiplier:
             assert bc.regime_engagement_multiplier(asset, "CHEAP") < 1.0
 
     def test_matches_the_documented_calibration_table(self):
-        assert bc.regime_engagement_multiplier("Bitcoin", "CHEAP") == pytest.approx(0.45)
-        assert bc.regime_engagement_multiplier("Bitcoin", "MID") == pytest.approx(0.10)
-        assert bc.regime_engagement_multiplier("Bitcoin", "CORE") == pytest.approx(0.23)
-        assert bc.regime_engagement_multiplier("Ethereum", "CHEAP") == pytest.approx(0.83)
-        assert bc.regime_engagement_multiplier("Ethereum", "MID") == pytest.approx(0.06)
-        assert bc.regime_engagement_multiplier("Ethereum", "CORE") == pytest.approx(0.11)
-        assert bc.regime_engagement_multiplier("Solana", "CHEAP") == pytest.approx(0.76)
-        assert bc.regime_engagement_multiplier("Solana", "MID") == pytest.approx(0.05)
-        assert bc.regime_engagement_multiplier("Solana", "CORE") == pytest.approx(0.08)
+        # RECALIBRATED 2026-09-22: live scorecard flagged Bit/Eth CORE as
+        # barely-traded cells; refresh boosts CORE for every asset and
+        # trims CHEAP for Ethereum/Solana. See REGIME_ENGAGEMENT_MULTIPLIER's
+        # docstring for the split-half validation behind these numbers.
+        assert bc.regime_engagement_multiplier("Bitcoin", "CHEAP") == pytest.approx(0.39)
+        assert bc.regime_engagement_multiplier("Bitcoin", "MID") == pytest.approx(0.09)
+        assert bc.regime_engagement_multiplier("Bitcoin", "CORE") == pytest.approx(0.339)
+        assert bc.regime_engagement_multiplier("Ethereum", "CHEAP") == pytest.approx(0.50)
+        assert bc.regime_engagement_multiplier("Ethereum", "MID") == pytest.approx(0.037)
+        assert bc.regime_engagement_multiplier("Ethereum", "CORE") == pytest.approx(0.139)
+        assert bc.regime_engagement_multiplier("Solana", "CHEAP") == pytest.approx(0.509)
+        assert bc.regime_engagement_multiplier("Solana", "MID") == pytest.approx(0.037)
+        assert bc.regime_engagement_multiplier("Solana", "CORE") == pytest.approx(0.104)
 
     def test_unknown_asset_is_a_noop(self):
         assert bc.regime_engagement_multiplier("Dogecoin", "MID") == 1.0
