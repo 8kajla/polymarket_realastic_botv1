@@ -609,9 +609,33 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
 # CHEAP already composes with cheap_deep_touch_edge_multiplier's own,
 # separately-targeted size boost (a different mechanism: a narrow
 # early-window/deep-price condition, not a general CHEAP level).
+#
+# CHEAP-Bitcoin/Ethereum REFRESHED 2026-09-22, same day as the above --
+# in direct response to the live fidelity scorecard showing Bitcoin/
+# Ethereum CHEAP sizing still at 0.54-0.65x the real trader's despite
+# this same-day fix already being live. Re-measured directly against
+# the last 3 days (the freshest reasonably-sized window): with the
+# ABOVE correction already applied, real/predicted ratio is still
+# 2.07 for Bitcoin, 1.25 for Ethereum -- i.e. even the just-shipped
+# correction undershoots the CURRENT reality. Applied the SAME 80%-of-
+# log-gap shrinkage convention to this fresh delta on top of the
+# existing values (0.968 -> 1.735, 0.853 -> 1.020).
+#
+# HONEST CAVEAT, stronger than usual (same pattern as the Bitcoin HIGH
+# fix in DECISIVENESS_TTC_OVERSHOOT_CORRECTION above): this ratio is
+# NOT stable -- split-half over just the last 3 days gives 1.62 (first
+# half) vs 2.13 (second half) for Bitcoin, 0.98 vs 1.48 for Ethereum --
+# a real, ongoing upward drift, plausibly connected to CHEAP entries
+# getting substantially deeper post-boundary (median price 0.17->0.06
+# over the same period, per this session's separate research). Solana
+# CHEAP checked too and left UNCHANGED -- its fresh ratio (1.17) is
+# much smaller and more stable (1.18 vs 1.11 split-half), under the
+# threshold this project treats as actually broken. RE-CHECK ALL THREE
+# WITHIN DAYS, not the usual ~1 week -- if the drift continues, today's
+# refreshed values will already be stale by the next review.
 ENTRY_SIZE_LEVEL_CORRECTION = {
-    "Bitcoin":  {"CHEAP": 0.968, "MID": 2.383, "CORE": 1.172, "HIGH": 1.331},
-    "Ethereum": {"CHEAP": 0.853, "MID": 1.967, "CORE": 2.246, "HIGH": 1.629},
+    "Bitcoin":  {"CHEAP": 1.735, "MID": 2.383, "CORE": 1.172, "HIGH": 1.331},
+    "Ethereum": {"CHEAP": 1.020, "MID": 1.967, "CORE": 2.246, "HIGH": 1.629},
     "Solana":   {"CHEAP": 0.828, "MID": 1.622, "CORE": 2.867, "HIGH": 1.339},
 }
 
@@ -1757,7 +1781,35 @@ def decisiveness_onset_multiplier(asset: str, regime: str, fraction_consumed: Op
 #             [0.60,1.00) predicted/real=1.139 -> correction 0.878
 #   Solana:   [0.45,0.60) predicted/real=1.937 -> correction 0.516
 #             [0.60,1.00) predicted/real=2.168 -> correction 0.461
+#
+# BITCOIN ADDED 2026-09-22, in direct response to the live fidelity
+# scorecard showing Bitcoin HIGH sizing at 0.29-0.60x the real trader's
+# across all three active bots. This function's own docstring had
+# already flagged the mechanism ("Bitcoin actually UNDERSHOOTS across
+# the board... left uncalibrated here since correcting an undershoot
+# isn't this finding's job") -- closing that deferred gap now with the
+# same methodology used for Ethereum/Solana above (real/predicted ratio
+# of usd size vs median*within_band*ttc*decisiveness_onset, first HIGH
+# entries only, price_history_dense-reconstructed decisiveness_fraction).
+#
+# UNLIKE Ethereum/Solana, Bitcoin's overshoot lives in the LOW bucket
+# ([0.00,0.45), the one left uncorrected for the other two assets, well
+# powered at n=313) -- direction is a BOOST (>1.0), not a dampener,
+# since Bitcoin undershoots rather than overshoots. The [0.45,0.60) and
+# [0.60,1.00) buckets are too thin for Bitcoin (n=17, n=3) to trust and
+# are left at 1.0, matching this file's usual thin-cell discipline.
+#
+# HONEST CAVEAT, stronger than usual: this ratio is NOT stable the way
+# the Ethereum/Solana values were -- split-half over the full ~9-day
+# history gives 1.03 (first half) vs 1.56 (second half), and even
+# restricting to just the last 3 days shows 1.41 (first day and a half)
+# vs 1.87 (most recent) -- a real, still-ongoing upward drift, not a
+# settled step-change. Shipping the last-3-days median (1.567) as the
+# best current estimate, but this should be RE-CHECKED WITHIN DAYS, not
+# the usual ~1 week -- if the drift continues, today's value will
+# already be stale by the time it's next reviewed.
 DECISIVENESS_TTC_OVERSHOOT_CORRECTION = {
+    "Bitcoin": [(0.00, 0.45, 1.567)],
     "Ethereum": [(0.45, 0.60, 0.567), (0.60, 1.00, 0.878)],
     "Solana": [(0.45, 0.60, 0.516), (0.60, 1.00, 0.461)],
 }
@@ -1765,14 +1817,12 @@ DECISIVENESS_TTC_OVERSHOOT_CORRECTION = {
 
 def decisiveness_ttc_overshoot_correction(asset: str, regime: str,
                                            fraction_consumed: Optional[float]) -> float:
-    """1.0 (no-op) for Bitcoin (undershoots here, a separate unexplained
-    gap -- not this correction's job), for CHEAP/MID (decisiveness_
-    fraction is never populated there), or when fraction_consumed is
-    None/below 0.45 (the [0.00,0.45) range already multiplies out close
-    to 1:1 against real sizing, confirmed in the same joint test that
-    found the overshoot above 0.45). HIGH only -- CORE was not part of
-    the confirmed overshoot (its predicted/real ratios stayed <=1 in the
-    same joint test)."""
+    """1.0 (no-op) for CHEAP/MID (decisiveness_fraction is never
+    populated there), for an asset/bucket combination not covered above
+    (e.g. Bitcoin's own [0.45,1.00) range -- too thin to calibrate, see
+    this table's docstring), or when fraction_consumed is None. HIGH
+    only -- CORE was not part of the confirmed overshoot (its
+    predicted/real ratios stayed <=1 in the same joint test)."""
     if regime != "HIGH" or fraction_consumed is None:
         return 1.0
     buckets = DECISIVENESS_TTC_OVERSHOOT_CORRECTION.get(asset)

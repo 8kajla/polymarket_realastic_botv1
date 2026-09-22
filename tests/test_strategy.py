@@ -1339,9 +1339,10 @@ class TestDecisivenessTtcOvershootCorrection:
     HIGH at high decisiveness_fraction, split-half-confirmed stable
     across the Sep-18 regime boundary."""
 
-    def test_noop_for_bitcoin(self):
-        # Bitcoin UNDERSHOOTS in the same joint test -- a separate,
-        # unexplained gap, not this correction's job.
+    def test_noop_for_bitcoin_uncalibrated_fraction(self):
+        # Bitcoin's overshoot correction was ADDED 2026-09-22 but only
+        # for the well-powered [0.00,0.45) bucket -- 0.50 falls in the
+        # thin, uncalibrated [0.45,1.00) range and still no-ops.
         assert bc.decisiveness_ttc_overshoot_correction("Bitcoin", "HIGH", 0.50) == 1.0
 
     def test_noop_for_core(self):
@@ -1349,6 +1350,8 @@ class TestDecisivenessTtcOvershootCorrection:
         assert bc.decisiveness_ttc_overshoot_correction("Ethereum", "CORE", 0.50) == 1.0
 
     def test_noop_below_the_confirmed_overshoot_threshold(self):
+        # Ethereum/Solana only -- Bitcoin's own low-fraction range IS
+        # calibrated now (see test_bitcoin_low_fraction_is_a_boost).
         assert bc.decisiveness_ttc_overshoot_correction("Ethereum", "HIGH", 0.30) == 1.0
         assert bc.decisiveness_ttc_overshoot_correction("Solana", "HIGH", 0.00) == 1.0
 
@@ -1361,11 +1364,19 @@ class TestDecisivenessTtcOvershootCorrection:
         assert bc.decisiveness_ttc_overshoot_correction("Solana", "HIGH", 0.50) == 0.516
         assert bc.decisiveness_ttc_overshoot_correction("Solana", "HIGH", 0.80) == 0.461
 
-    def test_correction_is_a_dampener_not_a_boost(self):
-        # Every calibrated value must be < 1.0 -- this only ever corrects
-        # DOWN an overshoot, never up.
-        for asset, buckets in bc.DECISIVENESS_TTC_OVERSHOOT_CORRECTION.items():
-            for lo, hi, mult in buckets:
+    def test_bitcoin_low_fraction_is_a_boost(self):
+        # ADDED 2026-09-22: Bitcoin undershoots (not overshoots) in its
+        # own well-powered bucket, so its correction is >1.0, the
+        # opposite direction from Ethereum/Solana's dampeners.
+        assert bc.decisiveness_ttc_overshoot_correction("Bitcoin", "HIGH", 0.00) == 1.567
+        assert bc.decisiveness_ttc_overshoot_correction("Bitcoin", "HIGH", 0.44) == 1.567
+
+    def test_ethereum_and_solana_corrections_are_dampeners(self):
+        # Ethereum/Solana's calibrated buckets correct DOWN an overshoot
+        # (< 1.0); Bitcoin's is the opposite (undershoot -> boost, tested
+        # separately above) so it's excluded from this check.
+        for asset in ("Ethereum", "Solana"):
+            for lo, hi, mult in bc.DECISIVENESS_TTC_OVERSHOOT_CORRECTION[asset]:
                 assert mult < 1.0, f"{asset} bucket [{lo},{hi}) = {mult} is not a dampener"
 
 
@@ -1399,7 +1410,13 @@ class TestDecideSizeDecisivenessTtcOvershootIntegration:
                                    / bc.decisiveness_onset_multiplier("Solana", "HIGH", 0.10))
         assert abs((notional_high / notional_low) - raw_decisiveness_ratio) < 1e-6
 
-    def test_does_not_affect_bitcoin(self, monkeypatch):
+    def test_bitcoin_low_fraction_now_gets_the_boost(self, monkeypatch):
+        # UPDATED 2026-09-22: Bitcoin's own undershoot correction was
+        # added for the [0.00,0.45) bucket (see DECISIVENESS_TTC_
+        # OVERSHOOT_CORRECTION's docstring) -- 0.10 now picks up an
+        # extra 1.567x on top of decisiveness_onset_multiplier's own
+        # ratio; 0.80 stays uncalibrated (still 1.0) since Bitcoin's
+        # higher buckets were too thin to trust.
         monkeypatch.setattr(config, "ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION", True)
         rng_a = random.Random(11)
         rng_b = random.Random(11)
@@ -1407,11 +1424,23 @@ class TestDecideSizeDecisivenessTtcOvershootIntegration:
                                      decisiveness_fraction=0.10)
         notional_b, _ = decide_size("Bitcoin", "HIGH", "first", 0.95, rng_b,
                                      decisiveness_fraction=0.80)
-        # Only decisiveness_onset_multiplier (not the new correction)
-        # should differ these two -- confirm the correction itself isn't
-        # additionally scaling Bitcoin.
         raw_decisiveness_ratio = (bc.decisiveness_onset_multiplier("Bitcoin", "HIGH", 0.10)
                                    / bc.decisiveness_onset_multiplier("Bitcoin", "HIGH", 0.80))
+        expected_ratio = raw_decisiveness_ratio * 1.567  # the new low-fraction boost
+        assert abs((notional_a / notional_b) - expected_ratio) < 1e-6
+
+    def test_does_not_affect_bitcoin_in_the_uncalibrated_high_fraction_range(self, monkeypatch):
+        # The [0.45,1.00) range is still uncalibrated for Bitcoin (too
+        # thin) -- confirm it's a strict no-op there, same as before.
+        monkeypatch.setattr(config, "ENABLE_DECISIVENESS_TTC_OVERSHOOT_CORRECTION", True)
+        rng_a = random.Random(11)
+        rng_b = random.Random(11)
+        notional_a, _ = decide_size("Bitcoin", "HIGH", "first", 0.95, rng_a,
+                                     decisiveness_fraction=0.50)
+        notional_b, _ = decide_size("Bitcoin", "HIGH", "first", 0.95, rng_b,
+                                     decisiveness_fraction=0.90)
+        raw_decisiveness_ratio = (bc.decisiveness_onset_multiplier("Bitcoin", "HIGH", 0.50)
+                                   / bc.decisiveness_onset_multiplier("Bitcoin", "HIGH", 0.90))
         assert abs((notional_a / notional_b) - raw_decisiveness_ratio) < 1e-6
 
 
