@@ -3001,27 +3001,66 @@ def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) ->
 # Bitcoin's own well-powered result, but treat these two ratios as the
 # least-certain calibrated values in this table.
 #
-# HONEST CAVEAT (applies to every calibrated cell): based on ~33 hours
-# of post-shift data. The SIGN and MAGNITUDE of the shift are not in
-# doubt at the sample sizes actually used (a drop from 40-74% to
-# 10-34% is nowhere close to explainable by noise), but exact ratios
-# should be re-derived once more days accumulate, and the presently-
-# uncalibrated cells (CORE Ethereum/Solana) should be revisited then
-# too. Feature-flagged so this can be cleanly disabled if the shift
-# ever reverts.
+# HONEST CAVEAT (applies to every calibrated cell above): the numbers in
+# this comment block are the ORIGINAL 2026-09-19 calibration, based on
+# only ~33 hours of post-shift data -- SIGN and MAGNITUDE were never in
+# doubt, but the exact ratios were flagged as needing a re-derivation
+# once more days accumulated, and the uncalibrated cells (CORE
+# Ethereum/Solana; Solana HIGH, which looked unshifted at n=56) were
+# flagged to revisit then too.
+#
+# REFRESHED 2026-09-22, in direct response to the live fidelity
+# scorecard showing all three active bots dual-siding at 20-32% vs the
+# real trader's CURRENT 8.9-10.2% (same live window) -- i.e. the
+# 2026-09-19 table was stale, not wrong in direction. Recalibrated
+# against the FULL post-boundary window (2026-09-18 03:00 UTC ->
+# 2026-09-22, ~4.5 days, every cell now n>=28) instead of the original
+# ~33 hours, using the exact same "does this first-entry market EVER go
+# dual-sided" definition:
+#
+#   CHEAP  Bitcoin  n=372 rate=16.67% vs pre-shift 60.70% -> ratio 0.275 (was 0.151 -- UNDER-dampened before)
+#   CHEAP  Ethereum n=358 rate=14.25% vs pre-shift 36.21% -> ratio 0.393 (was 0.233 -- under-dampened)
+#   CHEAP  Solana   n=291 rate=12.37% vs pre-shift 45.80% -> ratio 0.270 (was 0.232 -- close)
+#   CORE   Bitcoin  n=142 rate=16.20% vs pre-shift 43.79% -> ratio 0.370 (was 0.270 -- under-dampened)
+#   CORE   Ethereum n= 43 rate= 4.65% vs pre-shift 38.03% -> ratio 0.122 (was 1.0, UNCALIBRATED -- now enough
+#                                                                          data to trust: 8x over-hedging before)
+#   CORE   Solana   n= 28 rate= 7.14% vs pre-shift 33.33% -> ratio 0.214 (was 1.0, UNCALIBRATED -- same story)
+#   HIGH   Bitcoin  n=258 rate= 7.36% vs pre-shift 25.24% -> ratio 0.292 (was 0.378 -- over-dampened, slightly)
+#   HIGH   Ethereum n=216 rate= 7.87% vs pre-shift 17.30% -> ratio 0.455 (was 0.260 -- under-dampened)
+#   HIGH   Solana   n=206 rate= 7.77% vs pre-shift 16.06% -> ratio 0.484 (was 1.0, UNCALIBRATED -- the earlier
+#                                                                          "no drop" read (n=56, ratio 1.14) did
+#                                                                          not hold up with 4x the data; it DOES
+#                                                                          drop, just slower than other cells)
+#   MID    Bitcoin  n=127 rate=22.05% vs pre-shift 68.92% -> ratio 0.320 (was 0.462 -- over-dampened)
+#   MID    Ethereum n= 38 rate=10.53% vs pre-shift 55.18% -> ratio 0.191 (was 0.349 -- over-dampened)
+#   MID    Solana   n= 39 rate=10.26% vs pre-shift 58.14% -> ratio 0.176 (was 0.349 -- over-dampened)
+#
+# Genuinely mixed picture, not a uniform "dampen harder" fix: 5 cells
+# needed MORE dampening (both previously-uncalibrated CORE cells, the
+# previously-uncalibrated Solana HIGH cell, and both previously-
+# calibrated MID-Ethereum/Solana cells), while 5 cells actually needed
+# LESS dampening than the stale 09-19 table applied (both CHEAP-
+# Bitcoin/Ethereum, CORE-Bitcoin, HIGH-Ethereum, MID-Bitcoin). This is
+# exactly why the aggregate live dual-sided rate stayed too high even
+# though some cells were already over-dampened -- the under-dampened
+# cells (especially the two previously-uncalibrated CORE cells running
+# at full pre-shift rate) dominated the mismatch. Re-derive again once
+# more post-boundary days accumulate; every cell here is still built on
+# under a week of data by construction (the boundary itself is only
+# ~4.5 days old as of this refresh).
 REGIME_HEDGE_POST_SHIFT_MULTIPLIER = {
-    "CHEAP": {"Bitcoin": 0.151, "Ethereum": 0.233, "Solana": 0.232},
-    "MID": {"Bitcoin": 0.462, "Ethereum": 0.349, "Solana": 0.349},
-    "CORE": {"Bitcoin": 0.270},
-    "HIGH": {"Bitcoin": 0.378, "Ethereum": 0.260},
+    "CHEAP": {"Bitcoin": 0.275, "Ethereum": 0.393, "Solana": 0.270},
+    "MID": {"Bitcoin": 0.320, "Ethereum": 0.191, "Solana": 0.176},
+    "CORE": {"Bitcoin": 0.370, "Ethereum": 0.122, "Solana": 0.214},
+    "HIGH": {"Bitcoin": 0.292, "Ethereum": 0.455, "Solana": 0.484},
 }
 
 
 def regime_hedge_post_shift_multiplier(asset: str, regime: str) -> float:
-    """1.0 (no-op) for any (regime, asset) not calibrated above --
-    matching this file's usual pattern for an uncalibrated/dormant
-    cell (e.g. Ethereum/Solana CORE, too thin to trust; Solana HIGH,
-    genuinely didn't shift)."""
+    """1.0 (no-op) for any (regime, asset) not calibrated above -- every
+    (asset, regime) cell is now calibrated as of the 2026-09-22 refresh,
+    so this fallback is currently dormant, kept only for a future
+    uncalibrated cell (e.g. a new asset)."""
     return REGIME_HEDGE_POST_SHIFT_MULTIPLIER.get(regime, {}).get(asset, 1.0)
 
 

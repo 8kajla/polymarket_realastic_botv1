@@ -2042,19 +2042,33 @@ class TestDecideHedgeFavorableMoveTriggerMultiplier:
         assert n_baseline == n_favorable
 
     def test_respects_its_own_feature_flag_independently(self, monkeypatch):
+        # FIXED 2026-09-22: was comparing dominant_current_price=0.10
+        # (== first_entry_price -> adverse_move EXACTLY 0.0) against
+        # dominant_current_price=0.95 (adverse_move=-0.85). That doesn't
+        # isolate the favorable-move flag -- adverse_move_hedge_trigger_
+        # multiplier (a SEPARATE, still-enabled multiplier) returns 0.892
+        # at exactly adverse_move=0.0, not 1.0, so the two branches were
+        # never expected to match exactly; the ~11% per-seed gap was
+        # simply too small to show up in 500 seeds until the regime
+        # dampener's 2026-09-22 refresh raised the baseline probability
+        # enough to expose it. Use the no-dominant_current_price baseline
+        # instead (same pattern as this class's other tests, e.g.
+        # test_favorable_move_is_no_longer_a_noop_in_cheap above), which
+        # skips the adverse-move multiplier entirely and correctly
+        # isolates ONLY the favorable-move flag being tested here.
         monkeypatch.setattr(config, "ENABLE_FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER", False)
         activity = MarketActivityState()
         record_filled_entry(activity, "Up", notional_usd=10.0, regime="CHEAP", price=0.10)
         n = 500
-        n_near_zero = sum(
+        n_baseline = sum(
             1 for seed in range(n)
-            if decide_hedge("Bitcoin", activity, random.Random(seed), dominant_current_price=0.10) is not None
+            if decide_hedge("Bitcoin", activity, random.Random(seed)) is not None
         )
         n_deep_favorable = sum(
             1 for seed in range(n)
             if decide_hedge("Bitcoin", activity, random.Random(seed), dominant_current_price=0.95) is not None
         )
-        assert n_near_zero == n_deep_favorable, "with the flag off, favorable adverse_move must be a strict no-op"
+        assert n_baseline == n_deep_favorable, "with the flag off, favorable adverse_move must be a strict no-op"
 
 
 class TestDecideHedgeMidFavorableHedgeHumpMultiplier:
@@ -2298,31 +2312,37 @@ class TestDecideHedgeWeekendMultiplier:
         assert n_weekday == n_weekend, "with the flag off, is_weekend must be a strict no-op"
 
     def test_regime_hedge_dampener_lookup(self):
-        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "CHEAP") == pytest.approx(0.151)
-        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "CHEAP") == pytest.approx(0.233)
-        assert bc.regime_hedge_post_shift_multiplier("Solana", "CHEAP") == pytest.approx(0.232)
-        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "MID") == pytest.approx(0.462)
-        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "MID") == pytest.approx(0.349)
-        assert bc.regime_hedge_post_shift_multiplier("Solana", "MID") == pytest.approx(0.349)
-        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "CORE") == pytest.approx(0.270)
-        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "HIGH") == pytest.approx(0.378)
-        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "HIGH") == pytest.approx(0.260)
+        # REFRESHED 2026-09-22 -- see REGIME_HEDGE_POST_SHIFT_MULTIPLIER's
+        # docstring for the full recalibration (now every cell covered,
+        # based on the full ~4.5-day post-boundary window instead of the
+        # original ~33 hours).
+        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "CHEAP") == pytest.approx(0.275)
+        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "CHEAP") == pytest.approx(0.393)
+        assert bc.regime_hedge_post_shift_multiplier("Solana", "CHEAP") == pytest.approx(0.270)
+        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "MID") == pytest.approx(0.320)
+        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "MID") == pytest.approx(0.191)
+        assert bc.regime_hedge_post_shift_multiplier("Solana", "MID") == pytest.approx(0.176)
+        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "CORE") == pytest.approx(0.370)
+        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "CORE") == pytest.approx(0.122)
+        assert bc.regime_hedge_post_shift_multiplier("Solana", "CORE") == pytest.approx(0.214)
+        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "HIGH") == pytest.approx(0.292)
+        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "HIGH") == pytest.approx(0.455)
+        assert bc.regime_hedge_post_shift_multiplier("Solana", "HIGH") == pytest.approx(0.484)
 
     def test_regime_hedge_dampener_is_noop_for_uncalibrated_cells(self):
-        # Uncalibrated asset entirely.
+        # As of the 2026-09-22 refresh every real (asset, regime) cell is
+        # calibrated -- the no-op fallback now only matters for an asset
+        # this table has never heard of.
         assert bc.regime_hedge_post_shift_multiplier("Dogecoin", "CHEAP") == 1.0
-        # Deliberately left uncalibrated: too-thin post-shift sample
-        # (n=8) for Ethereum/Solana CORE.
-        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "CORE") == 1.0
-        assert bc.regime_hedge_post_shift_multiplier("Solana", "CORE") == 1.0
-        # Deliberately left uncalibrated: Solana's own HIGH-band rate
-        # showed no real drop.
-        assert bc.regime_hedge_post_shift_multiplier("Solana", "HIGH") == 1.0
+        assert bc.regime_hedge_post_shift_multiplier("Dogecoin", "CORE") == 1.0
 
     def test_regime_hedge_dampener_fires_less_often_than_mid(self):
         # Same asset, same attempt index -- CHEAP should hedge less
-        # often than MID: both are now dampened, but CHEAP's dampener
-        # is much stronger (0.151 vs MID's 0.462 for Bitcoin).
+        # often than MID for Bitcoin specifically (0.275 vs MID's 0.320
+        # -- still true after the 2026-09-22 refresh, though the margin
+        # is much closer than the original 0.151 vs 0.462; this no
+        # longer holds for Ethereum/Solana, where MID is now the MORE
+        # dampened regime, so this test is deliberately Bitcoin-only).
         activity_cheap = MarketActivityState()
         record_filled_entry(activity_cheap, "Up", notional_usd=10.0, regime="CHEAP")
         activity_mid = MarketActivityState()
