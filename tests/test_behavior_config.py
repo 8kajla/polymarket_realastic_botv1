@@ -1410,19 +1410,28 @@ class TestSharesForPrice:
 class TestNotionalForPrice:
     """Position-tier-corrected notional wrapper (found DURING
     implementation, not in the original on-chain discovery -- see the
-    POSITION_TIER_SHARE_MULTIPLIER docstring)."""
+    POSITION_TIER_SHARE_MULTIPLIER docstring). RETIRED 2026-09-23: the
+    original tier escalation (1.0/1.07/1.30) was found to be a
+    5-second-merge-convention artifact, not a real effect -- see
+    [[five-second-merge-convention-decisively-wrong]]. Table is now a
+    flat no-op; these tests updated to match."""
 
     def test_first_tier_is_a_noop_on_top_of_shares_for_price(self):
         price = 0.35
         assert bc.notional_for_price(price, "first") == pytest.approx(
             bc.shares_for_price(price) * price)
 
-    def test_later_tiers_size_up_relative_to_first(self):
+    def test_later_tiers_are_a_noop_relative_to_first(self):
+        # RETIRED 2026-09-23: true on-chain order identity showed the
+        # "later entries are bigger" effect was a 5s-merge artifact
+        # (85.5% of merge-eligible pairs are genuinely separate orders;
+        # separate treatment fits the price formula 4.75x better). All
+        # three tiers are now equal.
         price = 0.35
         first = bc.notional_for_price(price, "first")
         second = bc.notional_for_price(price, "2nd_3rd")
         fourth = bc.notional_for_price(price, "4th_plus")
-        assert first < second < fourth
+        assert first == pytest.approx(second) == pytest.approx(fourth)
 
     def test_default_tier_is_first_when_unspecified(self):
         price = 0.6
@@ -1433,10 +1442,10 @@ class TestNotionalForPrice:
         assert bc.notional_for_price(price, "nonexistent_tier") == pytest.approx(
             bc.notional_for_price(price, "first"))
 
-    def test_position_tier_multiplier_table_matches_documented_calibration(self):
+    def test_position_tier_multiplier_table_is_retired_to_a_flat_noop(self):
         assert bc.POSITION_TIER_SHARE_MULTIPLIER["first"] == 1.0
-        assert bc.POSITION_TIER_SHARE_MULTIPLIER["2nd_3rd"] == pytest.approx(1.07)
-        assert bc.POSITION_TIER_SHARE_MULTIPLIER["4th_plus"] == pytest.approx(1.30)
+        assert bc.POSITION_TIER_SHARE_MULTIPLIER["2nd_3rd"] == pytest.approx(1.0)
+        assert bc.POSITION_TIER_SHARE_MULTIPLIER["4th_plus"] == pytest.approx(1.0)
 
 
 class TestHighTailShareMultiplier:

@@ -423,7 +423,11 @@ class TestSizingDecision:
         assert is_floor_lot is False
         assert notional > 0
 
-    def test_share_based_sizing_position_tier_ordering(self, monkeypatch):
+    def test_share_based_sizing_position_tier_is_now_a_noop(self, monkeypatch):
+        # RETIRED 2026-09-23: POSITION_TIER_SHARE_MULTIPLIER's tier
+        # escalation was found to be a 5s-merge-convention artifact (see
+        # its docstring / [[five-second-merge-convention-decisively-wrong]]),
+        # not a real effect -- all tiers now size the same on average.
         monkeypatch.setattr(config, "ENABLE_SHARE_BASED_SIZING", True)
 
         def avg_notional(position_tier, n=300):
@@ -437,7 +441,8 @@ class TestSizingDecision:
         first = avg_notional("first")
         second = avg_notional("2nd_3rd")
         fourth = avg_notional("4th_plus")
-        assert first < second < fourth
+        assert first == pytest.approx(second, rel=0.1)
+        assert first == pytest.approx(fourth, rel=0.1)
 
     def test_share_based_sizing_is_scoped_to_mid_core_and_high(self, monkeypatch):
         # 2026-09-22: CHEAP stays on the old path even with the flag on

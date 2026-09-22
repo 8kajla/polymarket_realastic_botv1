@@ -665,36 +665,56 @@ def entry_size_level_correction(asset: str, regime: str) -> float:
 # in, the two boundaries were derived completely independently and
 # happen to agree.
 #
-# POSITION-TIER CORRECTION (found during implementation, NOT in the
-# original discovery): the on-chain sample never checked whether entry
-# ORDER (1st/2nd_3rd/4th_plus into a market, same definition as
-# position_tier_for_index above) carries information beyond price alone.
-# Checked directly against trades.jsonl using this project's own
-# established 5-second CLOB-fragment collapse (turns fragmented fill
-# rows into real per-decision share counts -- the same technique used
-# throughout this project for decision-level analysis): a REAL,
-# monotonic, split-half-CONFIRMED effect exists -- later entries in a
-# market are sized systematically larger than price alone predicts.
-# Median real-share / shares_for_price(price), 14-day window, first vs
-# second half of that window:
-#   tier       first-half   second-half   (pooled median, n)
-#   first          1.030        1.082      1.040  (n=14,124)
-#   2nd_3rd        1.073        1.235      1.112  (n=15,449)
-#   4th_plus       1.290        1.465      1.355  (n=9,798)
-# Monotonic in both halves independently (not just pooled), well-powered
-# throughout (n=2,144-10,349 per half-cell). A real secular drift exists
-# too (second half runs higher across all three tiers, consistent with
-# this project's established pattern of things drifting over time), but
-# the RELATIVE tier ordering and rough gap magnitude is stable across
-# both halves -- treated as a real, structural relationship, not noise.
-# Calibrated on POOLED full-period medians (more data than either half
-# alone), normalized to tier="first"=1.0 (matches what the tiny original
-# on-chain sample was implicitly dominated by): 2nd_3rd=1.112/1.040=1.07,
-# 4th_plus=1.355/1.040=1.30.
+# POSITION-TIER CORRECTION -- RETIRED 2026-09-23, was a methodology
+# artifact, not a real effect. Original story (found during Phase 1
+# implementation): the on-chain sample never checked whether entry ORDER
+# (1st/2nd_3rd/4th_plus into a market) carries information beyond price
+# alone. Checked against trades.jsonl using this project's standard
+# 5-second CLOB-fragment collapse and found what looked like a real,
+# monotonic, split-half-confirmed effect -- later entries sized ~7-30%
+# bigger than price alone predicts (2nd_3rd=1.07, 4th_plus=1.30,
+# n=9,798-15,449, calibrated 2026-09-20/21).
+#
+# THE 5-SECOND MERGE CONVENTION ITSELF WAS THEN FOUND TO BE DECISIVELY
+# WRONG (2026-09-23, see [[five-second-merge-convention-decisively-wrong]]
+# in project memory): an on-chain orderHash test showed 85.5% of his
+# same-side trades within 5s of each other are genuinely SEPARATE signed
+# orders, not one order filled in pieces -- and treating them separately
+# fits the price formula 4.75x better (median|log error| 0.144 vs 0.684)
+# than the project's merge convention does. Position tier is exactly the
+# kind of measurement this bug would corrupt: a market where he fires
+# several near-simultaneous orders gets its LATER entries' sizes wrongly
+# inflated by merging in a sibling order's shares, and that inflation
+# concentrates in the 2nd_3rd/4th_plus buckets by construction (they're
+# defined as "not the first entry").
+#
+# Re-derived from scratch on TRUE on-chain order identity (orderHash),
+# not the merge heuristic: sampled 80 markets (mix of 1-fill up to
+# 43-fill markets for tier diversity), decoded every trader fill via
+# eth_getTransactionReceipt, grouped fills by real orderHash into true
+# orders, sorted by each order's first-fill time, assigned position_tier
+# from THAT true sequence. Ran the OLD 5s-merge methodology on the
+# IDENTICAL 80 markets as a direct control -- it reproduced the
+# originally-shipped table almost exactly (2nd_3rd=1.092, 4th_plus=1.299
+# vs the shipped 1.07/1.30), confirming the sample is representative and
+# the comparison is apples-to-apples. The TRUE on-chain numbers on the
+# same markets:
+#   tier       TRUE on-chain    OLD 5s-merge (same 80 markets)
+#   first          1.000             1.000
+#   2nd_3rd        0.997             1.092
+#   4th_plus       1.044             1.299
+# The "later entries are bigger" effect is almost entirely a merge
+# artifact -- it vanishes under true order identity. Split-half checked
+# (40 markets each): 2nd_3rd normalized 1.007/0.977, 4th_plus
+# 1.077/0.985 -- both straddle 1.0 in both halves, consistent with no
+# real residual effect rather than a smaller-but-real one.
+# Retired to a flat no-op rather than recalibrated to the small residual
+# (which split-half shows is statistically indistinguishable from noise
+# around 1.0).
 POSITION_TIER_SHARE_MULTIPLIER = {
     "first": 1.0,
-    "2nd_3rd": 1.07,
-    "4th_plus": 1.30,
+    "2nd_3rd": 1.0,
+    "4th_plus": 1.0,
 }
 
 
