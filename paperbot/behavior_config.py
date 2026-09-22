@@ -633,10 +633,31 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
 # threshold this project treats as actually broken. RE-CHECK ALL THREE
 # WITHIN DAYS, not the usual ~1 week -- if the drift continues, today's
 # refreshed values will already be stale by the next review.
+# MID/CORE/HIGH RECALIBRATED 2026-09-23 (systematic post-Sep-18 audit,
+# see complete-code-audit-2026-09-23 in project memory) -- these 9 cells
+# were the only ones the Sep-22 refresh above didn't touch (that pass
+# was specifically triggered by a CHEAP-only scorecard complaint).
+# Checked against the clean 1,610-market on-chain-verified dataset built
+# for the Phase-4 regime-scoping redo (real_usd vs median_entry_notional
+# * within_band_size_multiplier * this table's own then-current value):
+# 7 of 9 cells were oversizing, three by more than 2x --
+#   Bitcoin  MID  n=246 bias=-0.836 (~2.3x)   CORE n=247 bias=-0.006 (~1.0x, fine)   HIGH n=153 bias=-0.226 (~1.25x)
+#   Ethereum MID  n=120 bias=-0.530 (~1.7x)   CORE n=107 bias=-0.798 (~2.2x)         HIGH n=155 bias=-0.322 (~1.4x)
+#   Solana   MID  n=103 bias=-0.218 (~1.24x)  CORE n=101 bias=-0.860 (~2.4x)         HIGH n=157 bias=-0.121 (~1.13x)
+# Random-subsample stability check (this dataset's build order isn't
+# chronological, so this tests sampling noise rather than temporal
+# drift): tight for most cells (e.g. Bitcoin MID -0.836/-0.836 identical,
+# Solana MID -0.218/-0.218 identical, Ethereum/Solana CORE within 0.03-
+# 0.04 of each other), a bit wider for the HIGH cells (0.07-0.15 apart)
+# but always the same direction. Bitcoin CORE's near-zero bias is a
+# genuine confirmation this cell was already correct, not left
+# unchecked -- kept as-is. 80%-of-log-gap shrinkage applied (this
+# table's own established convention, same as the CHEAP refresh above):
+# new = old * exp(0.8 * bias).
 ENTRY_SIZE_LEVEL_CORRECTION = {
-    "Bitcoin":  {"CHEAP": 1.735, "MID": 2.383, "CORE": 1.172, "HIGH": 1.331},
-    "Ethereum": {"CHEAP": 1.020, "MID": 1.967, "CORE": 2.246, "HIGH": 1.629},
-    "Solana":   {"CHEAP": 0.828, "MID": 1.622, "CORE": 2.867, "HIGH": 1.339},
+    "Bitcoin":  {"CHEAP": 1.735, "MID": 1.221, "CORE": 1.166, "HIGH": 1.111},
+    "Ethereum": {"CHEAP": 1.020, "MID": 1.287, "CORE": 1.186, "HIGH": 1.259},
+    "Solana":   {"CHEAP": 0.828, "MID": 1.362, "CORE": 1.441, "HIGH": 1.215},
 }
 
 
