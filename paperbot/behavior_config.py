@@ -843,18 +843,42 @@ def notional_for_price(price: float, position_tier: str = "first") -> float:
 # position's cost (see hedge-size-ratio-confirmed-misspec-...). A single
 # price-only form fits far better and generalizes across periods:
 #     hedge_usd = HEDGE_PRICE_SIZING_SCALE[asset] * (shares_for_price(p)*p) ** BETA
-# (MALE 0.555-0.573 pre, 0.52 post-Sep-18; fitted beta 0.926 on all 44.7k
-# hedges, 0.94-0.96 pre-only, 0.90 post-only; per-asset scales stable pre vs
-# post: BTC 2.99/3.47, ETH 1.92/2.05, SOL 1.53/1.75). One model covers first
-# AND continuation hedges (hedge index adds nothing, bias flat across k<5);
-# dominant cost, adverse move and time-to-close add <=0.015 MALE each and are
-# dropped. Median-neutral like every other table here, so aggregate hedge
-# dollars come out ~0.6-0.85x of real (heavy right tail) -- production over-
-# sized CORE/HIGH by 1.6-1.9x and under-sized CHEAP by half. Not applied to the
-# floor of the exchange minimum (callers keep their existing min-size
-# fall-through). Gated by ENABLE_PRICE_BASED_HEDGE_SIZING.
-HEDGE_PRICE_SIZING_BETA = 0.926
-HEDGE_PRICE_SIZING_SCALE = {"Bitcoin": 2.992, "Ethereum": 1.919, "Solana": 1.525}
+#
+# RECALIBRATED 2026-09-23 -- the original fit above (BETA=0.926, scale
+# BTC=2.992/ETH=1.919/SOL=1.525) was derived from trades.jsonl's 5-second
+# merge convention, which was then found to be decisively wrong (see project
+# memory: five-second-merge-convention-decisively-wrong -- 85.5% of same-
+# side trades within 5s are genuinely separate orders, and treating them
+# separately fits the share formula 4.75x better than merging). Hedges are
+# exactly the kind of trade most exposed to this: re-derived on TRUE on-chain
+# order identity (924 hedge markets sampled across all 4 price regimes,
+# first-hedge order reconstructed via orderHash from eth_getTransactionReceipt,
+# not the merge heuristic) and the original constants turned out to be
+# substantially oversized:
+#   asset       shipped scale   implied real/predicted ratio (TRUE data)
+#   Bitcoin       2.992          0.36x  (formula ~2.76x too big)
+#   Ethereum      1.919          0.56x  (formula ~1.77x too big)
+#   Solana        1.525          0.70x  (formula ~1.42x too big)
+# Re-fit log(hedge_usd) = a_asset + beta*log(shares_for_price(p)*p) on the
+# same 924-market TRUE dataset (n=469/212/243 by asset), shared beta across
+# assets matching the original model structure: beta=1.054 (vs shipped
+# 0.926), scale Bitcoin=0.929, Ethereum=0.718, Solana=0.657 (all 2.3-3.2x
+# smaller than shipped). R2=0.622. Stability-checked via a random 50/50
+# split (not time-based, since this new sample doesn't span enough calendar
+# range to split that way) rather than shrunk by the usual 80%-of-log-gap
+# convention -- the split is unusually tight for this file (beta 1.035/
+# 1.069; scale BTC 0.910/0.948, ETH 0.741/0.699, SOL 0.668/0.650, all within
+# ~4% of the pooled fit), and the current shipped values are already known
+# to be substantially wrong in the same direction the fix moves, so
+# shrinking back toward them would be counterproductive here.
+# One model still covers first AND continuation hedges (unchanged from the
+# original design). Not applied to the floor of the exchange minimum
+# (callers keep their existing min-size fall-through). Gated by
+# ENABLE_PRICE_BASED_HEDGE_SIZING (paperbot-100 only) -- this recalibration
+# is a live-risk fix, not a cosmetic one: production hedges on that bot were
+# oversized by up to ~2.8x (Bitcoin) before this.
+HEDGE_PRICE_SIZING_BETA = 1.054
+HEDGE_PRICE_SIZING_SCALE = {"Bitcoin": 0.929, "Ethereum": 0.718, "Solana": 0.657}
 
 
 def hedge_notional_for_price(asset: str, price: float) -> Optional[float]:
