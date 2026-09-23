@@ -317,6 +317,14 @@ class TestWithinBandSizeMultiplier:
         mult = bc.within_band_size_multiplier("Ethereum", "HIGH", 1.0)
         assert mult <= 5.0
 
+    def test_solana_cheap_slope_recalibrated_2026_09_23(self):
+        # Refit directly from real trader data, per-asset (not pooled),
+        # proper train/test split -- held-out R2 doubled (0.102 -> 0.204)
+        # with this value vs the old 3.1063. See WITHIN_BAND_SIZE_SLOPE's
+        # docstring for the full derivation and which other cells were
+        # checked but NOT recalibrated (no real improvement or too thin).
+        assert bc.WITHIN_BAND_SIZE_SLOPE["Solana"]["CHEAP"]["slope"] == pytest.approx(10.338)
+
 
 class TestDeepCheapTailMultiplier:
     """ADDED 2026-09-23 -- corrects the deep CHEAP tail (price<0.08), where

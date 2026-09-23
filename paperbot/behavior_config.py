@@ -1001,9 +1001,24 @@ WITHIN_BAND_SIZE_SLOPE = {
                  "MID": {"slope": 3.7741, "band_mean_price": 0.4550}},
     "Solana": {"CORE": {"slope": 7.7354, "band_mean_price": 0.8080},
                "HIGH": {"slope": 20.5223, "band_mean_price": 0.9340},
-               "CHEAP": {"slope": 3.1063, "band_mean_price": 0.1530},
+               "CHEAP": {"slope": 10.338, "band_mean_price": 0.1530},
                "MID": {"slope": 1.6615, "band_mean_price": 0.4407}},
 }
+# RECALIBRATED 2026-09-23: Solana CHEAP's slope was 3.1063 -- refit directly
+# from real trader data (OLS of log(size) on price-within-band, per asset,
+# not pooled across assets), proper time-split (train=first 70%, test=last
+# 30%). Held-out R2 doubles (0.102 -> 0.204) with the new slope (10.338),
+# the only cell across all 12 (asset, regime) combinations where a refit
+# produced a clearly real, well-powered improvement -- Bitcoin CHEAP and
+# Ethereum HIGH showed no real gain (refit R2 still negative/flat), Bitcoin
+# HIGH and Ethereum CHEAP showed smaller real gains not yet acted on,
+# Ethereum/Solana MID/CORE are too thin (n=12-24) to refit at all. See
+# project memory: first-principles-mechanism-design-edge-decomposition
+# (Test 4, which first found the aggregate convexity mismatch -- pooled
+# across assets, likely partly a composition artifact given how much
+# steeper Solana's true slope turns out to be) and the follow-up per-asset
+# refit that produced this specific number. band_mean_price unchanged
+# (held fixed as the fit anchor, not re-derived).
 _WITHIN_BAND_MULTIPLIER_CAP = 5.0  # symmetric: multiplier clamped to [1/cap, cap]
 # CHEAP/MID cells ADDED 2026-09-11: the original 2026-09-08 pass only
 # checked CORE/HIGH ("CHEAP/MID... were not checked with this rigor and
