@@ -1122,10 +1122,27 @@ class PaperBot:
         # is the only path filled_size ever increases), so this loop is
         # what keeps real_fill_count/real_hedge_fill_count -- the
         # calibration-index counters -- in sync with reality every tick.
+        #
+        # FIXED 2026-09-23: companion orders (reason=="companion", see
+        # _maybe_place_companion/ENABLE_COMPANION_ORDERS) are deliberately
+        # excluded from record_entry/entry_count -- they're an extra
+        # same-side resting order alongside an ordinary decision, not a
+        # separate decision (same reasoning MAX_OPEN_ORDERS_PER_MARKET's
+        # own count excludes them, see the open-order-cap check above).
+        # That exclusion was never mirrored here: a companion's fill was
+        # still calling record_real_fill, advancing real_fill_count (the
+        # index hedge_attempt_hazard/position_tier_for_index key on) up
+        # to ~2x faster than genuine decisions on paperbot-100 (the only
+        # bot with companions on) -- confirmed live to explain a 36x
+        # hedge-attempt-count gap vs paperbot main in the same window
+        # (see project memory: companion-orders-contaminate-real-fill-
+        # count). real_fill_notified is still set for companions so this
+        # loop doesn't re-check them every tick, just no longer counts
+        # them toward the calibration index.
         for order in self.fill_sim.orders.values():
             if order.filled_size > 0 and not order.real_fill_notified:
                 activity = self.activity.get(order.condition_id)
-                if activity is not None:
+                if activity is not None and order.reason != "companion":
                     activity.record_real_fill(order.is_hedge)
                 order.real_fill_notified = True
 
