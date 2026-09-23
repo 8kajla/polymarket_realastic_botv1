@@ -3929,6 +3929,125 @@ class TestDecisiveEntryEligibilityDampener:
         assert intent is not None  # flag off -- must not skip even though the multiplier says to
 
 
+class TestRegimeDriftCorrection:
+    """regime_engagement_state/bc.regime_drift_correction wiring, added
+    2026-09-23 -- a closed-loop overlay on top of
+    TestRegimeEngagementDampener's static mechanism just below. Default OFF
+    (config.ENABLE_REGIME_DRIFT_CORRECTION), so every test elsewhere in the
+    suite is unaffected without needing a conftest.py neutralizer (unlike
+    regime_engagement_multiplier, this one doesn't reach into tests that
+    weren't written with it in mind, since it requires BOTH the flag on AND
+    a non-None regime_engagement_state to do anything)."""
+
+    def _base_mocks(self, monkeypatch, side="Up"):
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: side)
+        monkeypatch.setattr(bc, "regime_engagement_multiplier", lambda asset, regime: 1.0)  # static: no-op
+
+    def test_flag_off_ignores_state_even_if_it_would_dampen_to_zero(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+        self._base_mocks(monkeypatch)
+        monkeypatch.setattr(config, "ENABLE_REGIME_DRIFT_CORRECTION", False)
+        monkeypatch.setattr(bc, "regime_drift_correction", lambda asset, regime, counts, total: 0.0)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0,
+                                     regime_engagement_state={"Bitcoin": {"counts": {"MID": 100}, "total": 100}})
+        assert intent is not None  # flag off -- correction must not apply
+
+    def test_none_state_is_a_noop_even_with_flag_on(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+        self._base_mocks(monkeypatch)
+        monkeypatch.setattr(config, "ENABLE_REGIME_DRIFT_CORRECTION", True)
+        monkeypatch.setattr(bc, "regime_drift_correction", lambda asset, regime, counts, total: 0.0)
+
+        # regime_engagement_state defaults to None -- must not error, and
+        # since the docstring promises None -> no-op, must not skip either.
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0)
+        assert intent is not None
+
+    def test_correction_can_skip_an_entry_the_static_multiplier_alone_would_allow(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+        self._base_mocks(monkeypatch)  # static multiplier is a no-op (1.0)
+        monkeypatch.setattr(config, "ENABLE_REGIME_DRIFT_CORRECTION", True)
+        monkeypatch.setattr(bc, "regime_drift_correction", lambda asset, regime, counts, total: 0.0)  # always dampen to zero
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0,
+                                     regime_engagement_state={"Bitcoin": {"counts": {"MID": 100}, "total": 100}})
+        assert intent is None
+
+    def test_correction_never_fires_for_hedges(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=100.0, regime="MID", price=0.50)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: "Down")
+        monkeypatch.setattr(config, "ENABLE_REGIME_DRIFT_CORRECTION", True)
+        monkeypatch.setattr(bc, "regime_drift_correction", lambda asset, regime, counts, total: 0.0)  # would always skip an ordinary entry
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0,
+                                     regime_engagement_state={"Bitcoin": {"counts": {"MID": 100}, "total": 100}})
+        assert intent is not None
+        assert intent.is_hedge is True
+
+    def test_reads_the_specific_assets_state_not_a_different_asset(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+        self._base_mocks(monkeypatch)
+        monkeypatch.setattr(config, "ENABLE_REGIME_DRIFT_CORRECTION", True)
+
+        seen = {}
+
+        def fake_correction(asset, regime, counts, total):
+            seen["asset"] = asset
+            seen["counts"] = counts
+            seen["total"] = total
+            return 1.0
+
+        monkeypatch.setattr(bc, "regime_drift_correction", fake_correction)
+        intent = build_order_intent(
+            market, up_book, down_book, activity, random.Random(0), now=100.0,
+            regime_engagement_state={
+                "Bitcoin": {"counts": {"MID": 3}, "total": 7},
+                "Ethereum": {"counts": {"MID": 999}, "total": 999},
+            })
+        assert intent is not None
+        assert seen["asset"] == "Bitcoin"
+        assert seen["counts"] == {"MID": 3}
+        assert seen["total"] == 7
+
+    def test_missing_asset_in_state_dict_defaults_to_cold_start(self, monkeypatch):
+        # An asset with no entry yet in regime_engagement_state (e.g. right
+        # after a restart, before its first non-hedge entry) must not error.
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.50, token_id="up")
+        down_book = make_liquid_book(price=0.50, token_id="down")
+        activity = MarketActivityState()
+        self._base_mocks(monkeypatch)
+        monkeypatch.setattr(config, "ENABLE_REGIME_DRIFT_CORRECTION", True)
+
+        intent = build_order_intent(
+            market, up_book, down_book, activity, random.Random(0), now=100.0,
+            regime_engagement_state={"Ethereum": {"counts": {"MID": 5}, "total": 5}})
+        assert intent is not None  # real bc.regime_drift_correction(total=0) -> 1.0, no-op
+
+
 class TestRegimeEngagementDampener:
     """regime_engagement_multiplier wiring, added 2026-09-21 -- unlike
     TestCheapJointDampener/TestDecisiveEntryEligibilityDampener above,

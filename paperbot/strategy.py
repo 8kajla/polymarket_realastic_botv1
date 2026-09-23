@@ -1137,7 +1137,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                         bankroll_pnl_residual: Optional[float] = None,
                         after_big_loss: Optional[bool] = None,
                         forced_first_entry_side: Optional[str] = None,
-                        last_first_entry_by_asset: Optional[dict] = None) -> Optional[OrderIntent]:
+                        last_first_entry_by_asset: Optional[dict] = None,
+                        regime_engagement_state: Optional[dict] = None) -> Optional[OrderIntent]:
     """
     Runs the full per-market pipeline (steps 1-6 of Part 5) and returns an
     OrderIntent, or None if this market isn't tradeable right now. Does NOT
@@ -1168,6 +1169,14 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     (default None -> no-op for every one of them) so every existing call
     site/test keeps working unchanged. See decide_side/decide_hedge/
     decide_size's own docstrings for what each one feeds.
+
+    `regime_engagement_state` (added 2026-09-23): bot.py-maintained per-asset
+    cumulative {"counts": {regime: n}, "total": n} of ordinary (non-hedge)
+    entries that have PASSED the regime-engagement gate so far -- feeds
+    bc.regime_drift_correction (see its docstring). Optional (default None
+    -> no-op, same reason as every other cross-market tracker above).
+    Read-only here; bot.py updates it after seeing the returned intent
+    (same pattern as last_first_entry_by_asset), not mutated in this module.
 
     `forced_first_entry_side` (added 2026-09-13, Coinbase-momentum bot):
     when set AND this is the market's first entry (activity.real_fill_count
@@ -1373,6 +1382,22 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # regime-mix ratios the base table was calibrated for.
         if config.ENABLE_PARTICIPATION_ASSET_SCALE:
             engagement_mult = min(1.0, engagement_mult * bc.participation_asset_scale(market.asset))
+        # REGIME DRIFT CORRECTION (2026-09-23): closed-loop overlay on top of
+        # the two static multipliers above -- see bc.regime_drift_correction's
+        # docstring for the full derivation and held-out validation. Applied
+        # last so it corrects whatever the static calibration produces,
+        # rather than being baked into either static table. No clamp to 1.0
+        # here (unlike ASSET_SCALE just above): this one is explicitly meant
+        # to be able to push the effective probability BELOW the static
+        # table's own value too (e.g. dampening an over-firing HIGH anchor),
+        # not just raise it -- bc.regime_drift_correction's own cap (2.0/0.5)
+        # is the only bound.
+        if config.ENABLE_REGIME_DRIFT_CORRECTION and regime_engagement_state is not None:
+            asset_state = regime_engagement_state.get(market.asset, {})
+            drift_mult = bc.regime_drift_correction(
+                market.asset, regime,
+                asset_state.get("counts", {}), asset_state.get("total", 0))
+            engagement_mult = max(0.0, min(1.0, engagement_mult * drift_mult))
         if engagement_mult < 1.0 and rng.random() > engagement_mult:
             activity.reject_regime_episode(side, regime)
             logger.info(

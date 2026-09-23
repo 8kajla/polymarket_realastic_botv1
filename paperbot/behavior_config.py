@@ -1598,6 +1598,62 @@ def regime_engagement_multiplier(asset: str, regime: str) -> float:
     return REGIME_ENGAGEMENT_MULTIPLIER.get(asset, {}).get(regime, 1.0)
 
 
+# REGIME DRIFT CORRECTION -- ADDED 2026-09-23. A closed-loop overlay on TOP
+# of REGIME_ENGAGEMENT_MULTIPLIER's static table above, same "plain scale on
+# top of it" pattern PARTICIPATION_ASSET_SCALE already uses -- does not
+# replace or re-derive the static calibration, just corrects for drift
+# between recalibrations.
+#
+# Origin: idea sourced from a user-shared GitHub repo's DistributionController
+# class (its own PnL claim was NOT trusted -- confirmed zero fill-friction
+# modeling, "execution_mode": "PASSIVE_BID_PROXY", every signal treated as an
+# instant guaranteed full fill at the best bid). The DISTRIBUTION-TRACKING
+# idea itself was tested independently against our own real data (project
+# memory: distribution-controller-beats-static-regime-probability) with
+# proper train/test discipline: real chronological Bitcoin first-entry-regime
+# sequence, static probability calibrated on the first half, both mechanisms
+# evaluated held-out on the second half. Result: a closed-loop corrector beat
+# the static-only mechanism by 64.6% on rolling-window mix error, robust
+# 20/20 across random seeds -- because the static mechanism's HIGH share blew
+# up to 52% on held-out data (target 27.6%) while the closed-loop version
+# self-corrected. That's the exact real-world failure mode REGIME_ENGAGEMENT_
+# MULTIPLIER has hit three times this month (684b655 -> 5c3b2ce -> 3f2c1f4).
+#
+# REGIME_MIX_TARGET: real trader's per-asset first-entry regime shares,
+# post-Sep-18 boundary (n=713/540/458 Bitcoin/Ethereum/Solana, well-powered).
+REGIME_MIX_TARGET = {
+    "Bitcoin":  {"CHEAP": 0.4194, "MID": 0.1501, "CORE": 0.1543, "HIGH": 0.2763},
+    "Ethereum": {"CHEAP": 0.5667, "MID": 0.0574, "CORE": 0.0519, "HIGH": 0.3241},
+    "Solana":   {"CHEAP": 0.5175, "MID": 0.0721, "CORE": 0.0502, "HIGH": 0.3603},
+}
+# k=3.0 matches the exact value validated in the held-out test above -- not
+# independently re-tuned, since re-tuning on the same data it was validated
+# against would be circular. Cap bounds the correction factor so a market
+# that has seen very few decisions so far (noisy realized share) can't send
+# the multiplier to an extreme -- same discipline as HEDGE_RATIO_MULTIPLIER_CAP.
+REGIME_DRIFT_CORRECTION_K = 3.0
+REGIME_DRIFT_CORRECTION_CAP = 2.0
+
+
+def regime_drift_correction(asset: str, regime: str, realized_counts: dict, realized_total: int) -> float:
+    """Multiplicative correction factor applied ON TOP of
+    regime_engagement_multiplier's static base (see call site in
+    build_order_intent). 1.0 (no-op) when this asset has no target, or when
+    realized_total==0 (cold start -- nothing to correct against yet, matches
+    the validated test's cold-start handling). Otherwise boosts the
+    engagement probability when this (asset, regime)'s cumulative realized
+    share is BELOW its target, dampens when ABOVE -- self-correcting,
+    doesn't require a manual recalibration pass to track drift."""
+    target = REGIME_MIX_TARGET.get(asset, {}).get(regime)
+    if target is None or realized_total <= 0:
+        return 1.0
+    realized_share = realized_counts.get(regime, 0) / realized_total
+    deficit = target - realized_share
+    factor = 1.0 + REGIME_DRIFT_CORRECTION_K * deficit
+    cap = REGIME_DRIFT_CORRECTION_CAP
+    return max(1.0 / cap, min(cap, factor))
+
+
 # ---------------------------------------------------------------------------
 # CHEAP ENTRY-SELECTIVITY vs TIME-TO-CLOSE. Added 2026-09-20, closing the
 # other half of the same code-audit gap ADVERSE_MOVE_TTC_INTERACTION_COEF

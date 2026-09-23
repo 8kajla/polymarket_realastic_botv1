@@ -154,6 +154,71 @@ class TestCrossMarketSideTracking:
         assert captured["previous_market_first_side"] == tracked_side
 
 
+class TestRegimeEngagementStateTracking:
+    """PaperBot.regime_engagement_state, added 2026-09-23 -- feeds
+    bc.regime_drift_correction (see build_order_intent's
+    regime_engagement_state docstring). Always maintained regardless of
+    config.ENABLE_REGIME_DRIFT_CORRECTION (same convention as
+    last_first_entry_by_asset just below), so it's warm and ready the
+    moment the flag is turned on, not cold at that point."""
+
+    def test_tracker_is_empty_before_any_entry(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        assert bot.regime_engagement_state == {}
+
+    def test_tracker_increments_on_an_ordinary_entry(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_market_for_asset("Bitcoin", condition_id="cond-1")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)  # CHEAP
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        assert bot.activity[market.condition_id].entry_count == 1
+        state = bot.regime_engagement_state["Bitcoin"]
+        assert state["total"] == 1
+        assert state["counts"] == {"CHEAP": 1}
+
+    def test_tracker_accumulates_across_markets_keyed_by_regime(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market1 = make_market_for_asset("Bitcoin", condition_id="cond-1")
+        wire_market(bot, market1, bid=0.20, ask=0.21, depth=200.0)  # CHEAP
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        market2 = make_market_for_asset("Bitcoin", condition_id="cond-2", end_time=3000.0)
+        wire_market(bot, market2, bid=0.50, ask=0.51, depth=200.0)  # MID
+        asyncio.run(bot.strategy_tick(now=2000.0))
+
+        state = bot.regime_engagement_state["Bitcoin"]
+        assert state["total"] == 2
+        assert state["counts"] == {"CHEAP": 1, "MID": 1}
+
+    def test_tracker_does_not_increment_for_a_hedge(self, monkeypatch):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_market_for_asset("Bitcoin", condition_id="cond-1")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+        asyncio.run(bot.strategy_tick(now=1000.0))
+        after_first = dict(bot.regime_engagement_state["Bitcoin"])
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: "Down")
+        asyncio.run(bot.strategy_tick(now=1010.0))
+
+        # A hedge may or may not actually place (depends on caps/book state),
+        # but IF it does, it must not have moved the tracker.
+        assert bot.regime_engagement_state["Bitcoin"]["total"] == after_first["total"] or \
+            bot.activity[market.condition_id].hedge_count == 0
+
+    def test_different_assets_are_tracked_independently(self):
+        bot = PaperBot(assets=["Bitcoin", "Ethereum"], seed=1)
+        market_btc = make_market_for_asset("Bitcoin", condition_id="cond-1")
+        wire_market(bot, market_btc, bid=0.20, ask=0.21, depth=200.0)
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        assert "Bitcoin" in bot.regime_engagement_state
+        assert "Ethereum" not in bot.regime_engagement_state
+
+
 class TestCrossAssetCarryoverTracking:
     """PaperBot.last_first_entry_by_asset, added 2026-09-19 -- see
     CROSS_ASSET_CARRYOVER_PROBABILITY's docstring in behavior_config.py.

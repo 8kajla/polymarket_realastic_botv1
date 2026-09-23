@@ -192,6 +192,15 @@ class PaperBot:
         # In-memory only, resets on restart, same discipline as every
         # other per-run tracker in this file.
         self.last_first_entry_by_asset: dict[str, dict] = {}
+        # ADDED 2026-09-23: per-asset cumulative counts of ordinary
+        # (non-hedge) entries that have PASSED the regime-engagement gate,
+        # feeding bc.regime_drift_correction -- see build_order_intent's
+        # regime_engagement_state docstring. {asset: {"counts": {regime: n},
+        # "total": n}}. In-memory only, resets on restart, same discipline
+        # as every other tracker here (a restart means the drift-correction
+        # simply starts cold again, matching regime_drift_correction's own
+        # documented total==0 -> no-op cold-start handling).
+        self.regime_engagement_state: dict[str, dict] = {}
         # ADDED 2026-09-11, alongside this session's 6-finding
         # implementation pass -- four more per-asset cross-market
         # trackers, same in-memory-only/resets-on-restart discipline as
@@ -818,7 +827,8 @@ class PaperBot:
             max_notional_usd=max_notional_usd,
             bankroll_pnl_residual=self.ledger.realized_pnl_by_asset().get(market.asset),
             after_big_loss=self.after_big_loss_by_asset.get(market.asset),
-            last_first_entry_by_asset=self.last_first_entry_by_asset)
+            last_first_entry_by_asset=self.last_first_entry_by_asset,
+            regime_engagement_state=self.regime_engagement_state)
         if intent is None:
             return
 
@@ -871,6 +881,18 @@ class PaperBot:
         self._maybe_place_companion(market, intent, order_book, now)
         activity.record_entry(intent.side, intent.notional_usd, intent.regime, is_hedge=intent.is_hedge,
                                price=intent.price)
+        if not intent.is_hedge:
+            # ADDED 2026-09-23: feeds bc.regime_drift_correction's cumulative
+            # tracking -- see build_order_intent's regime_engagement_state
+            # docstring. Scoped to non-hedge only, matching the gate's own
+            # scope (REGIME_ENGAGEMENT_MULTIPLIER never applies to hedges).
+            # Updated at placement time, same convention as
+            # last_first_entry_by_asset just below (a deliberate,
+            # documented simplification vs. fill-to-fill measurement).
+            state = self.regime_engagement_state.setdefault(
+                market.asset, {"counts": {}, "total": 0})
+            state["counts"][intent.regime] = state["counts"].get(intent.regime, 0) + 1
+            state["total"] += 1
         if is_first_entry:
             # Feeds the NEXT market's first-entry decision -- see
             # CROSS_MARKET_SIDE_PERSISTENCE's docstring in behavior_config.py.

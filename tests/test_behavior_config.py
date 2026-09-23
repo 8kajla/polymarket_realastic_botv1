@@ -1568,6 +1568,58 @@ class TestRegimeEngagementMultiplier:
     def test_unknown_regime_is_a_noop(self):
         assert bc.regime_engagement_multiplier("Bitcoin", "NONEXISTENT") == 1.0
 
+
+class TestRegimeDriftCorrection:
+    """Added 2026-09-23 -- see regime_drift_correction's docstring for the
+    held-out validation (project memory: distribution-controller-beats-
+    static-regime-probability). Not affected by conftest.py's
+    neutralize_regime_engagement_multiplier fixture -- that patches a
+    different function (regime_engagement_multiplier), this one is new."""
+
+    def test_cold_start_is_a_noop(self):
+        # total==0 -> nothing to correct against yet, matches the validated
+        # test's own cold-start handling.
+        assert bc.regime_drift_correction("Bitcoin", "CHEAP", {}, 0) == 1.0
+
+    def test_unknown_asset_is_a_noop(self):
+        assert bc.regime_drift_correction("Dogecoin", "CHEAP", {"CHEAP": 5}, 10) == 1.0
+
+    def test_unknown_regime_is_a_noop(self):
+        assert bc.regime_drift_correction("Bitcoin", "NONEXISTENT", {}, 10) == 1.0
+
+    def test_under_target_boosts(self):
+        # Bitcoin CHEAP target is 0.4194. Realized share here is 0.10 (1/10)
+        # -- well under target, should boost above 1.0.
+        result = bc.regime_drift_correction("Bitcoin", "CHEAP", {"CHEAP": 1}, 10)
+        assert result > 1.0
+
+    def test_over_target_dampens(self):
+        # Realized share 0.90 (9/10) -- well over the 0.4194 target, should
+        # dampen below 1.0.
+        result = bc.regime_drift_correction("Bitcoin", "CHEAP", {"CHEAP": 9}, 10)
+        assert result < 1.0
+
+    def test_exactly_at_target_is_approximately_noop(self):
+        # Realized share == target exactly -> deficit == 0 -> factor == 1.0.
+        target = bc.REGIME_MIX_TARGET["Bitcoin"]["CHEAP"]
+        counts = {"CHEAP": round(target * 1000)}
+        result = bc.regime_drift_correction("Bitcoin", "CHEAP", counts, 1000)
+        assert result == pytest.approx(1.0, abs=0.01)
+
+    def test_cap_bounds_extreme_deficit(self):
+        # Realized share 0.0 (never engaged this regime at all yet) against
+        # a real target -- the proportional formula alone would blow past
+        # any reasonable bound; the cap must hold it at REGIME_DRIFT_
+        # CORRECTION_CAP exactly, not just "less than infinity".
+        result = bc.regime_drift_correction("Ethereum", "CHEAP", {"CHEAP": 0}, 1000)
+        assert result == pytest.approx(bc.REGIME_DRIFT_CORRECTION_CAP)
+
+    def test_cap_bounds_extreme_surplus(self):
+        # Realized share 1.0 (only this regime engaged so far) -- the
+        # dampening side of the same cap, at 1/cap.
+        result = bc.regime_drift_correction("Ethereum", "CHEAP", {"CHEAP": 1000}, 1000)
+        assert result == pytest.approx(1.0 / bc.REGIME_DRIFT_CORRECTION_CAP)
+
     def test_every_calibrated_value_is_a_valid_probability(self):
         for asset, table in bc.REGIME_ENGAGEMENT_MULTIPLIER.items():
             for regime, mult in table.items():

@@ -1216,6 +1216,19 @@ ENABLE_REGIME_ENGAGEMENT_MULTIPLIER = os.environ.get(
     "ENABLE_REGIME_ENGAGEMENT_MULTIPLIER", "true"
 ).strip().lower() not in ("false", "0", "no")
 
+# Feature flag for REGIME_DRIFT_CORRECTION (behavior_config.regime_drift_
+# correction) -- a closed-loop overlay ON TOP of REGIME_ENGAGEMENT_MULTIPLIER,
+# see that function's docstring for the full derivation (validated held-out,
+# project memory: distribution-controller-beats-static-regime-probability).
+# Requires ENABLE_REGIME_ENGAGEMENT_MULTIPLIER also on -- it's a correction
+# to that mechanism, not independent of it. Default OFF everywhere: new,
+# tested only in a standalone simulation so far, not yet through the real
+# production harness -- same cautious rollout as every other new mechanism
+# in this codebase (paperbot-100-first, not all bots at once).
+ENABLE_REGIME_DRIFT_CORRECTION = os.environ.get(
+    "ENABLE_REGIME_DRIFT_CORRECTION", "false"
+).strip().lower() not in ("false", "0", "no")
+
 # Feature flag for MID_CONTRARIAN_BIAS_PROBABILITY (see its docstring in
 # behavior_config.py). Added 2026-09-18 -- the real trader's MID
 # first-entry side genuinely favors whichever side has lost value since
