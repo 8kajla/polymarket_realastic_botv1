@@ -66,6 +66,15 @@ class MarketActivityState:
     # time. See conviction_hedge_multiplier's docstring in
     # behavior_config.py.
     first_entry_notional: Optional[float] = None
+    # ADDED 2026-09-24, alongside LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER:
+    # seconds from window-open to this market's first real entry -- needed
+    # to (a) classify whether this market's first entry was itself EARLY
+    # (t_in<120s, the only population the underlying hump was measured on)
+    # and (b) compute seconds-since-first-entry at hedge-decision time. Set
+    # once, same `if self.real_fill_count == 0` guard as first_entry_price/
+    # first_entry_regime above (so it locks in at whichever placement
+    # attempt actually fills first, same convention as those two fields).
+    first_entry_t_in: Optional[float] = None
     cost_by_side: dict = field(default_factory=lambda: {"Up": 0.0, "Down": 0.0})
     # CHANGED 2026-09-09 (was: hedge_placed: bool, permanently locking
     # after the market's first hedge-shaped entry). CONFIRMED LIVE:
@@ -244,7 +253,8 @@ class MarketActivityState:
         return "Up" if up >= down else "Down"
 
     def record_entry(self, side: str, notional_usd: float = 0.0, regime: Optional[str] = None,
-                      is_hedge: bool = False, price: Optional[float] = None) -> None:
+                      is_hedge: bool = False, price: Optional[float] = None,
+                      t_in: Optional[float] = None) -> None:
         # CHANGED 2026-09-14 (entry_count -> real_fill_count, see this
         # dataclass's docstring above): gates on whether a REAL fill has
         # happened yet, not merely a placement. Without this, a market
@@ -257,6 +267,8 @@ class MarketActivityState:
             self.first_entry_regime = regime
         if self.real_fill_count == 0 and price is not None:
             self.first_entry_price = price
+        if self.real_fill_count == 0 and t_in is not None:
+            self.first_entry_t_in = t_in
         if self.real_fill_count == 0:
             self.first_entry_side = side
             self.first_entry_notional = notional_usd
@@ -464,7 +476,8 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
                   dominant_current_price: Optional[float] = None,
                   prev_hedge_rate: Optional[float] = None,
                   after_big_loss: Optional[bool] = None,
-                  seconds_remaining: Optional[float] = None) -> Optional[str]:
+                  seconds_remaining: Optional[float] = None,
+                  seconds_since_first_entry: Optional[float] = None) -> Optional[str]:
     """
     Returns the hedge side ("Up"/"Down") if THIS entry should be a
     deliberate insurance leg on the opposite side from the first entry,
@@ -580,6 +593,22 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
     first-hedge-only population). Not a new parameter -- computed
     internally from `asset` and `activity.first_entry_regime`, which
     this function already has.
+
+    LATE-WINDOW HEDGE URGENCY-conditioned (2026-09-24): `seconds_since_
+    first_entry` (how long ago THIS market's own first real entry
+    happened, computed by the caller) combines with
+    `activity.first_entry_t_in` (how early in the window that first entry
+    itself was) to scale the FIRST-hedge probability via bc.late_window_
+    hedge_urgency_multiplier -- a real, cross-asset-robust survival-
+    analysis finding (Kaplan-Meier hazard, right-censored) that hedge
+    hazard genuinely humps 150-180s after an EARLY (t_in<120s) first
+    entry, confirmed via stratification and per-asset breakdown, and
+    decisively cleared of double-counting with ADVERSE_MOVE_TTC_
+    INTERACTION (Ethereum has zero calibration there yet independently
+    shows the hump). No-ops cleanly (1.0) for late first entries or when
+    either input is unavailable -- see that function's docstring in
+    behavior_config.py. Optional (default None -> no-op) for the same
+    reason as every other optional param here.
     """
     if activity.entry_count < 1 or activity.first_entry_regime is None:
         return None
@@ -615,6 +644,10 @@ def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
             # didn't shift).
             p = max(0.0, min(1.0, p * bc.regime_hedge_post_shift_multiplier(
                 asset, activity.first_entry_regime)))
+        if config.ENABLE_LATE_WINDOW_HEDGE_URGENCY:
+            urgency_mult = bc.late_window_hedge_urgency_multiplier(
+                activity.first_entry_t_in, seconds_since_first_entry)
+            p = max(0.0, min(1.0, p * urgency_mult))
         if config.ENABLE_HEDGE_LIQUIDITY_MULTIPLIER:
             liq_mult = bc.hedge_liquidity_multiplier(asset, liquidity)
             p = max(0.0, min(1.0, p * liq_mult))
@@ -1253,11 +1286,25 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         dominant_book = down_book
     dominant_current_price = dominant_book.best_bid if dominant_book is not None else None
 
+    # ADDED 2026-09-24, for LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER: seconds
+    # elapsed in THIS window since THIS market's own first real entry.
+    # Markets are always exactly 300s (5-min) by this project's own
+    # convention throughout -- `market.end_time - 300.0` is the window's
+    # open time, matching how first_entry_t_in itself gets computed at
+    # bot.py's record_entry call site. None whenever there's no first
+    # entry recorded yet (activity.first_entry_t_in is None) -- decide_hedge
+    # already no-ops cleanly on a None input.
+    seconds_since_first_entry = (
+        (300.0 - seconds_remaining) - activity.first_entry_t_in
+        if activity.first_entry_t_in is not None and seconds_remaining is not None
+        else None
+    )
     hedge_side = decide_hedge(
         market.asset, activity, rng, liquidity=market.liquidity,
         is_weekend=is_weekend, dominant_current_price=dominant_current_price,
         prev_hedge_rate=prev_hedge_rate, after_big_loss=after_big_loss,
-        seconds_remaining=seconds_remaining)
+        seconds_remaining=seconds_remaining,
+        seconds_since_first_entry=seconds_since_first_entry)
     is_hedge = hedge_side is not None
     is_contrarian = False
     is_cross_asset_carryover = False

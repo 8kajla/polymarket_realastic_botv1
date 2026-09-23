@@ -145,7 +145,7 @@ class TestCrossMarketSideTracking:
         monkeypatch.setattr(stratmod, "decide_hedge",
                              lambda asset, activity, rng, liquidity=None, is_weekend=None,
                              dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None,
-                             seconds_remaining=None: None)
+                             seconds_remaining=None, seconds_since_first_entry=None: None)
 
         market2 = make_market_for_asset("Bitcoin", condition_id="cond-2", end_time=3000.0)
         wire_market(bot, market2, bid=0.30, ask=0.31, depth=200.0)
@@ -201,7 +201,7 @@ class TestRegimeEngagementStateTracking:
 
         monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
                              is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
-                             after_big_loss=None, seconds_remaining=None: "Down")
+                             after_big_loss=None, seconds_remaining=None, seconds_since_first_entry=None: "Down")
         asyncio.run(bot.strategy_tick(now=1010.0))
 
         # A hedge may or may not actually place (depends on caps/book state),
@@ -264,7 +264,7 @@ class TestCrossAssetCarryoverTracking:
         monkeypatch.setattr(stratmod, "decide_hedge",
                              lambda asset, activity, rng, liquidity=None, is_weekend=None,
                              dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None,
-                             seconds_remaining=None: None)
+                             seconds_remaining=None, seconds_since_first_entry=None: None)
 
         market2 = make_market_for_asset("Ethereum", condition_id="cond-2", end_time=3000.0)
         wire_market(bot, market2, bid=0.30, ask=0.31, depth=200.0)
@@ -636,11 +636,29 @@ class TestForcedFirstEntrySideHook:
         monkeypatch.setattr(stratmod, "decide_hedge",
                              lambda asset, activity, rng, liquidity=None, is_weekend=None,
                              dominant_current_price=None, prev_hedge_rate=None, after_big_loss=None,
-                             seconds_remaining=None: None)
+                             seconds_remaining=None, seconds_since_first_entry=None: None)
 
         bot._evaluate_one_market(market, now=1000.0)
 
         assert called == []
+
+
+class TestFirstEntryTInRecording:
+    """bot.py's record_entry call site computes t_in (seconds elapsed in
+    the window at placement time) and passes it through, added 2026-09-24
+    alongside LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER -- see
+    MarketActivityState.first_entry_t_in's docstring in strategy.py."""
+
+    def test_t_in_is_computed_from_now_and_the_windows_open_time(self):
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        market = make_market_for_asset("Bitcoin", end_time=2000.0)  # window opens at t=1700
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        asyncio.run(bot.strategy_tick(now=1750.0))  # 50s into the window
+
+        activity = bot.activity[market.condition_id]
+        assert activity.entry_count == 1
+        assert activity.first_entry_t_in == pytest.approx(50.0)
 
 
 class TestHedgeLegEndToEnd:
@@ -673,7 +691,7 @@ class TestHedgeLegEndToEnd:
         monkeypatch.setattr(
             stratmod, "decide_hedge",
             lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None,
-            prev_hedge_rate=None, after_big_loss=None, seconds_remaining=None: "Down" if activity.dominant_side() == "Up" else "Up")
+            prev_hedge_rate=None, after_big_loss=None, seconds_remaining=None, seconds_since_first_entry=None: "Down" if activity.dominant_side() == "Up" else "Up")
 
         asyncio.run(bot.strategy_tick(now=1001.0))
 

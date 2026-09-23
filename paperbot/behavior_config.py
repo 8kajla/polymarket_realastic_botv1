@@ -4971,3 +4971,80 @@ def sample_tick_offset(rng: "random.Random") -> int:
         if r < cum:
             return ticks
     return TICK_OFFSET_DISTRIBUTION[-1][0]
+
+
+# ADDED 2026-09-24: LATE-WINDOW HEDGE URGENCY (see late-window-hedge-urgency-design
+# / late-window-hedge-urgency-bot-baseline-check in project memory for the full
+# audit + design + a same-day self-corrected impact analysis). hedge_attempt_
+# hazard above is keyed PURELY on (asset, regime, attempt_index) -- zero
+# time-remaining dependency. A proper survival analysis (Kaplan-Meier + hazard
+# function, right-censored at resolution) of real hedge timing found a genuine,
+# cross-asset-robust hump in hedge hazard 150-180s after an EARLY first entry
+# (t_in<120s) -- confirmed via stratification (the hump only exists for early
+# entrants, not late ones) AND per-asset breakdown (Bitcoin/Ethereum/Solana all
+# independently elevated). Decisively cleared of double-counting with
+# ADVERSE_MOVE_TTC_INTERACTION (Ethereum has zero calibration there yet
+# independently shows the hump) and every other hedge-chain member (none of
+# them have a time-since-entry axis at all).
+#
+# Mean-neutral multiplier per 30s bucket (seconds since THIS market's first
+# real entry), derived from the real early-entry stratum (t_in<120s, n=402,
+# post-Sep-18 real trades) discrete hazard-by-bin table, normalized by the
+# stratum's own mean hazard (25.94 per 1000):
+#   0-30s: 0.575    30-60s: 1.558    60-90s: 0.913    90-120s: 1.870
+#   120-150s: 1.420  150-180s: 2.381 (the peak)  180-210s: 1.088
+#   210-240s: 0.195  240-270s/270-300s: 0.000 (moot in practice --
+#   MIN_SECONDS_BEFORE_CLOSE=75 already vetoes any bot activity this late in
+#   the window for any early entrant, so these two buckets are unreachable
+#   regardless of their value)
+#
+# Scope: ONLY applies when the market's first entry was itself EARLY
+# (first_entry_t_in < EARLY_ENTRY_THRESHOLD_S) -- late first-entries showed NO
+# hump at all (hazard decays monotonically from the start), confirmed via
+# stratification. A hard no-op (1.0) otherwise.
+#
+# KNOWN SIMPLIFICATION, disclosed rather than silently assumed away: these
+# bucket values come from the full early-entry stratum, not a held-out
+# train/test split (unlike, e.g., the Solana WITHIN_BAND_SIZE_SLOPE
+# recalibration) -- the underlying finding survived two independent "dig
+# deeper" rounds (stratification + per-asset breakdown) before this was
+# shipped, but the exact bucket VALUES haven't been separately cross-
+# validated. EARLY_ENTRY_THRESHOLD_S=120s is the same boundary used to
+# originally isolate the hump, not independently re-optimized.
+EARLY_ENTRY_THRESHOLD_S = 120.0
+
+LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER: dict = {
+    (0, 30): 0.575,
+    (30, 60): 1.558,
+    (60, 90): 0.913,
+    (90, 120): 1.870,
+    (120, 150): 1.420,
+    (150, 180): 2.381,
+    (180, 210): 1.088,
+    (210, 240): 0.195,
+    (240, 270): 0.000,
+    (270, 300): 0.000,
+}
+
+
+def late_window_hedge_urgency_multiplier(first_entry_t_in: Optional[float],
+                                          seconds_since_first_entry: Optional[float]) -> float:
+    """1.0 (no-op) if either input is missing, if first_entry_t_in is at or
+    beyond EARLY_ENTRY_THRESHOLD_S (late first entries showed no hump at all
+    -- see this module's LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER comment above),
+    or if seconds_since_first_entry falls outside the calibrated 0-300s
+    range (flat/no-op beyond the measured range, same convention as
+    conviction_hedge_multiplier). Otherwise returns the mean-neutral bucket
+    value for the matching 30s bucket."""
+    if first_entry_t_in is None or seconds_since_first_entry is None:
+        return 1.0
+    if first_entry_t_in >= EARLY_ENTRY_THRESHOLD_S:
+        return 1.0
+    if seconds_since_first_entry < 0:
+        return 1.0
+    for (lo, hi), mult in LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER.items():
+        if lo <= seconds_since_first_entry < hi:
+            return mult
+    return 1.0
+
+

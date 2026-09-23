@@ -1725,3 +1725,49 @@ class TestTickOffsetDistribution:
         assert bc.sample_tick_offset(FixedRNG(0.70)) == 1
         assert bc.sample_tick_offset(FixedRNG(0.90)) == 2
         assert bc.sample_tick_offset(FixedRNG(0.999999)) == 3
+
+
+class TestLateWindowHedgeUrgencyMultiplier:
+    """LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER, added 2026-09-24 -- a real,
+    stratification- and per-asset-confirmed hedge-hazard hump 150-180s
+    after an EARLY (t_in<120s) first entry. See late-window-hedge-
+    urgency-design / late-window-hedge-urgency-bot-baseline-check in
+    project memory for the full derivation and a same-day corrected
+    impact analysis."""
+
+    def test_noop_when_either_input_missing(self):
+        assert bc.late_window_hedge_urgency_multiplier(None, 160.0) == 1.0
+        assert bc.late_window_hedge_urgency_multiplier(50.0, None) == 1.0
+        assert bc.late_window_hedge_urgency_multiplier(None, None) == 1.0
+
+    def test_noop_for_late_first_entries(self):
+        # late first-entries showed NO hump at all (monotonic decay) --
+        # this must be a hard no-op regardless of seconds_since_first_entry.
+        assert bc.late_window_hedge_urgency_multiplier(120.0, 160.0) == 1.0
+        assert bc.late_window_hedge_urgency_multiplier(200.0, 160.0) == 1.0
+
+    def test_noop_for_negative_seconds_since_first_entry(self):
+        assert bc.late_window_hedge_urgency_multiplier(50.0, -1.0) == 1.0
+
+    def test_returns_the_peak_bucket_at_150_to_180s_for_an_early_entry(self):
+        assert bc.late_window_hedge_urgency_multiplier(50.0, 160.0) == pytest.approx(2.381)
+        assert bc.late_window_hedge_urgency_multiplier(0.0, 150.0) == pytest.approx(2.381)
+
+    def test_returns_the_correct_bucket_across_the_whole_range(self):
+        cases = [
+            (0.0, 0.575), (29.9, 0.575),
+            (30.0, 1.558), (59.9, 1.558),
+            (90.0, 1.870), (119.9, 1.870),
+            (180.0, 1.088), (209.9, 1.088),
+            (240.0, 0.0), (299.9, 0.0),
+        ]
+        for since, expected in cases:
+            assert bc.late_window_hedge_urgency_multiplier(50.0, since) == pytest.approx(expected)
+
+    def test_noop_beyond_the_measured_300s_range(self):
+        assert bc.late_window_hedge_urgency_multiplier(50.0, 301.0) == 1.0
+
+    def test_early_entry_threshold_is_120s(self):
+        # the boundary itself belongs to "late" (>=), not "early"
+        assert bc.late_window_hedge_urgency_multiplier(119.9, 160.0) == pytest.approx(2.381)
+        assert bc.late_window_hedge_urgency_multiplier(120.0, 160.0) == 1.0

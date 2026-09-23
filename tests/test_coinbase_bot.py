@@ -132,7 +132,7 @@ class TestCoinbaseMomentumBotFullPipeline:
         monkeypatch.setattr(
             stratmod, "decide_hedge",
             lambda asset, activity, rng, liquidity=None, is_weekend=None, dominant_current_price=None,
-            prev_hedge_rate=None, after_big_loss=None, seconds_remaining=None: "Down")
+            prev_hedge_rate=None, after_big_loss=None, seconds_remaining=None, seconds_since_first_entry=None: "Down")
 
         bot._evaluate_one_market(market, now=1000.0)
 

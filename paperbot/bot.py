@@ -879,8 +879,12 @@ class PaperBot:
         order = self.fill_sim.place_order(intent, order_book, now=now)
         self.resting_order_ids.setdefault(market.condition_id, set()).add(order.order_id)
         self._maybe_place_companion(market, intent, order_book, now)
+        # ADDED 2026-09-24, for LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER: seconds
+        # elapsed in this window at placement time -- markets are always
+        # exactly 300s (5-min) by this project's own convention, so
+        # `market.end_time - 300.0` is the window's open time.
         activity.record_entry(intent.side, intent.notional_usd, intent.regime, is_hedge=intent.is_hedge,
-                               price=intent.price)
+                               price=intent.price, t_in=now - (market.end_time - 300.0))
         if not intent.is_hedge:
             # ADDED 2026-09-23: feeds bc.regime_drift_correction's cumulative
             # tracking -- see build_order_intent's regime_engagement_state

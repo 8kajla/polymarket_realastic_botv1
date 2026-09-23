@@ -1301,3 +1301,22 @@ ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER = os.environ.get(
 ENABLE_TICK_OFFSET_PLACEMENT = os.environ.get(
     "ENABLE_TICK_OFFSET_PLACEMENT", "false"
 ).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER (see its docstring in
+# behavior_config.py). Added 2026-09-24: hedge_attempt_hazard has zero
+# time-remaining dependency, but a real survival analysis found a genuine,
+# cross-asset-robust hedge-hazard hump 150-180s after an early (t_in<120s)
+# first entry -- decisively cleared of double-counting with every other
+# hedge-chain member (see late-window-hedge-urgency-design in project
+# memory). A same-day baseline check (late-window-hedge-urgency-bot-
+# baseline-check) found the bot's hazard shape currently runs BACKWARDS
+# relative to this (strong early, weak late) -- applying this multiplier's
+# own mean-neutral bucket values to the bot's own hazard corrects that
+# direction without overshooting (verified: 2.38x on the bot's own 150-180s
+# hazard lands well under its own early peak, not a runaway). Default FALSE
+# everywhere: a genuine new hedge-trigger mechanism, controlled rollout
+# first, same discipline as every other addition to decide_hedge's chain.
+ENABLE_LATE_WINDOW_HEDGE_URGENCY = os.environ.get(
+    "ENABLE_LATE_WINDOW_HEDGE_URGENCY", "false"
+).strip().lower() not in ("false", "0", "no")
