@@ -1324,6 +1324,25 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     price = side_book.best_bid
     if price is None:
         return None
+
+    # ADDED 2026-09-24: TICK-OFFSET PLACEMENT (see bc.TICK_OFFSET_DISTRIBUTION's
+    # docstring for the full derivation). Scoped to real first entries only
+    # (not hedges, not add-ons) -- exactly what the underlying MarketLens
+    # measurement covered, same discipline as forced_first_entry_side above.
+    # `entry_offset` feeds OrderIntent.offset below (sign-flipped: the
+    # field's established convention is positive = trails BELOW best_bid,
+    # so an improving/positive tick count becomes a negative offset).
+    entry_offset = 0.0
+    if (config.ENABLE_TICK_OFFSET_PLACEMENT and not is_hedge
+            and activity.real_fill_count == 0):
+        tick = max(side_book.tick_size, 1e-6)
+        offset_ticks = bc.sample_tick_offset(rng)
+        candidate_price = price + offset_ticks * tick
+        if side_book.best_ask is not None:
+            candidate_price = min(candidate_price, side_book.best_ask - tick)
+        if candidate_price > 0:
+            price = round(candidate_price, 6)
+            entry_offset = -offset_ticks * tick
     regime = bc.classify_regime(price)
 
     # DECISIVENESS-ONSET fraction (2026-09-13): how much of the time
@@ -1813,6 +1832,7 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         is_scout=is_scout,
         is_hedge=is_hedge,
         reason=reason,
+        offset=entry_offset,
     )
 
 

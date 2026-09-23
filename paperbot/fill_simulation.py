@@ -206,9 +206,15 @@ class FillSimulator:
         now = now if now is not None else time.time()
         factor = self._queue_safety_factor_for(intent.regime, intent.asset)
         offset = getattr(intent, "offset", 0.0) or 0.0
-        # A deeper (companion) order only fills once price has traded down to it, so only the
-        # same-level size is ahead of it; a touch order has everything at-or-better ahead.
-        raw_queue = (book.depth_shares_at_price("bid", intent.price) if offset > 0
+        # A deeper (companion, offset>0) order only fills once price has traded
+        # down to it, so only the same-level size is ahead of it; an improving
+        # (offset<0, see config.ENABLE_TICK_OFFSET_PLACEMENT, added 2026-09-24)
+        # order is at a specific -- typically brand-new best -- price level for
+        # the same reason, not "everything at-or-better" (that conflates in
+        # every better level, which no longer makes sense once we're likely
+        # the new best ourselves). Only a plain touch order (offset==0) has
+        # everything at-or-better genuinely ahead of it.
+        raw_queue = (book.depth_shares_at_price("bid", intent.price) if offset != 0
                      else book.depth_shares_at_or_better("bid", intent.price))
         discounted_queue = raw_queue * factor
 
@@ -484,9 +490,22 @@ class FillSimulator:
 
     def _reprice(self, order: SimulatedOrder, book: BookState, now: float) -> None:
         old_price = order.price
-        if order.offset > 0:
+        if order.offset != 0:
+            # `target = best_bid - offset` is already sign-agnostic: a
+            # positive offset (companion, trails below) gives best_bid -
+            # offset < best_bid as before; a negative offset (tick-offset
+            # placement, ADDED 2026-09-24, see config.ENABLE_TICK_OFFSET_
+            # PLACEMENT) gives best_bid + |offset| > best_bid, preserving
+            # the improving order's relative position across reprices
+            # instead of collapsing it back to the bare touch. Positive
+            # offsets can never approach the ask (they only move further
+            # from it), so no ask-side clamp was ever needed before now --
+            # a negative offset chasing a moving book genuinely can, so it
+            # gets one here.
             tick = max(book.tick_size, 1e-6)
             target = max(round((book.best_bid - order.offset) / tick) * tick, tick)
+            if order.offset < 0 and book.best_ask is not None:
+                target = min(target, book.best_ask - tick)
             new_raw_queue = book.depth_shares_at_price("bid", target)
             order.price = round(target, 4)
         else:

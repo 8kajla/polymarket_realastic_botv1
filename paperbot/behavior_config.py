@@ -4919,3 +4919,55 @@ def hedge_trigger_after_big_loss_multiplier(asset: str, after_big_loss: Optional
     if not after_big_loss:
         return 1.0
     return HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER.get(asset, 1.0)
+
+
+# ADDED 2026-09-24: TICK-OFFSET PLACEMENT (queue-position/tick-priority).
+#
+# See queue-position-reattempt-blocked-marketlens-limit / tick-offset-
+# placement-design in project memory for the full derivation. Our bot's
+# entry price was, until this addition, unconditionally `side_book.best_bid`
+# (strategy.py's build_order_intent) -- joins the touch 100% of the time.
+# A real MarketLens L2 pull (n=82 clean, after excluding stale/misaligned
+# snapshots via the schema's own as_of/requested_at freshness metadata)
+# found the real trader only does that 34.1% of the time:
+#
+#   <= -3 ticks (deep behind): 15.9%   -1 tick: 14.6%   0 (touch): 34.1%
+#   -2 ticks: 1.2%                     +1 tick: 18.3%   +2 ticks: 8.5%
+#                                       >= +3 ticks: 7.3%
+#
+# Of all cases where he improves the price at all (28/82), 15 (53.6%) do
+# so by EXACTLY +1 tick -- disciplined, minimum-necessary price
+# improvement, not indifferent overpaying. Distribution collapses the
+# thin tails to single representative buckets (-3, +3) since the raw
+# sample (n=82) is too small to trust a longer per-tick tail; a bucket
+# value is applied as its exact tick count when sampled.
+#
+# Measured on FIRST ENTRIES ONLY (real trader's first-entry decisions) --
+# scoped the same way in strategy.py (not applied to hedges or add-ons,
+# matching this project's standing discipline of not generalizing a
+# finding beyond what was actually measured, e.g. forced_first_entry_side's
+# own docstring).
+TICK_OFFSET_DISTRIBUTION: list = [
+    (-3, 0.159),
+    (-2, 0.012),
+    (-1, 0.146),
+    (0, 0.341),
+    (1, 0.183),
+    (2, 0.085),
+    (3, 0.073),
+]
+
+
+def sample_tick_offset(rng: "random.Random") -> int:
+    """Draws an integer tick offset (positive = improves toward the ask,
+    negative = trails behind the current best bid) from
+    TICK_OFFSET_DISTRIBUTION. Deterministic given a seeded rng, same
+    convention as every other stochastic draw in this module (e.g.
+    decide_side's persistence roll)."""
+    r = rng.random()
+    cum = 0.0
+    for ticks, p in TICK_OFFSET_DISTRIBUTION:
+        cum += p
+        if r < cum:
+            return ticks
+    return TICK_OFFSET_DISTRIBUTION[-1][0]

@@ -769,3 +769,65 @@ class TestOffsetCompanionOrders:
         assert order.filled_size == 0.0                                # a print at 0.20 is above our 0.17 bid
         sim.on_trade_print("tok-up", TradePrint(price=0.17, size=500.0, side="SELL", ts=2.0))
         assert order.filled_size > 0.0
+
+
+class TestNegativeOffsetTickImprovement:
+    """Negative offset (config.ENABLE_TICK_OFFSET_PLACEMENT, added
+    2026-09-24): a NEW case for the offset field, symmetric to the
+    positive/companion case above but improving TOWARD the ask instead of
+    trailing below the bid. Before this addition, place_order/_reprice only
+    branched on `offset > 0` -- a negative offset would have been silently
+    treated as a bare touch order and reset to best_bid on the very next
+    reprice, wiping out the improvement."""
+
+    def _mk(self, offset):
+        intent = make_intent(price=0.21, size_shares=10.0, regime="CHEAP")
+        intent.offset = offset  # negative: price = best_bid - offset = best_bid + |offset|
+        return intent
+
+    def test_queue_ahead_is_at_the_improved_level_only_not_at_or_better(self):
+        # a touch order sees everything at-or-better ahead of it; an
+        # improving order sees only whatever (if anything) already rests
+        # at its own new, better price level.
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0, best_ask=0.30)
+        sim = FillSimulator(queue_safety_factor=1.0)
+        improved = sim.place_order(self._mk(-0.01), book, now=0.0)  # price=0.21, nothing resting there yet
+        assert improved.price == pytest.approx(0.21)
+        assert improved.queue_ahead_raw == pytest.approx(0.0)
+        touch = sim.place_order(make_intent(price=0.20), book, now=0.0)
+        assert touch.queue_ahead_raw == pytest.approx(100.0)
+
+    def test_reprice_preserves_the_improved_offset_instead_of_collapsing_to_the_touch(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0, best_ask=0.30)
+        sim = FillSimulator(queue_safety_factor=1.0)
+        order = sim.place_order(self._mk(-0.01), book, now=0.0)  # resting at 0.21
+        # bid drifts up 4 ticks (0.20 -> 0.24): drift = |0.24 - (-0.01) - 0.21| = 0.04 > 3 ticks -> reprice
+        book.apply_snapshot(bids=[(0.24, 100.0)], asks=[(0.30, 100.0)])
+        sim.manage_open_orders({"tok-up": book}, {"cond-1": 1000}, now=1.0)
+        # BEFORE this fix, the `else` branch would have reset this straight
+        # to book.best_bid (0.24) -- the whole point of the fix is that it
+        # doesn't: the order stays one tick ahead of the new best bid.
+        assert order.price == pytest.approx(0.25)
+        assert order.reprice_count == 1
+
+    def test_reprice_clamps_against_crossing_the_ask(self):
+        # positive offsets never needed an ask-side clamp (they only move
+        # further from the ask); a negative one chasing a fast-moving book
+        # genuinely can approach it, so this is a new case entirely.
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0, best_ask=0.22, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=1.0)
+        order = sim.place_order(self._mk(-0.01), book, now=0.0)  # resting at 0.21
+        # bid jumps to 0.25 with the ask right behind it at 0.26: naive
+        # target would be best_bid + 0.01 = 0.26 == best_ask -- must clamp
+        # to one tick below the ask instead.
+        book.apply_snapshot(bids=[(0.25, 100.0)], asks=[(0.26, 100.0)])
+        sim.manage_open_orders({"tok-up": book}, {"cond-1": 1000}, now=1.0)
+        assert order.price == pytest.approx(0.25)  # best_ask - one tick, not 0.26
+        assert order.price < 0.26
+
+    def test_fills_as_soon_as_a_print_reaches_the_improved_price(self):
+        book = make_book(best_bid=0.20, bid_depth_at_best=100.0, best_ask=0.30)
+        sim = FillSimulator(queue_safety_factor=1.0)
+        order = sim.place_order(self._mk(-0.01), book, now=0.0)  # resting at 0.21, ahead of the old touch
+        sim.on_trade_print("tok-up", TradePrint(price=0.21, size=500.0, side="SELL", ts=1.0))
+        assert order.filled_size > 0.0

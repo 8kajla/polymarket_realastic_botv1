@@ -1280,3 +1280,24 @@ ENABLE_CROSS_ASSET_CARRYOVER = os.environ.get(
 ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER = os.environ.get(
     "ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER", "true"
 ).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for TICK_OFFSET_DISTRIBUTION (see its docstring in
+# behavior_config.py). Added 2026-09-24: our bot's entry price was
+# unconditionally the current best_bid (100% "join the touch"); a real
+# MarketLens L2 pull found the real trader only does that 34.1% of the
+# time on first entries, improving by exactly +1 tick 18.3% of the time
+# (disciplined minimum-necessary price improvement) and resting behind
+# the touch the remainder. Requires extending fill_simulation.py's
+# offset>0-only branches (place_order/_reprice) to offset!=0 so a
+# negative (improving) offset survives the drift-reprice cycle instead
+# of being silently reset to the bare touch -- see
+# tick-offset-placement-design in project memory for the full audit.
+# Default FALSE everywhere: a genuine matching-engine change (not a pure
+# calibration-table addition) and a first-of-its-kind combination with
+# every other currently-isolated improvement on the new combined bot --
+# controlled rollout there first, same discipline as every other new
+# mechanism this project has shipped.
+ENABLE_TICK_OFFSET_PLACEMENT = os.environ.get(
+    "ENABLE_TICK_OFFSET_PLACEMENT", "false"
+).strip().lower() not in ("false", "0", "no")

@@ -5195,3 +5195,110 @@ class TestMidBoundarySkipDampenerWiring:
             return n
 
         assert n_placed(False) > n_placed(True), "the dampener should reduce placements only when the flag is on"
+
+
+class TestTickOffsetPlacement:
+    """build_order_intent wiring for config.ENABLE_TICK_OFFSET_PLACEMENT,
+    added 2026-09-24. Default OFF, and scoped to real first entries only
+    (not hedges, not add-ons) -- see bc.TICK_OFFSET_DISTRIBUTION's docstring
+    for the underlying MarketLens measurement this replicates."""
+
+    def _wide_book(self, price=0.50, token_id="up"):
+        # 4-tick-wide synthetic spread (0.01 default from make_liquid_book
+        # is too narrow to test +2/+3 tick improvement without immediately
+        # hitting the ask-clamp). Kept strictly under config.MAX_SPREAD=0.05
+        # -- a full 0.05 spread trips the gate on floating-point rounding
+        # (0.55-0.50 == 0.050000000000000044 > 0.05).
+        book = BookState(token_id=token_id)
+        book.apply_snapshot(bids=[(price, 100.0)], asks=[(round(price + 0.04, 6), 100.0)])
+        return book
+
+    def test_flag_off_leaves_price_at_bare_touch(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book, down_book = self._wide_book(0.50, "up"), self._wide_book(0.50, "down")
+        monkeypatch.setattr(config, "ENABLE_TICK_OFFSET_PLACEMENT", False)
+        monkeypatch.setattr(bc, "sample_tick_offset", lambda rng: 2)  # would improve if it ran
+
+        intent = build_order_intent(market, up_book, down_book, MarketActivityState(), random.Random(0), now=100.0)
+        assert intent is not None
+        assert intent.price == pytest.approx(0.50)
+        assert intent.offset == 0.0
+
+    def test_flag_on_improves_price_by_the_sampled_tick_count(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book, down_book = self._wide_book(0.50, "up"), self._wide_book(0.50, "down")
+        monkeypatch.setattr(config, "ENABLE_TICK_OFFSET_PLACEMENT", True)
+        monkeypatch.setattr(bc, "sample_tick_offset", lambda rng: 2)
+
+        intent = build_order_intent(market, up_book, down_book, MarketActivityState(), random.Random(0), now=100.0)
+        assert intent is not None
+        assert intent.price == pytest.approx(0.52)
+        assert intent.offset == pytest.approx(-0.02)  # negative = improving, per the field's convention
+
+    def test_flag_on_trails_behind_for_a_negative_sampled_tick_count(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book, down_book = self._wide_book(0.50, "up"), self._wide_book(0.50, "down")
+        monkeypatch.setattr(config, "ENABLE_TICK_OFFSET_PLACEMENT", True)
+        monkeypatch.setattr(bc, "sample_tick_offset", lambda rng: -3)
+
+        intent = build_order_intent(market, up_book, down_book, MarketActivityState(), random.Random(0), now=100.0)
+        assert intent is not None
+        assert intent.price == pytest.approx(0.47)
+        assert intent.offset == pytest.approx(0.03)  # positive = trails below, matching companion's convention
+
+    def test_flag_on_zero_offset_is_a_true_noop(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book, down_book = self._wide_book(0.50, "up"), self._wide_book(0.50, "down")
+        monkeypatch.setattr(config, "ENABLE_TICK_OFFSET_PLACEMENT", True)
+        monkeypatch.setattr(bc, "sample_tick_offset", lambda rng: 0)
+
+        intent = build_order_intent(market, up_book, down_book, MarketActivityState(), random.Random(0), now=100.0)
+        assert intent is not None
+        assert intent.price == pytest.approx(0.50)
+        assert intent.offset == 0.0
+
+    def test_never_crosses_the_spread_even_with_a_large_improving_sample(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book, down_book = self._wide_book(0.50, "up"), self._wide_book(0.50, "down")  # best_ask=0.54
+        monkeypatch.setattr(config, "ENABLE_TICK_OFFSET_PLACEMENT", True)
+        monkeypatch.setattr(bc, "sample_tick_offset", lambda rng: 20)  # would be 0.70, well past the ask
+
+        intent = build_order_intent(market, up_book, down_book, MarketActivityState(), random.Random(0), now=100.0)
+        assert intent is not None
+        assert intent.price < 0.54  # never at-or-through the ask
+        assert intent.price == pytest.approx(0.53)  # best_ask - one tick
+
+    def test_never_applies_to_hedges(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book, down_book = self._wide_book(0.50, "up"), self._wide_book(0.50, "down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=5.0, regime="MID")  # establishes a held side
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: "Down")  # force a hedge
+        monkeypatch.setattr(config, "ENABLE_TICK_OFFSET_PLACEMENT", True)
+        monkeypatch.setattr(bc, "sample_tick_offset", lambda rng: 3)  # would improve if it ran
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0)
+        assert intent is not None
+        assert intent.is_hedge is True
+        assert intent.price == pytest.approx(0.50)  # bare touch -- offset never applied to hedges
+        assert intent.offset == 0.0
+
+    def test_never_applies_to_add_on_entries_only_first_entries(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book, down_book = self._wide_book(0.50, "up"), self._wide_book(0.50, "down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=5.0, regime="MID")  # real_fill_count now > 0
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(config, "ENABLE_TICK_OFFSET_PLACEMENT", True)
+        monkeypatch.setattr(bc, "sample_tick_offset", lambda rng: 3)  # would improve if it ran
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=100.0)
+        assert intent is not None
+        assert intent.price == pytest.approx(0.50)  # bare touch -- offset never applied past the first entry
+        assert intent.offset == 0.0

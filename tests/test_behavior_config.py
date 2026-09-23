@@ -1673,3 +1673,55 @@ class TestMidBoundaryEdgeMultiplier:
         assert bc.mid_boundary_edge_multiplier("MID", 0.50) == 1.0
         assert bc.mid_boundary_edge_multiplier("CHEAP", 0.35) == 1.0
         assert bc.mid_boundary_edge_multiplier("CORE", 0.75) == 1.0
+
+
+class TestTickOffsetDistribution:
+    def test_distribution_sums_to_one(self):
+        # empirical percentages rounded from a real n=82 sample -- close to
+        # but not exactly 1.0 (sums to 0.999), same tolerance convention as
+        # other empirically-derived distributions in this module.
+        assert sum(p for _, p in bc.TICK_OFFSET_DISTRIBUTION) == pytest.approx(1.0, abs=0.01)
+
+    def test_sample_always_returns_a_calibrated_tick(self):
+        import random
+        rng = random.Random(0)
+        valid_ticks = {t for t, _ in bc.TICK_OFFSET_DISTRIBUTION}
+        for _ in range(500):
+            assert bc.sample_tick_offset(rng) in valid_ticks
+
+    def test_sample_is_deterministic_given_a_seeded_rng(self):
+        import random
+        a = [bc.sample_tick_offset(random.Random(42)) for _ in range(20)]
+        b = [bc.sample_tick_offset(random.Random(42)) for _ in range(20)]
+        assert a == b
+
+    def test_sample_distribution_roughly_matches_calibration_over_a_large_draw(self):
+        import random
+        from collections import Counter
+        rng = random.Random(7)
+        n = 20000
+        counts = Counter(bc.sample_tick_offset(rng) for _ in range(n))
+        for ticks, p in bc.TICK_OFFSET_DISTRIBUTION:
+            observed = counts[ticks] / n
+            assert observed == pytest.approx(p, abs=0.02)
+
+    def test_boundary_values_route_to_the_correct_bucket(self):
+        import random
+
+        class FixedRNG(random.Random):
+            def __init__(self, value):
+                super().__init__()
+                self.value = value
+
+            def random(self):
+                return self.value
+
+        # cumulative boundaries: -3:0.159, -2:0.171, -1:0.317, 0:0.658,
+        # +1:0.841, +2:0.926, +3:0.999(~1.0)
+        assert bc.sample_tick_offset(FixedRNG(0.0)) == -3
+        assert bc.sample_tick_offset(FixedRNG(0.158)) == -3
+        assert bc.sample_tick_offset(FixedRNG(0.30)) == -1
+        assert bc.sample_tick_offset(FixedRNG(0.50)) == 0
+        assert bc.sample_tick_offset(FixedRNG(0.70)) == 1
+        assert bc.sample_tick_offset(FixedRNG(0.90)) == 2
+        assert bc.sample_tick_offset(FixedRNG(0.999999)) == 3
