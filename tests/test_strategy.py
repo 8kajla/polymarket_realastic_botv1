@@ -2498,7 +2498,9 @@ class TestDecideHedgeWeekendMultiplier:
         # docstring for the full recalibration (now every cell covered,
         # based on the full ~4.5-day post-boundary window instead of the
         # original ~33 hours).
-        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "CHEAP") == pytest.approx(0.275)
+        # CHEAP/Bitcoin RE-RECALIBRATED 2026-09-24: 0.275 -> 0.075, see the
+        # table's own docstring for the cross-bot-validated derivation.
+        assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "CHEAP") == pytest.approx(0.075)
         assert bc.regime_hedge_post_shift_multiplier("Ethereum", "CHEAP") == pytest.approx(0.393)
         assert bc.regime_hedge_post_shift_multiplier("Solana", "CHEAP") == pytest.approx(0.270)
         assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "MID") == pytest.approx(0.320)
@@ -2510,6 +2512,20 @@ class TestDecideHedgeWeekendMultiplier:
         assert bc.regime_hedge_post_shift_multiplier("Bitcoin", "HIGH") == pytest.approx(0.292)
         assert bc.regime_hedge_post_shift_multiplier("Ethereum", "HIGH") == pytest.approx(0.455)
         assert bc.regime_hedge_post_shift_multiplier("Solana", "HIGH") == pytest.approx(0.484)
+
+    def test_cheap_bitcoin_dampener_is_a_real_further_cut_not_a_typo(self):
+        # 2026-09-24 recalibration: cross-bot-validated (paperbot 61.9%,
+        # paperbot-100 56.7%, coinbase-bot 75.4% CHEAP-Bitcoin hedge rate,
+        # all vs the real trader's ~16.8%) as needing roughly a further
+        # 3.7x cut on top of the already-shipped CHEAP/Bitcoin dampener --
+        # not a small nudge. Guards against a future accidental near-
+        # revert (e.g. a merge conflict silently restoring 0.275).
+        cheap_btc = bc.regime_hedge_post_shift_multiplier("Bitcoin", "CHEAP")
+        assert cheap_btc < 0.15, "CHEAP/Bitcoin dampener should reflect the 2026-09-24 recalibration, not the stale 0.275"
+        # sibling CHEAP cells (Ethereum/Solana) were validated as only mildly
+        # off (1.4-1.5x) and deliberately left untouched -- must stay put.
+        assert bc.regime_hedge_post_shift_multiplier("Ethereum", "CHEAP") == pytest.approx(0.393)
+        assert bc.regime_hedge_post_shift_multiplier("Solana", "CHEAP") == pytest.approx(0.270)
 
     def test_regime_hedge_dampener_is_noop_for_uncalibrated_cells(self):
         # As of the 2026-09-22 refresh every real (asset, regime) cell is

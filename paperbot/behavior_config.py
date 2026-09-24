@@ -3449,8 +3449,22 @@ def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) ->
 # more post-boundary days accumulate; every cell here is still built on
 # under a week of data by construction (the boundary itself is only
 # ~4.5 days old as of this refresh).
+# RECALIBRATED 2026-09-24 (CHEAP/Bitcoin only): live-bot audit found paperbot/
+# paperbot-100/coinbase-bot all running CHEAP Bitcoin hedge rates of 56.7-75.4%
+# against this cell's own dampened base -- while the real trader's CHEAP
+# Bitcoin hedge rate (measured fresh via data-api, n=470 across 6 days
+# Sep18-24 including live same-day data, split-half validated at 18.8%/14.5%)
+# sits at a stable ~16.8%. That's a real, cross-bot-confirmed ~3.68x
+# over-hedge concentrated almost entirely in this one cell (Ethereum/Solana
+# CHEAP were only 1.4-1.5x off, within this project's normal calibration
+# noise, and left untouched). See cheap-hedge-gap-is-bitcoin-specific-root-
+# cause / cheap-hedge-rate-gap-verified-compositional in project memory for
+# the full derivation. 0.275 -> 0.075 (a further ~3.7x reduction on top of
+# the existing dampener). CODED AND TESTED, NOT YET DEPLOYED to the live
+# bots pending explicit go-ahead -- same discipline as every other numeric
+# recalibration this session.
 REGIME_HEDGE_POST_SHIFT_MULTIPLIER = {
-    "CHEAP": {"Bitcoin": 0.275, "Ethereum": 0.393, "Solana": 0.270},
+    "CHEAP": {"Bitcoin": 0.075, "Ethereum": 0.393, "Solana": 0.270},
     "MID": {"Bitcoin": 0.320, "Ethereum": 0.191, "Solana": 0.176},
     "CORE": {"Bitcoin": 0.370, "Ethereum": 0.122, "Solana": 0.214},
     "HIGH": {"Bitcoin": 0.292, "Ethereum": 0.455, "Solana": 0.484},
