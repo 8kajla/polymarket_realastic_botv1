@@ -478,3 +478,51 @@ class TestPersistence:
         ledger = Ledger.load(tmp_path / "does_not_exist.json")
         assert ledger.records == []
         assert ledger.realized_pnl() == 0.0
+
+    def test_save_is_atomic_no_leftover_temp_file(self, tmp_path):
+        # ADDED 2026-09-25 after a live incident: save() used to write
+        # directly into the target path, which left a corrupted, half-
+        # written file (and a permanent crash-loop on reload) if the
+        # process was interrupted mid-write. Confirm the temp-file
+        # intermediate is cleaned up (os.replace consumes it) after a
+        # normal save -- no stray `.tmp*` artifact left behind.
+        path = tmp_path / "ledger.json"
+        ledger = Ledger()
+        ledger.settle_order(make_filled_order(price=0.25, size=4.0, side="Down"), winning_side="Down")
+        ledger.save(path)
+
+        assert path.exists()
+        leftover_temp_files = list(tmp_path.glob("ledger.json.tmp*"))
+        assert leftover_temp_files == []
+
+    def test_save_never_leaves_the_target_path_partially_written(self, tmp_path, monkeypatch):
+        # Simulate the exact failure mode from the live incident: the
+        # write itself fails partway (e.g. disk full) after save() has
+        # already been called once successfully. The EXISTING valid
+        # ledger file at `path` must be untouched -- os.replace only
+        # ever runs after the temp file is fully written, so a failure
+        # writing the temp file must never reach the real path at all.
+        path = tmp_path / "ledger.json"
+        ledger = Ledger()
+        ledger.settle_order(make_filled_order(price=0.25, size=4.0, side="Down"), winning_side="Down")
+        ledger.save(path)
+        good_content = path.read_text()
+
+        ledger.settle_order(make_filled_order(price=0.30, size=2.0, side="Up"), winning_side="Up")
+
+        import pathlib
+        real_write_text = pathlib.Path.write_text
+
+        def failing_write_text(self, *a, **k):
+            if self.name.startswith("ledger.json.tmp"):
+                raise OSError("simulated disk full")
+            return real_write_text(self, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "write_text", failing_write_text)
+        with pytest.raises(OSError):
+            ledger.save(path)
+
+        # The real ledger path must still hold the OLD, complete, valid
+        # content -- not a partial write, and not silently missing.
+        assert path.read_text() == good_content
+        assert json.loads(path.read_text())["records"] is not None

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -220,13 +221,6 @@ class Ledger:
             out[r.asset] = out.get(r.asset, 0.0) + r.pnl
         return out
 
-    def realized_pnl_by_asset_regime(self) -> dict:
-        out: dict[tuple, float] = {}
-        for r in self.records:
-            key = (r.asset, r.regime)
-            out[key] = out.get(key, 0.0) + r.pnl
-        return out
-
     def hedge_summary(self) -> dict:
         """Hedge vs. non-hedge settlement counts and P&L -- the live
         signal for whether the bot's simulated hedge legs are actually
@@ -259,10 +253,45 @@ class Ledger:
     # -- persistence ---------------------------------------------------
 
     def save(self, path: Optional[Path] = None) -> None:
+        """ATOMIC WRITE (fixed 2026-09-25, live incident): the previous
+        version was `path.write_text(...)` directly -- truncates the
+        target file in place, then streams the new content into it. If
+        the process is interrupted mid-write for ANY reason (disk fills
+        up, OOM-killed, SIGKILL, a crash), the file is left as a
+        genuinely corrupted, truncated JSON fragment -- `Ledger.load()`
+        then raises on the very next startup, and if the service is
+        configured to auto-restart on failure (as all 4 bots are), this
+        becomes a permanent crash-loop, not a one-time error: every
+        restart attempt reloads the same broken file and crashes again.
+
+        CONFIRMED LIVE 2026-09-25: an AWS EBS volume filling to 100% (the
+        already-known-recurring "AWS chronic OOM/disk" issue -- see
+        project memory) hit mid-write on all 4 bots' ledgers
+        simultaneously, corrupting every one of them and taking all 4
+        production bots down in a crash-loop at once. Repaired live by
+        truncating each ledger to its last complete record (losing only
+        the single in-flight record per bot) and manually restarting --
+        this fix exists so that repair is never needed again.
+
+        Write to a temp file in the SAME directory (so the final
+        os.replace is on the same filesystem, guaranteeing atomicity --
+        a cross-filesystem rename is not atomic) then atomically replace
+        the target. os.replace is a single filesystem-level rename
+        syscall on POSIX: the target path always resolves to either the
+        complete OLD content or the complete NEW content, NEVER a
+        partial write, regardless of when or how the process is
+        interrupted. If the write itself fails partway (e.g. disk still
+        full), the temp file is left corrupted/incomplete but the REAL
+        ledger path is untouched -- the bot keeps running on its last
+        good on-disk state instead of being one crash away from a
+        corrupted reload.
+        """
         path = path or config.LEDGER_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"records": [asdict(r) for r in self.records]}
-        path.write_text(json.dumps(payload, indent=2))
+        tmp_path = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
+        tmp_path.write_text(json.dumps(payload, indent=2))
+        os.replace(tmp_path, path)
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "Ledger":

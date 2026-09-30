@@ -37,6 +37,21 @@ def classify_regime(price: float) -> str:
     return "HIGH"  # price == 1.0 edge case, belt-and-suspenders
 
 
+def table_lookup(table: dict, *keys, default: float = 1.0) -> float:
+    """Generic nested-dict lookup for the many single- and two-key
+    calibration tables below (e.g. ENTRY_SIZE_LEVEL_CORRECTION[asset][regime],
+    DEEP_CHEAP_TAIL_MULTIPLIER[asset]). Walks `keys` in the exact order the
+    caller passes them -- some tables here are asset-first, others are
+    regime-first, so callers must match each table's own key order; this
+    function does not normalize that. Missing keys at any level fall back to
+    `default` (1.0, i.e. a no-op multiplier, unless the table's own function
+    needs a different one)."""
+    node = table
+    for key in keys[:-1]:
+        node = node.get(key, {})
+    return node.get(keys[-1], default)
+
+
 ASSET_NAMES = (
     "Bitcoin",
     "Ethereum",
@@ -398,40 +413,18 @@ SIDE_PERSISTENCE = {
     "BNB": {"CHEAP": 0.8085, "MID": 0.8085, "CORE": 0.8085, "HIGH": 0.8085},
 }
 
-# ---------------------------------------------------------------------------
-# Universal weakness/strength gradient -- same shape confirmed across all six
-# assets (CHEAP entries tend to follow a recent price drop, HIGH entries tend
-# to follow a recent rise). These are the exact measured values from the
-# full 778,116-trade dataset (they fall inside the ranges given in spec:
-# CHEAP ~51-58%, HIGH ~51-77%). Used ONLY as a soft tiebreak between
-# multiple simultaneously-eligible opportunities in a single bot cycle --
-# never as a hard requirement to trade.
-# ---------------------------------------------------------------------------
-GRADIENT_BIAS_PCT = {
-    # Bitcoin RECALIBRATED 2026-09-08: CHEAP_follows_drop barely moved
-    # (51.16->51.97, n=2,484 trusted -- essentially unchanged, updated
-    # for precision). HIGH_follows_rise moved more (55.40->50.05,
-    # n=1,049 trusted) -- a real ~5.4pp drop.
-    "Bitcoin":     {"CHEAP_follows_drop": 51.97, "HIGH_follows_rise": 50.05},
-    # Ethereum RECALIBRATED 2026-09-08: CHEAP_follows_drop barely moved
-    # (51.07->51.91, n=1,520 trusted). HIGH_follows_rise left at the
-    # historical value -- recent sample (n=300) is below the trust
-    # threshold.
-    "Ethereum":    {"CHEAP_follows_drop": 51.91, "HIGH_follows_rise": 51.94},
-    # CHEAP_follows_drop RECALIBRATED 2026-09-08 (n=766, trusted) ->
-    # 62.14%. HIGH_follows_rise left at the historical value -- recent
-    # sample (n=251) is below the n>=500 trust threshold used for this
-    # recalibration pass, and this is only ever a soft tiebreak anyway.
-    "Solana":      {"CHEAP_follows_drop": 62.14, "HIGH_follows_rise": 62.71},
-    "Dogecoin":    {"CHEAP_follows_drop": 51.42, "HIGH_follows_rise": 76.89},
-    "Hyperliquid": {"CHEAP_follows_drop": 56.16, "HIGH_follows_rise": 65.01},
-    "BNB":         {"CHEAP_follows_drop": 57.09, "HIGH_follows_rise": 53.10},
-}
-
-# A small price move smaller than this (in price units) counts as "flat",
-# not rising/falling -- matches the threshold used in the historical
-# analysis this bot is calibrated on.
-GRADIENT_FLAT_EPSILON = 0.005
+# REMOVED 2026-09-28 (function-count minimization pass): GRADIENT_BIAS_PCT/
+# GRADIENT_FLAT_EPSILON + strategy.gradient_score() were a real, calibrated
+# soft-tiebreak signal (measured from the full 778,116-trade dataset) meant
+# to rank multiple simultaneously-eligible candidates within one bot cycle.
+# Found orphaned: bot.py still computed the input (_recent_price_delta) and
+# threaded it all the way through build_order_intent's parameter list, but
+# nothing ever called gradient_score with it -- the current architecture
+# evaluates each market independently in _evaluate_one_market's per-market
+# loop, with no cross-candidate ranking step left for it to plug into.
+# Confirmed zero call sites and zero test coverage before removal. If this
+# gets revisited, the exact historical bias values are in git history at
+# this commit.
 
 # ---------------------------------------------------------------------------
 # Floor-lot "probe" tier (Part 4). A real, deliberate, secondary sizing
@@ -654,15 +647,42 @@ def median_entry_notional(asset: str, regime: str, position_tier: str) -> float:
 # unchecked -- kept as-is. 80%-of-log-gap shrinkage applied (this
 # table's own established convention, same as the CHEAP refresh above):
 # new = old * exp(0.8 * bias).
+#
+# RECALIBRATED 2026-09-25 (research-loop sizing audit, verified pass).
+# Re-measured real/predicted directly against 5-second-merged post-Sep-18
+# on-chain fills (activity_v2.jsonl), using bc.classify_regime's REAL
+# boundaries (CHEAP 0-0.30, MID 0.30-0.70, CORE 0.70-0.90, HIGH 0.90-1.0) --
+# this project's own ad-hoc research scripts had been using a fake set of
+# boundaries (CHEAP<0.42/MID<0.5/CORE<0.58/HIGH>=0.58) for most of that
+# session; the numbers below are the corrected, verified re-derivation, not
+# the mistaken first pass.
+#
+# This table is applied at decide_size's FINAL composition step for BOTH
+# the old (median_entry_notional * within_band) base AND the share-based
+# (notional_for_price) base -- see decide_size's own call site. Measured
+# both paths' residual-on-top-of-this-table's-CURRENT-value separately and
+# combined them with a geometric mean per (asset, regime) cell, since one
+# shared correction value has to serve both bases at once:
+#   Bitcoin  MID  old-path 3.349 / share-based 3.216 (n=269 both)
+#            CORE old-path 2.635 / share-based 2.137 (n=270 both)
+#            HIGH old-path 2.422 / share-based 1.946 (n=331/441)
+#   Ethereum MID  old-path 1.951 / share-based 1.584 (n=77)
+#            CORE old-path 2.047 / share-based 1.620 (n=78)
+#            HIGH old-path 1.571 / share-based 1.107 (n=291/335)
+#   Solana   MID  old-path 1.910 / share-based 1.443 (n=81)
+#            CORE old-path 1.806 / share-based 1.334 (n=59)
+#            HIGH old-path 1.086 / share-based 0.852 (n=280/328, share-based
+#            actually already slightly OVER-predicts here)
+# CHEAP re-measured on the upper sub-band only (0.08-0.30 -- the deep tail
+# below 0.08 has its own separate, narrower DEEP_CHEAP_TAIL_MULTIPLIER):
+# Bitcoin 1.126 (n=312), Ethereum 1.428 (n=253), Solana 1.639 (n=294).
+# Same 80%-of-log-gap shrinkage convention as every other recalibration in
+# this table: new = old * residual**0.8.
 ENTRY_SIZE_LEVEL_CORRECTION = {
-    "Bitcoin":  {"CHEAP": 1.735, "MID": 1.221, "CORE": 1.166, "HIGH": 1.111},
-    "Ethereum": {"CHEAP": 1.020, "MID": 1.287, "CORE": 1.186, "HIGH": 1.259},
-    "Solana":   {"CHEAP": 0.828, "MID": 1.362, "CORE": 1.441, "HIGH": 1.215},
+    "Bitcoin":  {"CHEAP": 1.908, "MID": 3.159, "CORE": 2.328, "HIGH": 2.066},
+    "Ethereum": {"CHEAP": 1.356, "MID": 2.021, "CORE": 1.916, "HIGH": 1.571},
+    "Solana":   {"CHEAP": 1.229, "MID": 2.043, "CORE": 2.048, "HIGH": 1.178},
 }
-
-
-def entry_size_level_correction(asset: str, regime: str) -> float:
-    return ENTRY_SIZE_LEVEL_CORRECTION.get(asset, {}).get(regime, 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -899,14 +919,55 @@ def notional_for_price(price: float, position_tier: str = "first") -> float:
 # is a live-risk fix, not a cosmetic one: production hedges on that bot were
 # oversized by up to ~2.8x (Bitcoin) before this.
 HEDGE_PRICE_SIZING_BETA = 1.054
-HEDGE_PRICE_SIZING_SCALE = {"Bitcoin": 0.929, "Ethereum": 0.718, "Solana": 0.657}
+
+# RECALIBRATED 2026-09-25 (research-loop sizing audit) -- SUPERSEDED,
+# SEE BELOW. That pass re-measured real/predicted against 5-second-merged
+# post-Sep-18 hedge fills and pushed Bitcoin/Ethereum/Solana back up to
+# 2.806/1.457/1.281 -- almost exactly back to the ORIGINAL pre-fix values
+# (2.992/1.919/1.525) this same table's docstring, two paragraphs above,
+# had already identified as ~1.4-2.8x too big and corrected away from
+# (0.929/0.718/0.657). In hindsight this was the 5-second-merge bug
+# reasserting itself: hedges are exactly the trade type most prone to
+# being wrongly fragment-merged (see five-second-merge-convention-
+# decisively-wrong in project memory), so the "3.981x under-predicted"
+# signal that pass measured was largely the merge inflating apparent
+# hedge size, not a real gap -- and "fixing" it by cranking the scale
+# back up undid the correct on-chain fix instead of confirming it.
+#
+# RE-DERIVED 2026-09-26 (full-codebase "verify everything against the
+# trader" audit) directly on TRUE on-chain order identity again -- 529
+# true hedge orders (OrderFilled events grouped by orderHash) over a
+# fresh ~37h window, none of which overlaps the sample used for either
+# prior on-chain fit. beta kept fixed at HEDGE_PRICE_SIZING_BETA (already
+# on-chain-derived, untouched by the 5s-merge regression); per-asset
+# scale re-measured as median(real_usdc / (shares_for_price(p)*p)**beta):
+#   Bitcoin (n=435): 1.886 -- excellent split-half stability (first half
+#     1.886, second half 1.880, <1% gap) and consistent across all 4
+#     regime contexts the hedge itself lands in (1.67-2.33). Shipped
+#     value (2.806) already independently confirmed too big in the same
+#     direction this moves -- shipped directly, no shrinkage, same
+#     reasoning the original on-chain fit used for its own tight split.
+#   Ethereum (n=39) and Solana (n=55): implied scale 1.024/1.452 pooled,
+#     but split-half is NOT stable (Ethereum 2.045 -> 0.641, over 3x;
+#     Solana 1.736 -> 1.013, inconsistent direction relative to shipped)
+#     -- too thin and unstable to trust a recalibration either direction.
+#     LEFT UNCHANGED at 1.457/1.281 pending a longer, more stable sample;
+#     re-check before ever moving these two again.
+HEDGE_PRICE_SIZING_SCALE = {"Bitcoin": 1.886, "Ethereum": 1.457, "Solana": 1.281}
 
 
 def hedge_notional_for_price(asset: str, price: float) -> Optional[float]:
-    """Unscaled hedge notional (USD) for a hedge buying at `price`, or None
-    for an asset with no calibration (caller falls back to the legacy
-    dominant-cost-ratio chain). The caller applies SIZE_SCALE_FACTOR and
-    jitter, same as the ordinary entry path."""
+    """The single entry point for hedge SIZE (2026-09-24 consolidation --
+    this is now the only hedge-sizing function; the old dominant-cost-
+    ratio chain it used to fall back to -- HEDGE_SIZE_RATIO and its five
+    sibling adjustment multipliers -- was deleted, since this price+asset
+    formula was validated to fit the real trader's hedge sizes better
+    out-of-sample across every regime tested, not just as-good). Returns
+    the unscaled hedge notional (USD) for a hedge buying at `price`, or
+    None for an asset with no calibration (the three dormant assets --
+    caller should skip placing a hedge entirely in that case, there is no
+    fallback path left). The caller applies SIZE_SCALE_FACTOR and jitter,
+    same as the ordinary entry path."""
     scale = HEDGE_PRICE_SIZING_SCALE.get(asset)
     if scale is None or price is None or not (0.0 < price < 1.0):
         return None
@@ -1095,12 +1156,25 @@ def within_band_size_multiplier(asset: str, regime: str, price: float) -> float:
 # CHEAP is not in SHARE_BASED_SIZING_REGIMES -- but scoped this way in
 # case that changes).
 DEEP_CHEAP_TAIL_PRICE_THRESHOLD = 0.08
-DEEP_CHEAP_TAIL_MULTIPLIER = {"Bitcoin": 0.759, "Ethereum": 0.433, "Solana": 0.319}
 
-
-def deep_cheap_tail_multiplier(asset: str) -> float:
-    """1.0 (no-op) for an asset with no calibration."""
-    return DEEP_CHEAP_TAIL_MULTIPLIER.get(asset, 1.0)
+# RECALIBRATED 2026-09-25 (research-loop sizing audit, verified pass).
+# Re-measured real/predicted (median_entry_notional * within_band *
+# THIS multiplier * entry_size_level_correction) against 5-second-merged
+# post-Sep-18 fills, price<0.08 only: Bitcoin 1.504 (n=288), Ethereum
+# 1.528 (n=345), Solana 4.809 (n=237) -- all real, well-powered, still
+# under-predicting even with the existing correction applied. Solana's
+# gap is far bigger than Bitcoin/Ethereum's here (the opposite ordering
+# from the entry/add-on/hedge floor work elsewhere in this file, which
+# found BITCOIN specifically maintains a real minimum stake in this same
+# deep tail -- see bitcoin-deep-cheap-tail-hedge-undersized in project
+# memory). Each asset has a genuinely different shape within this tail
+# (Bitcoin decays from the extreme, Ethereum is U-shaped, Solana grows
+# toward the 0.08 boundary) that a single flat multiplier can't capture --
+# this recalibration only corrects the MEDIAN level, not the shape; a
+# future pass fitting a price-graded curve per asset would do better.
+# Same 80%-of-log-gap shrinkage convention as this table's original
+# calibration: new = old * residual**0.8.
+DEEP_CHEAP_TAIL_MULTIPLIER = {"Bitcoin": 1.052, "Ethereum": 0.608, "Solana": 1.121}
 
 
 # ---------------------------------------------------------------------------
@@ -1613,6 +1687,69 @@ def regime_engagement_multiplier(asset: str, regime: str) -> float:
     return REGIME_ENGAGEMENT_MULTIPLIER.get(asset, {}).get(regime, 1.0)
 
 
+# ---------------------------------------------------------------------------
+# CHEAP DEEP-TAIL PARTICIPATION BOOST. Added 2026-09-28, digging into
+# paperbot-100's CHEAP oversizing (see project memory:
+# cheap-deep-tail-underweight-shared-across-bots -- the real driver
+# underneath the already-known 5-share exchange-minimum floor). Checked
+# whether the bots' negative CHEAP ROI (paperbot-100 -38.6%/-21.5% on
+# floor/non-floor trades, paperbot -9.1%) traced back to bad market
+# selection -- it doesn't (win rate matches the trader almost exactly,
+# ~10% either way) -- it traces back to PRICE PAID: the trader
+# concentrates far more of his real CHEAP activity in the genuine deep
+# tail (price < CHEAP_DEEP_TOUCH_PRICE_THRESHOLD, reusing that constant
+# for consistency -- this is a DIFFERENT finding from
+# cheap_deep_touch_edge_multiplier's structural-market-EV one, just the
+# same natural depth cutoff) than any bot currently does:
+#   asset      bot deep-fraction   trader deep-fraction   ratio needed
+#   Bitcoin    9.0%  (n=398)       43.9%  (n=1,189)        7.91x
+#   Ethereum   18.9% (n=164)       52.9%  (n=539)           4.82x
+#   Solana     41.2% (n=85)        50.9%  (n=436)           1.48x
+# (bot side measured on paperbot, the full-bankroll instance, so this
+# isn't a floor-lot artifact -- confirmed the same shallow skew exists
+# with no floor mechanism at play at all.)
+#
+# This is a PARTICIPATION gap (which price within CHEAP he actually
+# trades), not a sizing one -- DEEP_CHEAP_TAIL_MULTIPLIER already scales
+# SIZE once an entry happens; nothing before this scaled the LIKELIHOOD
+# of entering at a deep price at all. Applied as a boost-only multiplier
+# on top of REGIME_ENGAGEMENT_MULTIPLIER's own CHEAP roll (same
+# architectural slot as PARTICIPATION_ASSET_SCALE/CLOSE_URGENCY --
+# boost-only, "toward 1.0, never past" discipline), so the already-
+# calibrated shallow-CHEAP rate is completely undisturbed and only deep
+# entries get more likely.
+#
+# The "ratio needed" above (assuming the CURRENT bot deep-fraction
+# approximates the natural tick-occurrence ratio, since a uniform
+# dampener doesn't change relative proportions) would require pushing
+# every asset's effective CHEAP-entry probability essentially to the 1.0
+# ceiling for deep prices specifically -- a first-pass, single-window
+# finding with no split-half validation yet (blocked the same way
+# cheap_joint/decisiveness re-verification is: the dense book-history
+# collector needed to independently confirm the "natural occurrence"
+# assumption has been stale since Sep-22). Shipped at the standard
+# 80%-of-the-way-to-the-ceiling shrinkage instead of the full correction:
+# new_effective = baseline + 0.8*(1.0 - baseline), expressed here as the
+# multiplier on top of baseline.
+CHEAP_DEEP_TAIL_PARTICIPATION_BOOST = {
+    "Bitcoin": 1.594,
+    "Ethereum": 1.800,
+    "Solana": 1.228,
+}
+
+
+def cheap_deep_tail_participation_multiplier(asset: str, price: float) -> float:
+    """1.0 (no-op) for any asset with no calibration, or when price is at
+    or above CHEAP_DEEP_TOUCH_PRICE_THRESHOLD (the shallow/broad part of
+    CHEAP, deliberately left untouched -- see this table's own docstring).
+    Boost-only (>=1.0) for the genuine deep tail -- the caller composes
+    this multiplicatively with regime_engagement_multiplier's own result
+    and clamps to 1.0, same pattern as entry_urgency_multiplier."""
+    if price >= CHEAP_DEEP_TOUCH_PRICE_THRESHOLD:
+        return 1.0
+    return CHEAP_DEEP_TAIL_PARTICIPATION_BOOST.get(asset, 1.0)
+
+
 # REGIME DRIFT CORRECTION -- ADDED 2026-09-23. A closed-loop overlay on TOP
 # of REGIME_ENGAGEMENT_MULTIPLIER's static table above, same "plain scale on
 # top of it" pattern PARTICIPATION_ASSET_SCALE already uses -- does not
@@ -1961,6 +2098,157 @@ def cross_asset_carryover_probability(leader_asset: str, follower_asset: str,
 
 
 # ---------------------------------------------------------------------------
+# STREAK-FADE first-entry side bias. Added 2026-09-25 (research-loop
+# finding, fully re-verified -- see market-outcome-streak-fading-found.md
+# in project memory for the complete derivation and every confound check
+# below): after 2+ consecutive same-direction RESOLVED outcomes for an
+# asset (independent of whether he traded any of the streak's own
+# windows -- this is about the asset's real outcome history, not his own
+# decisions), his first-entry side choice on the NEXT window fades --
+# bets opposite the streak direction -- at 57-73% depending on streak
+# length and how much time has elapsed since the current window opened,
+# vs a 50% baseline.
+#
+# CONFOUND-CHECKED SIX WAYS:
+# - Not a price-level artifact: fade bets are priced HIGHER, not lower,
+#   than follow bets (median $0.575 vs $0.420) -- rules out "he's just
+#   buying whichever side is cheap."
+# - Strongest in HIGH regime specifically (63.5% fade, the highest of
+#   any regime bucket) -- exactly where a cheap-pricing explanation
+#   cannot apply at all.
+# - Independent of the existing lag-1 cross_market_side_persistence
+#   mechanism above: fade rate is flat (60.1% vs 58.1%) regardless of
+#   whether his own previous bet on that same asset won or lost --
+#   that mechanism's own docstring says persistence is "much stronger
+#   after a loss than after a win," so if streak-fade were just a
+#   restatement of it, fade rate would differ substantially between
+#   those two subgroups. It doesn't.
+# - Consistent across all three live assets (Bitcoin 56.2%, Ethereum
+#   58.7%, Solana 70.1%), none reversing direction.
+# - Replicated on a genuinely independent, later out-of-sample window
+#   (73.3% fade vs the original 59.0%, same direction, if anything
+#   stronger) -- both the base rate AND the elapsed-time decay shape
+#   reproduced independently.
+# - The streak-detection logic itself was unit-tested against 5
+#   hand-built cases (a simple streak, a gap that must break the
+#   streak, a missing-immediate-predecessor that must return no
+#   signal, alternating outcomes that must show no streak, and a clean
+#   5-long streak) -- all passed exactly as expected.
+#
+# IMPORTANT HONEST FRAMING (checked directly, not assumed): this is NOT
+# primarily a rational response to a real market tendency. The REAL
+# market's own base-rate reversal after a streak (checked across every
+# resolved window, not just his trades) is only ~45-55%, roughly flat
+# across streak lengths -- while his own fade rate is 57-73% and RISES
+# with length even though the real predictive edge doesn't get any
+# stronger there. He over-fades relative to what's actually predictive
+# -- closer to gambler's-fallacy than skill. Built anyway per this
+# project's standing priority to replicate his real observed behavior,
+# not "correct" it toward the market's own true statistical structure
+# (same principle already established by CROSS_ASSET_CARRYOVER_
+# PROBABILITY's own honest-framing note above).
+#
+# Two independently-measured dimensions (streak length; seconds elapsed
+# since the window opened), composed multiplicatively as ratios to the
+# pooled overall fade rate -- same convention as every other two-
+# dimensional table in this file (e.g. PARTICIPATION_ASSET_SCALE x
+# REGIME_DRIFT_CORRECTION): a real joint (length x elapsed-time)
+# cross-tab wasn't measured (samples too thin once split both ways), so
+# this is the most faithful combination of what was actually measured,
+# not an approximation of a joint table that doesn't exist.
+STREAK_FADE_BASE_PROBABILITY = 0.590
+# By streak length (2, 3, 4, 5+ capped): real fade rates 57.0%/65.2%/
+# 56.5%/65.6%, expressed as ratios to the 0.590 base. Deliberately NOT
+# monotonic -- kept exactly as measured (length=4 dips below length=3),
+# not smoothed, matching this file's usual precedent (e.g. cross-market
+# size momentum's own "kept exactly as measured, not smoothed" note).
+STREAK_FADE_LENGTH_MULTIPLIER = {2: 0.966, 3: 1.105, 4: 0.958, 5: 1.112}
+_STREAK_FADE_LENGTH_DEFAULT_MULTIPLIER = 1.112  # extrapolate flat past the measured 5+ bucket
+# By seconds elapsed since the window opened (0-60/60-120/120-180/
+# 180-240s midpoints): real fade rates 71.6%/64.7%/55.3%/52.3%,
+# expressed as ratios to the 0.590 base. Strongest right after the
+# window opens, decaying to near-baseline by 3+ minutes elapsed --
+# mirrors TTC_SIZE_MULTIPLIER/entry_urgency_multiplier's own "no
+# extrapolation past the measured window" discipline (clamped flat
+# outside [30, 210]s elapsed since window open).
+STREAK_FADE_ELAPSED_MULTIPLIER_MIDPOINTS = (30, 90, 150, 210)
+STREAK_FADE_ELAPSED_MULTIPLIER = {30: 1.214, 90: 1.097, 150: 0.937, 210: 0.886}
+
+
+def _interpolate_streak_elapsed(seconds_elapsed: float) -> float:
+    # NOTE: unlike _interpolate_urgency elsewhere in this file (whose
+    # midpoints run DESCENDING, 165->75), STREAK_FADE_ELAPSED_MULTIPLIER_
+    # MIDPOINTS runs ASCENDING (30->210), since "elapsed since window
+    # open" grows the opposite direction from "seconds remaining." The
+    # loop below is written for ascending midpoints specifically -- do
+    # not copy the descending-midpoint version from _interpolate_urgency.
+    se = max(30.0, min(210.0, seconds_elapsed))
+    mids = STREAK_FADE_ELAPSED_MULTIPLIER_MIDPOINTS
+    for i in range(len(mids) - 1):
+        lo_mid, hi_mid = mids[i], mids[i + 1]
+        if lo_mid <= se <= hi_mid:
+            lo_val, hi_val = STREAK_FADE_ELAPSED_MULTIPLIER[lo_mid], STREAK_FADE_ELAPSED_MULTIPLIER[hi_mid]
+            frac = (se - lo_mid) / (hi_mid - lo_mid)
+            return lo_val + frac * (hi_val - lo_val)
+    return STREAK_FADE_ELAPSED_MULTIPLIER[mids[-1]]  # defensive; se is always in [30,210] by the clamp above
+
+
+def streak_fade_probability(streak_length: int, seconds_elapsed: Optional[float] = None) -> float:
+    """P(his first-entry side choice fades -- bets opposite -- the
+    asset's recent resolved-outcome streak). `streak_length` must be >=2
+    for a real signal (the caller should not invoke this for a shorter
+    or nonexistent streak); returns a neutral 0.5 defensively if it
+    somehow is. `seconds_elapsed` (seconds since the current market's
+    own window opened) is Optional -- default None makes the elapsed-
+    time factor no-op at 1.0 (the pooled length-only rate), so a caller
+    without timing info still gets a sensible answer rather than
+    crashing. Always returns a valid probability in [0, 1]."""
+    if streak_length < 2:
+        return 0.5
+    length_mult = STREAK_FADE_LENGTH_MULTIPLIER.get(
+        min(streak_length, 5), _STREAK_FADE_LENGTH_DEFAULT_MULTIPLIER)
+    elapsed_mult = _interpolate_streak_elapsed(seconds_elapsed) if seconds_elapsed is not None else 1.0
+    p = STREAK_FADE_BASE_PROBABILITY * length_mult * elapsed_mult
+    return max(0.0, min(1.0, p))
+
+
+# ---------------------------------------------------------------------------
+# HOUR-CONDITIONED SIZE BOOST. Added 2026-09-25 (research-loop finding):
+# his median first-entry size runs measurably higher during the
+# 06:00-07:00 UTC hour specifically -- $3.50-3.56 vs $2.77-2.99 baseline
+# (~19-26% higher), confirmed on two independent samples (the original
+# dataset and a genuinely fresh, later out-of-sample window). The SAME
+# hour also shows a much larger per-trade EDGE effect (+11.2pp vs +2.5pp
+# baseline, ~4.4x, replicated with the exact spike-then-crash shape
+# reproduced independently -- see edge-by-hour-0600-utc-standout.md) --
+# but this table deliberately tracks only his OBSERVED SIZE reaction
+# (~1.2x), not the much larger edge itself. Chasing the edge instead of
+# his real behavior would be "optimizing the bot's own paper PnL," which
+# this project's standing rule explicitly rejects in favor of replicating
+# his real observed behavior (same principle noted on CROSS_ASSET_
+# CARRYOVER_PROBABILITY and STREAK_FADE_BASE_PROBABILITY above).
+#
+# BOOST-ONLY construction (1.0 clean no-op outside 06:00-07:00 UTC) --
+# same "only ever a boost or a no-op" discipline as mid_boundary_edge_
+# multiplier/cheap_deep_touch_edge_multiplier/entry_urgency_multiplier.
+# Flat across the hour (no sub-hour shape measured for SIZE specifically,
+# unlike the edge finding's own 30-minute-bucket breakdown).
+HOUR_SIZE_BOOST_UTC_HOURS = (6,)
+HOUR_SIZE_BOOST_MULTIPLIER = 1.22  # midpoint of the two independently-measured ratios (~1.19-1.26)
+
+
+def hour_size_multiplier(hour_utc: Optional[int]) -> float:
+    """Boost-only: HOUR_SIZE_BOOST_MULTIPLIER during 06:00-07:00 UTC
+    specifically, 1.0 (clean no-op) every other hour and for None (hour
+    not known)."""
+    if hour_utc is None:
+        return 1.0
+    if hour_utc in HOUR_SIZE_BOOST_UTC_HOURS:
+        return HOUR_SIZE_BOOST_MULTIPLIER
+    return 1.0
+
+
+# ---------------------------------------------------------------------------
 # DECISIVENESS-ONSET size scaling. Added 2026-09-13: a market's price
 # snapping into a decisive band (>=0.70) is a distinct event from just
 # "having a decisive price" -- the trader reacts to the SNAP, not the
@@ -2284,26 +2572,45 @@ def decisiveness_withinband_overshoot_correction(asset: str, regime: str,
 # the existing (pre-halt-inclusive) numbers rather than reshape a
 # thinly-supported point -- revisit once more post-halt HIGH/CORE
 # volume accumulates.
-TTC_SIZE_MULTIPLIER = {
-    "Bitcoin": {
-        "CHEAP": {270: 1.1373, 210: 1.0504, 150: 0.9736, 90: 0.9131},
-        "MID": {270: 0.918, 210: 0.9759, 150: 1.061, 90: 1.061},
-        "CORE": {270: 0.9122, 210: 1.0321, 150: 1.0093, 90: 1.0001},
-        "HIGH": {270: 0.6673, 210: 0.6673, 150: 0.9282, 90: 1.1731},
-    },
-    "Ethereum": {
-        "CHEAP": {270: 1.4682, 210: 1.2171, 150: 0.9563, 90: 0.6453},
-        "MID": {270: 0.8206, 210: 0.9546, 150: 1.0248, 90: 1.1434},
-        "CORE": {270: 1.0162, 210: 1.041, 150: 0.9756, 90: 0.9792},
-        "HIGH": {270: 0.7042, 210: 0.7042, 150: 0.9046, 90: 1.1689},
-    },
-    "Solana": {
-        "CHEAP": {270: 1.2632, 210: 1.0252, 150: 1.1442, 90: 0.5268},
-        "MID": {270: 0.569, 210: 0.7509, 150: 1.4399, 90: 1.734},
-        "CORE": {270: 0.9691, 210: 0.9821, 150: 1.0242, 90: 1.007},
-        "HIGH": {270: 0.7084, 210: 0.7084, 150: 0.9776, 90: 1.1434},
-    },
-}
+# RETIRED 2026-09-26 (full sizing-mechanism audit, "verify everything
+# against the trader" pass): every previous freshness check on this table
+# used the project's off-chain "5-second CLOB-fragment collapse" merge
+# convention on trades.jsonl/activity_v2.jsonl -- since confirmed
+# DECISIVELY WRONG for decision reconstruction (see five-second-merge-
+# convention-decisively-wrong in project memory: fits the real share-price
+# formula 4.75x WORSE than treating each true on-chain order separately).
+# This is the first re-check done against TRUE on-chain order identity
+# (OrderFilled events grouped by orderHash, not wall-clock proximity).
+#
+# Pulled every real maker fill for the last ~37h clean (RPC history
+# pruning limited the window; 3,594 true first/add-on/hedge orders across
+# 815 markets, 100% maker as expected). Direct ablation on first-entry
+# sizing (median*within_band*level_correction, WITH vs WITHOUT this
+# table's ttc_mult factor), judged by median|ln(real/pred)|:
+#   overall (n=815): WITH=0.4770  WITHOUT=0.4454 -- TTC HURTS
+#   10 of 12 (asset, regime) cells individually HURT (only Bitcoin/MID
+#   and Solana/HIGH improved with it); per-cell spearman(seconds_
+#   remaining, size residual) is weak (|rho|<0.25 in 9/12 cells) and
+#   WRONG-SIGNED vs this table's own shape in every MID cell (all three
+#   assets), which is supposed to be this table's strongest signal.
+#   Split-half stable: BOTH the first half (n=407) and second half
+#   (n=408) of the window independently show TTC hurting (0.4997 vs
+#   0.4750; 0.4517 vs 0.4292) -- not a one-sided fluke.
+# Best explanation: this table was originally built and re-confirmed
+# twice (2026-09-10, 2026-09-13 post-halt checks) entirely on the same
+# flawed merge convention that's already been shown to corrupt
+# POSITION_TIER_SHARE_MULTIPLIER and the original HEDGE_PRICE_SIZING_
+# SCALE calibration -- the apparent "holds up well" freshness checks
+# were re-measuring the same artifact, not the real relationship.
+# Table emptied rather than recalibrated on this ~37h sample (matches
+# this file's standing convention for a table whose live effect no
+# longer replicates -- see CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER/
+# BANKROLL_PNL_SIZE_MULTIPLIER's own "table emptied" precedent just
+# below) -- ttc_size_multiplier() already returns 1.0 (no-op) for any
+# asset/regime not present, so this is a clean, safe no-op everywhere.
+# Re-derive from true on-chain data (not the merge convention) before
+# ever re-enabling a TTC-shaped sizing signal.
+TTC_SIZE_MULTIPLIER = {}
 _TTC_MULTIPLIER_MIDPOINTS = (270, 210, 150, 90)
 
 
@@ -2393,18 +2700,6 @@ def resumption_size_multiplier(hours_since_resumption: Optional[float]) -> float
     return points[-1][1]  # defensive fallback; unreachable given the >= max_hours check above
 
 
-def side_persistence_for(asset: str, held_side_regime: str) -> float:
-    """P(keep the currently-held side) given the regime that side is
-    CURRENTLY trading in (i.e. the regime it would land in if persisted --
-    see strategy.decide_side for why this, not the regime a switch would
-    resolve to, is the only framing knowable before the decision is made).
-    """
-    try:
-        return SIDE_PERSISTENCE[asset][held_side_regime]
-    except KeyError as exc:
-        raise BehaviorLookupError(asset, held_side_regime) from exc
-
-
 # RECENT_SIDE_PERSISTENCE_OVERRIDE -- ADDED 2026-09-22. SIDE_PERSISTENCE above was fitted on the
 # full history (~117k of its 139k decisions are Jul-Sep8 when he flipped sides often). His pooled
 # persistence has since risen in steps: 72.5% (Jul-Sep8) -> 80.7% (Sep8-18) -> 90.6% (post-Sep18,
@@ -2421,8 +2716,33 @@ RECENT_SIDE_PERSISTENCE_OVERRIDE = {
 }
 
 
-def recent_side_persistence(asset: str, held_side_regime: str, default: float) -> float:
-    return RECENT_SIDE_PERSISTENCE_OVERRIDE.get(asset, {}).get(held_side_regime, default)
+def side_persistence(asset: str, held_side_regime: str, use_recent_override: bool = True) -> float:
+    """P(keep the currently-held side) given the regime that side is
+    CURRENTLY trading in (i.e. the regime it would land in if persisted --
+    see strategy.decide_side for why this, not the regime a switch would
+    resolve to, is the only framing knowable before the decision is made).
+
+    MERGED 2026-09-28 (was side_persistence_for + recent_side_persistence,
+    a strict linear pipeline with exactly one caller -- see git history
+    if the two need separating again for some new independent caller).
+    `use_recent_override` preserves the caller's own
+    config.ENABLE_RECENT_SIDE_PERSISTENCE gating (a safety valve, not
+    currently disabled on any bot, but kept controllable) -- False skips
+    RECENT_SIDE_PERSISTENCE_OVERRIDE entirely and returns the base table
+    value, same as the pre-merge two-call pattern with the flag off.
+    Base table (SIDE_PERSISTENCE) raises BehaviorLookupError for an
+    uncalibrated (asset, regime) -- these should always be one of the 3
+    live assets x 4 regimes, a genuinely missing cell means a real bug,
+    not an expected no-op. RECENT_SIDE_PERSISTENCE_OVERRIDE, where
+    present, takes precedence over the base value -- see its own
+    docstring for the shrinkage-toward-the-full-history-table derivation."""
+    try:
+        base = SIDE_PERSISTENCE[asset][held_side_regime]
+    except KeyError as exc:
+        raise BehaviorLookupError(asset, held_side_regime) from exc
+    if not use_recent_override:
+        return base
+    return RECENT_SIDE_PERSISTENCE_OVERRIDE.get(asset, {}).get(held_side_regime, base)
 
 
 # ---------------------------------------------------------------------------
@@ -2559,227 +2879,6 @@ def cross_market_side_persistence(asset: str, previous_market_won: Optional[bool
 
 
 # ---------------------------------------------------------------------------
-# CROSS-MARKET sizing momentum. Added 2026-09-11: real, cross-asset
-# finding (BTC r=0.146, ETH r=0.066, SOL r=0.097) that the PREVIOUS
-# market's first-entry size, relative to that (asset, regime)'s own
-# typical size, predicts the CURRENT market's first-entry size the same
-# way -- a slow, EWMA-like decay (barely weakens lag1->lag10: 0.1445->
-# 0.1163), not a one-shot echo. Temporally stable across the Aug 7 TWAP
-# change (pre r=0.107/post r=0.140). Does NOT extend to hedge sizing
-# (r=0.036, too weak to trust) -- scoped to first-entry size only.
-#
-# Because the real decay is slow rather than lag-1-only, the CALLER
-# (bot.py) is expected to feed this a per-asset EWMA of past residuals,
-# not a raw last-market lookup -- this function itself is agnostic to
-# how its input was computed, same separation of concerns as every other
-# multiplier here (behavior_config never owns bot-level state).
-#
-# Per-asset, quartile points of log(previous residual state) -> mean-
-# neutral multiplier on the CURRENT market's first-entry notional.
-# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 3 -- see full-
-# behavioral-audit-tracker.md item 13): re-checked the underlying lag-1
-# log-size-residual autocorrelation this table is built from, post-halt
-# only. Bitcoin's has genuinely vanished (r=0.1445 pre-halt -> r=0.013
-# post-halt) and Ethereum's quartile shape came back essentially flat
-# too (raw medians ~1.0 across all 4 buckets despite a weak r=0.0998 --
-# too little signal to build a real shape from). BOTH REMOVED --
-# asset not in this table is already a clean 1.0 no-op, no need to force
-# a fabricated flat table. Solana's effect is still real and, if
-# anything, slightly STRONGER post-halt (r=0.1385 vs 0.1445 pre-halt) --
-# kept and refreshed with the current quartile shape (not monotonic --
-# kept exactly as measured, not smoothed).
-# Solana RETIRED 2026-09-23 (systematic post-Sep-18 audit): the last
-# surviving asset in this table (Bitcoin/Ethereum already removed at the
-# 2026-09-13 post-halt check, same effect-vanishing pattern). Re-derived
-# with the PROPER regime-normalized methodology this table's own
-# original build used (log-residual vs each regime's own median, not a
-# crude pooled-median proxy) on fresh post-boundary data: lag-1
-# autocorrelation r=0.0531, t=1.27, n=571 -- well below this file's own
-# |t|>=2.58 bar, and null in BOTH split halves independently (first half
-# t=0.40, second half t=0.94), not just pooled. Shipped calibration was
-# r=0.1385-0.1445; the effect has genuinely vanished, matching what
-# already happened to Bitcoin/Ethereum's versions. Table emptied --
-# cross_market_size_momentum_multiplier() already returns 1.0 (no-op)
-# for any asset not present.
-CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER = {}
-_CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER_CAP = 3.0
-
-
-def cross_market_size_momentum_multiplier(asset: str, prev_size_residual: Optional[float]) -> float:
-    """Continuous, mean-neutral multiplier on decide_size's ordinary
-    output for a market's first entry, as a function of a per-asset
-    rolling residual-size state (log scale, caller-maintained EWMA). 1.0
-    (no-op) for any asset not in CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER,
-    or when prev_size_residual is unavailable (e.g. no prior market
-    tracked yet this run). Flat beyond the measured range."""
-    curve = CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER.get(asset)
-    if curve is None or prev_size_residual is None:
-        return 1.0
-    points = sorted(curve.items())
-    lo_x, lo_val = points[0]
-    hi_x, hi_val = points[-1]
-    x = max(lo_x, min(hi_x, prev_size_residual))
-    result = hi_val
-    for i in range(len(points) - 1):
-        p_x, p_val = points[i]
-        q_x, q_val = points[i + 1]
-        if p_x <= x <= q_x:
-            frac = (x - p_x) / (q_x - p_x) if q_x > p_x else 0.0
-            result = p_val + frac * (q_val - p_val)
-            break
-    cap = _CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER_CAP
-    return max(1.0 / cap, min(cap, result))
-
-
-# ---------------------------------------------------------------------------
-# BANKROLL-linked sizing. Added 2026-09-12: real, well-powered finding for
-# Ethereum/Solana specifically (NOT Bitcoin -- see below) that his first-
-# entry size correlates NEGATIVELY with his own running realized P&L for
-# that asset -- he sizes DOWN after accumulating profit, UP after a
-# drawdown. The opposite of reinvestment/compounding (that hypothesis was
-# tested first and rejected -- wrong direction); this reads as "protect
-# accumulated gains, take bigger swings to recover from a drawdown."
-#
-# Validated to the same bar as every implemented finding this session:
-#   - real and well-powered (n=1094-1104, |t|=6.56-10.58)
-#   - survives removing each variable's own linear time-trend (ruling out
-#     "both just happened to drift over the window" -- SOL -0.305->-0.263,
-#     ETH -0.194->-0.154)
-#   - survives as a PARTIAL correlation controlling for a rolling average
-#     of the already-shipped ADVERSE_MOVE_SIZE_MULTIPLIER's own adverse-
-#     move signal (~84-93% of the raw effect remains: SOL -0.305->-0.284,
-#     ETH -0.194->-0.163) -- confirmed this is NOT a downstream echo of
-#     that within-market mechanism, it's a genuinely separate, additional,
-#     cross-market/account-level signal
-#   - temporally stable across the Aug 7 TWAP change: same negative
-#     direction, same rough magnitude, in both eras (pre-TWAP sample is
-#     sparser/noisier -- SOL -0.184, ETH -0.095 -- but agrees in sign and
-#     order of magnitude with the cleaner post-TWAP numbers above)
-#
-# Bitcoin explicitly excluded, not just uncalibrated: his BTC sizing is
-# 2-2.4x tighter/more consistent than ETH/SOL (log-residual stdev 1.05 vs
-# 2.19/2.54), leaving far less room for ANY external factor -- including
-# this one -- to register as a detectable relationship, even under BTC's
-# own asset-specific P&L (t moves from -1.44 to -1.92, same direction,
-# still short of the bar). Consistent with BTC being his flagship, most
-# rule-following asset elsewhere this session too (the cleanest match to
-# theoretical Kelly math in HIGH, the flattest hedge-fraction-of-arbitrage
-# across regimes). Not a data gap to fill in later -- a real asset
-# asymmetry, same treatment as CHEAP/MID once was before being separately
-# validated for WITHIN_BAND_SIZE_SLOPE.
-#
-# Quartile points of (cumulative realized P&L for this asset, mean-
-# neutral multiplier), built the same way as every other table here:
-# quartile-bucket means, normalized so the population average is 1.0.
-#
-# CHECKED FOR POST-HALT FRESHNESS 2026-09-13 (/loop cycle 13), NOT
-# RECALIBRATED -- weakened to a genuinely unstable/inconclusive state,
-# a third distinct verdict alongside REENTRY_FATIGUE's clean removals
-# and HEDGE_COUNT_REINFORCEMENT's clean underpowering. Recomputed a
-# size-residual proxy (log(first-entry usdc / that regime's post-halt
-# ENTRY_SIZING_USD "first"-tier median)) against a fresh running
-# cumulative directional pnl per asset, reset to 0 at HALT_END (the
-# fair "epoch" analogue to a bot restart, matching how production's
-# Ledger.realized_pnl_by_asset() actually resets):
-#   Ethereum: raw r=-0.0563 (t=-1.971), detrended r=-0.0546 (t=-1.911)
-#     -- same negative direction as originally, but below this file's
-#     |t|>=2.58 bar either way.
-#   Solana: raw r=+0.1330 (t=4.715, LOOKS reversed and significant) but
-#     detrended r=-0.1076 (t=-3.802, negative again, same direction as
-#     the original) -- a clean demonstration of exactly the confound
-#     the original build's own detrending step exists to catch: both
-#     variables carry their own time trend during a short window, and
-#     the raw correlation between them is mostly that shared trend, not
-#     a real relationship. Trusting the raw number here would have
-#     produced a false "reversed" verdict.
-# Both assets fail a temporal-half-stability check within the post-halt
-# window alone (Ethereum: first-half t=-2.598, second-half t=0.231;
-# Solana detrended-equivalent shows a similar first/second-half split
-# instability) -- but that window is only ~4.9 days total, so a ~2.45-
-# day half-split is a much harsher stability bar than the original's
-# presumably multi-week one, and instability here may just reflect too
-# little absolute time rather than a genuinely gone effect. Kept at the
-# original values rather than recalibrated on a borderline, unstable
-# signal or removed on inconclusive evidence -- revisit once more
-# post-halt time accumulates.
-#
-# RE-VERIFIED 2026-09-13 (/loop cycle 18) with a corrected post-halt
-# boundary: this session's own scripts (including the cycle-13 check
-# above) used HALT_END=1788870060 (2026-09-08 12:21 UTC), but a direct
-# gap-scan of the full trade mirror confirms the real halt ended at
-# 1788704494 (2026-09-06 14:21:34 UTC) -- ~46 hours of valid post-halt
-# data was being silently excluded. Re-ran with the corrected boundary
-# and n=1646/1639 (up from 1223/1236): if anything, the instability is
-# MORE pronounced now, not less -- Ethereum's detrended correlation now
-# clears the trust bar (t=-3.620) but its own first/second-half split
-# FLIPS SIGN (first-half t=-3.898, second-half t=+3.110), and Solana's
-# detrended significance actually weakened and softened toward zero
-# (t=-3.802 -> t=1.864). This reinforces, not reverses, the "genuinely
-# unstable" verdict -- kept unchanged.
-# RETIRED 2026-09-23 (systematic post-Sep-18 audit): this table's own
-# history is a repeated pattern of "borderline/unstable, keep pending
-# more data" (2026-09-08 raw-vs-detrended confound caught, 2026-09-13
-# temporal-half-stability failed twice, both times kept anyway "revisit
-# once more post-halt time accumulates"). Also separately found to be
-# INERT for our own bots regardless of validity: paperbot's live
-# cumulative Ethereum PnL (-894.44) sits far below the calibrated floor
-# (-238.98), permanently clamping this multiplier at 1.1724x rather than
-# ever discriminating dynamically.
-#
-# Re-derived with a genuinely different, leak-free methodology this time
-# (rolling 48h trailing realized PnL using only prior, already-settled
-# markets, rather than the original's presumably-longer or differently-
-# windowed cumulative measure) to get a clean, independent read rather
-# than re-litigating the same borderline number a third time:
-#   Ethereum (n=450): corr(rolling_48h_pnl, log(entry_usd)) = +0.0503,
-#     t=1.07 -- null, and positive (shipped claims a NEGATIVE relationship,
-#     bigger size after a drawdown).
-#   Solana (n=417): corr = +0.1248, t=2.56 -- just under this file's own
-#     |t|>=2.58 bar, and again POSITIVE, the same wrong-sign direction as
-#     Ethereum.
-# Both assets, independently, fail to replicate the claimed direction
-# under a cleaner methodology -- not just "still borderline," now
-# actively wrong-signed. Combined with the mechanism's own repeated
-# instability history and its confirmed inertness on live bots, this
-# crosses from "revisit later" to "retire." Table emptied rather than
-# left with stale (asset, breakpoint) keys -- bankroll_pnl_size_
-# multiplier() already returns 1.0 (no-op) for any asset not present,
-# same fallback every other retired table in this file uses.
-BANKROLL_PNL_SIZE_MULTIPLIER = {}
-_BANKROLL_PNL_SIZE_MULTIPLIER_CAP = 3.0
-
-
-def bankroll_pnl_size_multiplier(asset: str, cum_realized_pnl: Optional[float]) -> float:
-    """Continuous, mean-neutral multiplier on decide_size's ordinary
-    output for a market's first entry, as a function of this asset's own
-    running realized P&L (BANKROLL_PNL_SIZE_MULTIPLIER's calibration is
-    against `Ledger.realized_pnl_by_asset()`'s own directional-only
-    total, NOT the with-rebates figure -- match that when calling this).
-    1.0 (no-op) for any asset not in BANKROLL_PNL_SIZE_MULTIPLIER
-    (Bitcoin and the three dormant assets, by design -- see the docstring
-    above for why Bitcoin is deliberately excluded, not just
-    uncalibrated), or when cum_realized_pnl is unavailable. Flat beyond
-    the measured range, same discipline as every other multiplier here."""
-    curve = BANKROLL_PNL_SIZE_MULTIPLIER.get(asset)
-    if curve is None or cum_realized_pnl is None:
-        return 1.0
-    points = sorted(curve.items())
-    lo_x, lo_val = points[0]
-    hi_x, hi_val = points[-1]
-    x = max(lo_x, min(hi_x, cum_realized_pnl))
-    result = hi_val
-    for i in range(len(points) - 1):
-        p_x, p_val = points[i]
-        q_x, q_val = points[i + 1]
-        if p_x <= x <= q_x:
-            frac = (x - p_x) / (q_x - p_x) if q_x > p_x else 0.0
-            result = p_val + frac * (q_val - p_val)
-            break
-    cap = _BANKROLL_PNL_SIZE_MULTIPLIER_CAP
-    return max(1.0 / cap, min(cap, result))
-
-
-# ---------------------------------------------------------------------------
 # Dual-sided "hedge" behavior. Confirmed from the full historical dataset
 # (see deep_analysis.py / deep_analysis_output.json and hedge_calibration.py
 # in the repo): when the trader's early second entry into a market lands on
@@ -2875,365 +2974,23 @@ HEDGE_TRIGGER_PROBABILITY = {
     "BNB":         {"CHEAP": 0.8389, "MID": 0.9004, "CORE": 0.7806, "HIGH": 0.4884},
 }
 
-# RECALIBRATED 2026-09-09 (Bitcoin/MID and Solana/MID only): the same
-# raw-trade-vs-decision fragmentation issue found for HEDGE_CONTINUATION_*
-# below turned out to affect hedge#1 (this table) too -- these values were
-# originally measured on raw trade rows, before that distinction existed.
-# Re-measured on decision-collapsed data (5s same-side merge), per
-# (asset, first_entry_regime), 14-day window, n>=200 markets trust bar
-# (matching HEDGE_TRIGGER_PROBABILITY's own bar for this kind of
-# once-per-market measurement):
-#   Bitcoin/MID: 0.2756 -> 0.4764 (n=345, +72.9%)
-#   Solana/MID:  0.2760 -> 0.6437 (n=233, +133.2%)
-# Every OTHER cell stayed below n=200 and was left unchanged. CHEAP-band
-# cells specifically were left alone at that time even where n looked
-# sufficient, because their decision-based ratios came back nonsensically
-# large (1332% for Bitcoin/CHEAP, up to 2396% for Solana/CHEAP) -- flagged
-# as SCOUT's territory bleeding in (a genuinely tiny CHEAP first entry
-# getting overtaken by a much bigger real conviction bet, not insurance
-# sizing) and explicitly left unguessed-at pending a real fix.
-#
-# CHEAP-band cells FIXED 2026-09-09 (same night, later pass): the missing
-# piece was a floor on the denominator, not the 5s-merge step above (which
-# was already being applied and still gave the nonsensical numbers this
-# comment used to cite). Reconstructed every (BTC/ETH/SOL) market
-# chronologically, replicating strategy.py's own real-time logic exactly
-# (running cost_by_side, first opposite-side decision after collapsing ==
-# the hedge_count==0 case) -- but excluding cases where the "dominant"
-# position at hedge time is itself still scout/fragment-sized (<$1
-# notional, roughly the real orderMinSize=5-shares floor at CHEAP prices).
-# Without that floor, a normal-sized second decision divided by a $0.02
-# scout denominator is exactly what produced 1332%/2396% -- with it, real
-# medians land far lower and stable across floor choices ($0.50-$3 all
-# agree within ~20%): Bitcoin 2.6360, Ethereum 1.9937, Solana 0.9230
-# (n=337/402/433, 21-day window). Ratios >1.0 are real, not a bug: a CHEAP
-# first entry is a low-conviction feeler by construction, and this is
-# specifically the situation where a much bigger real conviction bet often
-# follows on the other side -- that's a bigger number than it's "hedging"
-# by design, and strategy.py's is_hedge classification (opposite side from
-# current running dominant) captures exactly that structural event
-# regardless of whether "insurance" is the right economic label for it.
-# Dogecoin/Hyperliquid/BNB CHEAP cells are untouched -- not currently
-# live-traded (see the asset-basket timeline finding) and not part of
-# either live bot's --assets scope, so recalibrating them isn't useful
-# right now and there's no fresh data to do it with anyway.
-# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 3 -- same root cause as
-# every other post-halt recalibration this pass, see full-behavioral-
-# audit-tracker.md item 15): CHEAP/MID cleared n>=200 for all three live
-# assets and moved a real amount -- Bitcoin held up reasonably (CHEAP
-# 2.636->2.308, MID 0.476->0.467, both close), but Ethereum/Solana moved
-# a lot (Ethereum CHEAP 1.994->3.362, MID 0.251->0.618; Solana CHEAP
-# 0.923->4.074, MID 0.644->0.529) -- confirms the earlier audit-pass
-# finding that ETH/SOL's hedge sizing specifically had drifted hard
-# post-halt while Bitcoin's had not. CORE also updated (n=48-105,
-# first-pass/THIN, same discipline as every other thin-but-better-than-
-# stale cell in this file). HIGH left UNCHANGED -- post-halt HIGH-band
-# hedge volume is too thin to trust at all yet (n=10-19, well below even
-# this file's usual first-pass bar); revisit once more volume accumulates.
-HEDGE_SIZE_RATIO = {
-    "Bitcoin":     {"CHEAP": 2.3077, "MID": 0.4667, "CORE": 0.1001, "HIGH": 0.0306},
-    "Ethereum":    {"CHEAP": 3.3618, "MID": 0.6181, "CORE": 0.1337, "HIGH": 0.0204},
-    "Solana":      {"CHEAP": 4.0743, "MID": 0.5292, "CORE": 0.0879, "HIGH": 0.0159},
-    "Dogecoin":    {"CHEAP": 0.1992, "MID": 0.2937, "CORE": 0.0942, "HIGH": 0.0480},
-    "Hyperliquid": {"CHEAP": 0.1453, "MID": 0.1742, "CORE": 0.0833, "HIGH": 0.0358},
-    "BNB":         {"CHEAP": 0.1063, "MID": 0.1686, "CORE": 0.0503, "HIGH": 0.0285},
-}
-
-# Fallback ratio if an (asset, regime) combo is ever missing -- shouldn't
-# happen given all six assets and four regimes are populated above, but a
-# defined fallback beats a KeyError taking down a market's evaluation.
-_DEFAULT_HEDGE_SIZE_RATIO = 0.15
-
-
-def hedge_trigger_probability(asset: str, primary_regime: str) -> float:
-    return HEDGE_TRIGGER_PROBABILITY.get(asset, {}).get(primary_regime, 0.0)
-
-
-# ---------------------------------------------------------------------------
-# LIQUIDITY-conditioned hedge trigger. Added 2026-09-10: confirmed, real,
-# well-powered correlation between a market's liquidity and whether he
-# ever hedges it at all -- checked twice this session (original t=4.793,
-# n=869/285 flagged low-power; rechecked with more data, t=5.263,
-# n=1023/322, held up and strengthened) -- dual-sided (hedged) real
-# markets averaged $9354.72 liquidity vs $7787.05 for single-sided ones.
-# This IS an action-level measurement (whether he hedged), not an
-# outcome/win-rate correlation -- unlike a separately-tested price-
-# velocity signal that correlated with OUTCOME but not his own SIZE, and
-# was correctly declined for that reason. Liquidity here is Gamma's own
-# liquidityNum field (see Market.liquidity's docstring in
-# market_discovery.py for why this is NOT the same quantity as
-# BookState.total_depth_usd()) -- the calibration below is measured
-# against, and this must stay paired with, that specific field.
-#
-# Per (asset), 4 quartile points from market liquidity-at-first-snapshot
-# vs. real dual-sided rate, ratio to that asset's own overall hedge rate
-# (mean-neutral by construction -- same principle as TTC_SIZE_MULTIPLIER
-# and WITHIN_BAND_SIZE_SLOPE). BTC/ETH/SOL only (the three live-traded
-# assets; n=624/601/599 markets respectively, all comfortably above the
-# n>=200-market trust bar this file uses for once-per-market measurements).
-# Bitcoin's shape is clean and monotonic; Ethereum/Solana are noisier in
-# the middle quartiles but agree in the same overall direction (highest
-# quartile meaningfully above 1.0 in all three: 1.07/1.14/1.11) --
-# interpolated as-measured rather than smoothed into a false monotonic
-# shape that isn't actually in the data.
-# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 6 -- see full-
-# behavioral-audit-tracker.md's hedge-trigger sub-multipliers note): this
-# was previously flagged as blocked (Gamma's liquidityNum isn't in
-# trades.jsonl, this project's main data source) -- unblocked by finding
-# /opt/trader-intel/data/market_snapshots.jsonl, a separate collector
-# that DOES capture per-market liquidity, joined here on condition_id
-# (3,890 post-halt markets matched a liquidity value). Checked the
-# underlying correlation, not just quartile shape: liquidity vs whether
-# a market gets hedged is essentially ZERO for all three assets post-
-# halt (Bitcoin r=+0.010, Ethereum r=+0.022, Solana r=+0.056, n=1263-
-# 1357 each) -- the effect has genuinely vanished, not just weakened
-# like some of this session's other findings. REMOVED entirely (clean
-# 1.0 no-op via the function's own "asset not in table" fallback) rather
-# than force a fabricated curve onto noise. Eighth distinct multiplier
-# this session to show this pattern.
-_HEDGE_LIQUIDITY_MULTIPLIER_CAP = 3.0  # symmetric clamp on the FINAL probability multiplier
-HEDGE_LIQUIDITY_MULTIPLIER: dict = {}
-
-
-def hedge_liquidity_multiplier(asset: str, liquidity: Optional[float]) -> float:
-    """Continuous, mean-neutral multiplier on the first-hedge trigger
-    probability as a function of a market's liquidity. 1.0 (no-op) for
-    any asset not in HEDGE_LIQUIDITY_MULTIPLIER, or when liquidity is
-    unavailable (e.g. Gamma didn't return the field). Flat beyond the
-    measured range -- clamped to the nearest endpoint, never extrapolated,
-    same discipline as TTC_SIZE_MULTIPLIER."""
-    curve = HEDGE_LIQUIDITY_MULTIPLIER.get(asset)
-    if curve is None or liquidity is None:
-        return 1.0
-    points = sorted(curve.items())
-    lo_liq, lo_val = points[0]
-    hi_liq, hi_val = points[-1]
-    liq = max(lo_liq, min(hi_liq, liquidity))
-    for i in range(len(points) - 1):
-        p_liq, p_val = points[i]
-        q_liq, q_val = points[i + 1]
-        if p_liq <= liq <= q_liq:
-            frac = (liq - p_liq) / (q_liq - p_liq) if q_liq > p_liq else 0.0
-            return p_val + frac * (q_val - p_val)
-    return hi_val  # defensive fallback; the clamp above makes this unreachable
-
-
-def hedge_size_ratio(asset: str, primary_regime: str) -> float:
-    return HEDGE_SIZE_RATIO.get(asset, {}).get(primary_regime, _DEFAULT_HEDGE_SIZE_RATIO)
-
-
-# ---------------------------------------------------------------------------
-# ADVERSE-MOVE-conditioned hedge size. Added 2026-09-10: real, well-powered,
-# cross-asset-generalizing finding that real FIRST-hedge SIZE scales with
-# how far price has moved AGAINST the primary position since entry -- a
-# dimension HEDGE_SIZE_RATIO has never had (it's a single fixed number per
-# asset x first_entry_regime, set once and never adjusted for how much
-# worse things get before the hedge actually lands).
-#
-# adverse_move = primary_entry_price - primary_current_price_at_hedge_time
-# (positive = moved against the primary side). Measured on decision-
-# collapsed real trades (5s same-side merge -- same discipline as
-# MAX_HEDGE_COUNT_PER_MARKET's own corrected re-check, avoiding the raw-
-# fill-fragmentation bug that has bitten this file more than once),
-# restricted to ONLY each market's first hedge (matching exactly what this
-# multiplier is applied to below -- HEDGE_CONTINUATION_SIZE_RATIO governs
-# hedge_count>=1 separately and isn't part of this measurement).
-#
-# Correlation of log(hedge_ratio) vs adverse_move, CONTROLLING FOR
-# first_entry_regime (fit separately within each of the 4 regimes to rule
-# out this just being regime relabeling in disguise): r=0.44-0.60 (BTC),
-# r=0.43-0.50 (ETH), r=0.18-0.37 (SOL) pooling all hedges; restricted to
-# first-hedge-only (this table's actual scope) the correlation is smaller
-# but still robust: BTC r=0.33/t=32.5 (n=8,670), ETH r=0.29/t=24.1
-# (n=6,387), SOL r=0.22/t=20.6 (n=8,237) -- every cell clears this file's
-# own |t|>=2.58 bar by a wide margin. TTC confound checked and ruled out:
-# r(adverse_move, seconds_to_close) is essentially zero (-0.065 to 0.022
-# across assets) -- this is NOT a proxy for how late in the window the
-# hedge happens (already modeled via TTC_SIZE_MULTIPLIER).
-#
-# Per-asset (regime-pooled -- per-regime slopes were consistent, 2.3-4.7
-# with no systematic pattern by regime, so a 16-cell table would overfit
-# noise this data doesn't support), 4 quartile points of adverse_move vs.
-# MEDIAN-based, median-neutral multiplier on HEDGE_SIZE_RATIO's base value
-# -- median chosen over mean (unlike HEDGE_LIQUIDITY_MULTIPLIER's rate-
-# based mean) because hedge_ratio is extremely right-skewed and
-# HEDGE_SIZE_RATIO's own base cells were themselves calibrated on medians
-# for exactly that reason (see its CHEAP-band fix note above: "real
-# medians land far lower and stable across floor choices" where raw means
-# were not trustworthy). Interpolated as-measured, not forced monotonic --
-# all three assets show q2 (near-zero move) higher than q3 (largest
-# adverse move), a consistent shape kept as real per this file's own
-# "never smoothed to look more uniform" rule (see module docstring).
-# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 3, same root cause as
-# every other post-halt recalibration in this pass -- see full-
-# behavioral-audit-tracker.md item 16): re-derived via the identical
-# OLS-quartile-then-mean-neutral-normalize methodology, post-halt data
-# only (n=575-892 per asset, comfortably above trust). Direction
-# preserved (still a real, sizable positive relationship) but every
-# asset's swing has compressed noticeably from its pre-halt shape --
-# consistent with the same broader post-halt flattening found across
-# hedge sizing generally.
-ADVERSE_MOVE_SIZE_MULTIPLIER = {
-    "Bitcoin": {-0.34: 0.2397, -0.08: 0.5931, 0.08: 1.5623, 0.30: 1.6049},
-    "Ethereum": {-0.46: 0.2234, -0.09: 0.2208, 0.08: 2.0140, 0.255: 1.5418},
-    "Solana": {-0.43: 0.1816, -0.13: 0.3382, 0.05: 2.0917, 0.24: 1.3886},
-}
-_ADVERSE_MOVE_SIZE_MULTIPLIER_CAP = 6.0  # symmetric clamp on the final size
-# multiplier -- wider than HEDGE_LIQUIDITY_MULTIPLIER's 3.0 cap since the
-# measured range itself reaches ~5.07 (ETH q2); mirrors that table's
-# ~2.6x-over-max-measured headroom convention.
-
-
-def adverse_move_size_multiplier(asset: str, adverse_move: Optional[float]) -> float:
-    """Continuous, median-neutral multiplier on HEDGE_SIZE_RATIO's base
-    value as a function of how far price has moved against the primary
-    position since entry (positive = against). 1.0 (no-op) for any asset
-    not in ADVERSE_MOVE_SIZE_MULTIPLIER, or when adverse_move is
-    unavailable (e.g. first_entry_price wasn't recorded). Flat beyond the
-    measured range -- clamped to the nearest endpoint, never extrapolated,
-    same discipline as HEDGE_LIQUIDITY_MULTIPLIER/TTC_SIZE_MULTIPLIER.
-    Final result clamped to _ADVERSE_MOVE_SIZE_MULTIPLIER_CAP."""
-    curve = ADVERSE_MOVE_SIZE_MULTIPLIER.get(asset)
-    if curve is None or adverse_move is None:
-        return 1.0
-    points = sorted(curve.items())
-    lo_move, lo_val = points[0]
-    hi_move, hi_val = points[-1]
-    move = max(lo_move, min(hi_move, adverse_move))
-    result = hi_val
-    for i in range(len(points) - 1):
-        p_move, p_val = points[i]
-        q_move, q_val = points[i + 1]
-        if p_move <= move <= q_move:
-            frac = (move - p_move) / (q_move - p_move) if q_move > p_move else 0.0
-            result = p_val + frac * (q_val - p_val)
-            break
-    cap = _ADVERSE_MOVE_SIZE_MULTIPLIER_CAP
-    return max(1.0 / cap, min(cap, result))
-
-
-# CONFIRMED LIVE (2026-09-12, external-bot-strategies-loop-progress
-# iterations 9-10): the absolute current hedge-side price predicts hedge
-# SIZE beyond what ADVERSE_MOVE_SIZE_MULTIPLIER's delta-from-entry already
-# captures -- not a redundant re-derivation of that mechanism. Verified
-# with a PARTIAL correlation, not a raw one (raw price and adverse_move
-# are collinear, r=0.749): after fitting log(shares) ~ a + b*adverse_move
-# by OLS and taking the RESIDUAL, that residual still correlates with the
-# raw hedge price (partial corr r=+0.103, t=+5.16, n=2,499, first hedges
-# only). The shape is a real, consistent U across all three assets --
-# extra sizing at BOTH price extremes (near-certain win AND near-certain
-# loss for the dominant side), not a one-sided effect -- reads as "near
-# true certainty in either direction deserves more conviction than a
-# purely linear function of how far price has traveled." Calibrated the
-# same way as every other multiplier in this file: fit the OLS baseline,
-# take exp(residual) as a per-trade multiplicative correction, bucket by
-# hedge-price quartile, take the MEDIAN correction per quartile (median,
-# not mean -- same reasoning as ADVERSE_MOVE_SIZE_MULTIPLIER's own choice:
-# size is heavily right-skewed), then rescale so the 4 quartile points are
-# median-neutral (average to 1.0, doesn't change the population's overall
-# calibration, only redistributes it by price). Applied MULTIPLICATIVELY
-# on top of HEDGE_SIZE_RATIO * ADVERSE_MOVE_SIZE_MULTIPLIER, first hedge
-# only (hedge_count==0), same call site as both of those.
-# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 4 -- resolves the
-# "inconclusive" status this table was left in during the full audit,
-# see full-behavioral-audit-tracker.md item 17). Redone with the FULL
-# original partial-correlation methodology (OLS of log(ratio) on
-# adverse_move, then bucket the RESIDUAL by raw hedge price into
-# quartiles) on post-halt-only data, not a raw/uncontrolled bucketing --
-# the partial correlation is real and, if anything, stronger than the
-# original finding (r=0.335-0.454 vs the original r=0.103). But the
-# SHAPE has genuinely changed: this used to be a U (high at both price
-# extremes), and is now MONOTONICALLY INCREASING with price instead (low
-# at CHEAP, high at HIGH) for all three assets -- kept exactly as
-# measured, not forced back into the old U shape. Consistent with the
-# same broad post-halt behavioral shift found everywhere else in this
-# session's recalibration pass.
-ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER = {
-    "Bitcoin": {0.11: 0.2175, 0.42: 0.6291, 0.71: 0.9564, 0.95: 2.1970},
-    "Ethereum": {0.08: 0.2072, 0.41: 0.3451, 0.77: 0.5614, 0.97: 2.8863},
-    "Solana": {0.14: 0.2366, 0.43: 0.4261, 0.78: 0.7508, 0.95: 2.5865},
-}
-# Raised 2026-09-13 alongside the post-halt recalibration above: the
-# post-halt measured range is [0.2072, 2.8863] (Ethereum both ends) --
-# 3.0's own floor (1/3=0.333) would have clipped the new low end, an
-# internal inconsistency (a "calibrated exact point" the cap itself
-# makes unreachable). 6.0 clears both ends with real headroom, same
-# value already used by ADVERSE_MOVE_SIZE_MULTIPLIER for the same reason.
-_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER_CAP = 6.0
-
-
-def absolute_price_hedge_size_multiplier(asset: str, hedge_price: Optional[float]) -> float:
-    """Continuous, median-neutral multiplier on HEDGE_SIZE_RATIO's base
-    value (applied alongside adverse_move_size_multiplier, not instead of
-    it) as a function of the hedge side's own ABSOLUTE current price --
-    a real, confirmed-independent residual effect beyond the delta-from-
-    entry mechanism ADVERSE_MOVE_SIZE_MULTIPLIER already models. 1.0
-    (no-op) for any asset not in ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER, or
-    when hedge_price is unavailable. Flat beyond the measured range --
-    clamped to the nearest endpoint, never extrapolated, same discipline
-    as every other multiplier in this file. Final result clamped to
-    _ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER_CAP."""
-    curve = ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER.get(asset)
-    if curve is None or hedge_price is None:
-        return 1.0
-    points = sorted(curve.items())
-    lo_price, lo_val = points[0]
-    hi_price, hi_val = points[-1]
-    price = max(lo_price, min(hi_price, hedge_price))
-    result = hi_val
-    for i in range(len(points) - 1):
-        p_price, p_val = points[i]
-        q_price, q_val = points[i + 1]
-        if p_price <= price <= q_price:
-            frac = (price - p_price) / (q_price - p_price) if q_price > p_price else 0.0
-            result = p_val + frac * (q_val - p_val)
-            break
-    cap = _ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER_CAP
-    return max(1.0 / cap, min(cap, result))
-
-
-# ---------------------------------------------------------------------------
-# WEEKEND-conditioned hedge trigger. Added 2026-09-10: real, well-powered
-# finding that his dual-sided (hedged) rate is meaningfully higher on
-# weekends than weekdays -- weekday=58.87% (n=10,183 BTC markets),
-# weekend=68.2% (n=3,902), z=9.9. This is a per-market binary measurement
-# ("did this market ever go dual-sided"), not a hedge-COUNT, so it isn't
-# exposed to the raw-fill-vs-decision fragmentation bug that affects
-# count-based measurements in this file (see MAX_HEDGE_COUNT_PER_MARKET's
-# own docstring in config.py, and the corrected 1.57%-not-16% re-check
-# that ruled out raising that cap the same night this was added).
-#
-# Full causal chain confirmed, not just a correlation: real BTC spot
-# volatility is ~47% lower on weekends -> markets stay in MID/undecided
-# territory far more often (48.04% of weekend trades land in MID vs
-# 36.93% weekday) -> MID is where hedging concentrates (already
-# established via HEDGE_TRIGGER_PROBABILITY's own MID cells being the
-# highest of the four regimes) -> higher weekend hedge rate. Checked and
-# ruled out two plausible confounds before landing on this: weekend book-
-# depth/liquidity via a tick-density proxy (no effect, but that proxy
-# measures update frequency not $ depth, so a depth-based mechanism isn't
-# fully ruled out) and cross-asset generalization (ETH/SOL do NOT show
-# this shift -- BTC-specific, same recurring pattern as several other
-# BTC-vs-ETH/SOL divergences found the same session).
-#
-# HEDGE_TRIGGER_PROBABILITY itself was calibrated from all-days blended
-# data, which skews weekday-heavy (5/7 of days, and weekday volume is
-# also higher per the day-of-week finding) -- so weekday stays a 1.0
-# no-op baseline and only weekend gets scaled up, same pattern as every
-# other mean-adjustment table in this file (TTC_SIZE_MULTIPLIER,
-# HEDGE_LIQUIDITY_MULTIPLIER). BTC-only for now, matching the scope of
-# what was actually verified -- 1.0 (no-op) for every other asset.
-WEEKEND_HEDGE_MULTIPLIER = {
-    "Bitcoin": 68.2 / 58.87,  # ~1.1585
-}
-
-
-def weekend_hedge_multiplier(asset: str, is_weekend: bool) -> float:
-    """1.0 (no-op) on weekdays, for any asset not in
-    WEEKEND_HEDGE_MULTIPLIER, or when is_weekend is None-like/False."""
-    if not is_weekend:
-        return 1.0
-    return WEEKEND_HEDGE_MULTIPLIER.get(asset, 1.0)
+# REMOVED 2026-09-24 (single-function hedge consolidation -- see
+# hedge-consolidation-single-function in project memory): hedge_trigger_
+# probability (dead, unused), hedge_liquidity_multiplier (table was
+# already empty -- effect vanished post-halt), hedge_size_ratio/
+# HEDGE_SIZE_RATIO (replaced entirely by hedge_notional_for_price, the
+# validated price+asset formula), adverse_move_size_multiplier,
+# absolute_price_hedge_size_multiplier, and weekend_hedge_multiplier were
+# all deleted here. Every one is superseded by the two consolidated
+# functions this file now exposes for hedging: hedge_probability
+# (trigger) and hedge_notional_for_price (size). See those functions'
+# own docstrings for what real findings survived the consolidation and
+# which were cut for simplicity. (The HEDGE_SIZE_RATIO table itself and
+# its _DEFAULT_HEDGE_SIZE_RATIO fallback were accidentally left behind by
+# this cleanup, fully orphaned -- caught and actually removed 2026-09-29,
+# during a repo-wide zero-call-site dead-code sweep. Its full
+# recalibration history, back to 2026-09-08, is preserved in git history
+# at that commit if ever needed again.)
 
 
 # ---------------------------------------------------------------------------
@@ -3471,14 +3228,6 @@ REGIME_HEDGE_POST_SHIFT_MULTIPLIER = {
 }
 
 
-def regime_hedge_post_shift_multiplier(asset: str, regime: str) -> float:
-    """1.0 (no-op) for any (regime, asset) not calibrated above -- every
-    (asset, regime) cell is now calibrated as of the 2026-09-22 refresh,
-    so this fallback is currently dormant, kept only for a future
-    uncalibrated cell (e.g. a new asset)."""
-    return REGIME_HEDGE_POST_SHIFT_MULTIPLIER.get(regime, {}).get(asset, 1.0)
-
-
 # ---------------------------------------------------------------------------
 # ADVERSE-MOVE-conditioned hedge TRIGGER (as opposed to SIZE -- see
 # ADVERSE_MOVE_SIZE_MULTIPLIER/ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER
@@ -3640,96 +3389,6 @@ def adverse_move_hedge_trigger_multiplier(asset: str, adverse_move: Optional[flo
 
 
 # ---------------------------------------------------------------------------
-# ADVERSE-MOVE x TIME-REMAINING interaction. Added 2026-09-20, closing a
-# real structural gap found by a code audit: this whole file has extensive
-# time-to-close (TTC) awareness for SIZING (TTC_SIZE_MULTIPLIER,
-# HEDGE_TTC_SIZE_MULTIPLIER) but ZERO for the hedge TRIGGER decision --
-# adverse_move_hedge_trigger_multiplier above is a pure function of
-# adverse_move alone, with no time-to-close input at all.
-#
-# Derivation: fitting the trader's hedge-decision data against
-# Avellaneda-Stoikov's reservation-price formula (r = mid - q*gamma*
-# sigma^2*(T-t) -- the inventory-risk skew scales with time REMAINING
-# until the horizon, not time since taking the position) found a real
-# interaction: for a given adverse move, he's MORE eager to hedge when
-# MORE time remains until the market resolves (more risk still ahead),
-# not less. This is a genuinely different axis from everything else
-# hedge-related in this file, which uses time SINCE entry/crossing.
-#
-# Checked hard before trusting it -- two real confounds ruled out:
-#   - Hedge rate crashes to ~0 in the final 60s before close (almost
-#     certainly the Polymarket GTD ~60s auto-expiry mechanic, not a risk
-#     choice) and is ALSO lower right when a window just opens (a hump,
-#     not the clean monotonic rise A-S predicts on its own).
-#   - Re-fit EXCLUDING both regions (ttc_remaining outside [60,240]),
-#     keeping only the clean middle of the window: the interaction
-#     SURVIVES, strongly -- coef=1.12, pooled across CHEAP/MID/CORE,
-#     n=7,647. Bootstrap-confirmed (300 resamples): 100% of replicates
-#     positive, 90% CI=[0.49,1.59] entirely above zero.
-#   - Extended to A-S's other two predictions for completeness: NO
-#     volatility/sigma^2 modulation found (interaction strength ~equal
-#     in low- vs high-realized-vol halves), and hedge SIZE (not just
-#     trigger) does NOT show the same interaction (t=0.80, n.s.) --
-#     this is specifically a WHETHER-to-hedge effect, not a
-#     HOW-MUCH-to-hedge one, which is exactly how it's scoped below.
-#
-# Per-regime breakdown: real in CHEAP (z=3.89), MID (z=2.81), CORE
-# (z=2.09) -- genuinely ABSENT in HIGH (z=-0.76, wrong sign, n.s.),
-# sensible since HIGH positions are already near-certain, leaving less
-# real uncertainty for "more time left" to matter against. Per-asset
-# breakdown: clearest for Solana (z=2.04) and Bitcoin (z=1.75,
-# borderline), genuinely ABSENT for Ethereum (z=0.58, n.s.) when pooled
-# across regimes. A joint per-(regime,asset) refit wasn't done (would
-# fragment into very thin cells) -- gated on the intersection of both
-# independent breakdowns (Bitcoin/Solana x CHEAP/MID/CORE) using the
-# single pooled coefficient as the effect size, honestly short of a
-# fully independent per-cell calibration.
-#
-# Scope: same as adverse_move_hedge_trigger_multiplier -- adverse_move
-# >= 0 only (the favorable side's own time-interaction was never
-# tested), first hedge only (same call-site gating as its sibling).
-# Applied AFTER adverse_move_hedge_trigger_multiplier, not instead of
-# it -- this is a refinement on top of that base curve, not a
-# replacement (mean-neutral: exp(0)=1.0 at ttc_remaining=150s, the
-# center of the tested window, so it doesn't shift the baseline the
-# sibling multiplier was itself calibrated against).
-ADVERSE_MOVE_TTC_INTERACTION_COEF = 1.1179
-ADVERSE_MOVE_TTC_INTERACTION_ASSETS = {"Bitcoin", "Solana"}  # Ethereum excluded, z=0.58 n.s.
-ADVERSE_MOVE_TTC_INTERACTION_REGIMES = {"CHEAP", "MID", "CORE"}  # HIGH excluded, z=-0.76 n.s.
-_ADVERSE_MOVE_TTC_INTERACTION_MOVE_CAP = 0.30  # same clamp range as adverse_move_hedge_trigger_multiplier's own table
-_ADVERSE_MOVE_TTC_INTERACTION_TTC_LO = 60.0    # confound-clean tested floor (GTD ~60s cutoff excluded below this)
-_ADVERSE_MOVE_TTC_INTERACTION_TTC_HI = 240.0   # confound-clean tested ceiling (freshly-opened-window dip excluded above this)
-_ADVERSE_MOVE_TTC_INTERACTION_TTC_CENTER = 150.0
-_ADVERSE_MOVE_TTC_INTERACTION_TTC_SCALE = 60.0
-_ADVERSE_MOVE_TTC_INTERACTION_CAP = 3.0
-
-
-def adverse_move_ttc_interaction_multiplier(asset: str, regime: str, adverse_move: Optional[float],
-                                             seconds_remaining: Optional[float]) -> float:
-    """1.0 (no-op) for any asset/regime outside the confirmed cells
-    (ADVERSE_MOVE_TTC_INTERACTION_ASSETS x _REGIMES), when adverse_move
-    or seconds_remaining is unavailable, or when adverse_move < 0 (the
-    favorable side is out of scope, see this section's docstring).
-    Otherwise exp(COEF * move * ttc_z), both move and seconds_remaining
-    clamped to the confound-clean measured range -- flat beyond it, no
-    extrapolation, same discipline as every other multiplier here.
-    Applied ON TOP OF adverse_move_hedge_trigger_multiplier, not instead
-    of it."""
-    if (asset not in ADVERSE_MOVE_TTC_INTERACTION_ASSETS
-            or regime not in ADVERSE_MOVE_TTC_INTERACTION_REGIMES):
-        return 1.0
-    if adverse_move is None or adverse_move < 0 or seconds_remaining is None:
-        return 1.0
-    move = max(0.0, min(_ADVERSE_MOVE_TTC_INTERACTION_MOVE_CAP, adverse_move))
-    ttc = max(_ADVERSE_MOVE_TTC_INTERACTION_TTC_LO,
-              min(_ADVERSE_MOVE_TTC_INTERACTION_TTC_HI, seconds_remaining))
-    ttc_z = (ttc - _ADVERSE_MOVE_TTC_INTERACTION_TTC_CENTER) / _ADVERSE_MOVE_TTC_INTERACTION_TTC_SCALE
-    result = math.exp(ADVERSE_MOVE_TTC_INTERACTION_COEF * move * ttc_z)
-    cap = _ADVERSE_MOVE_TTC_INTERACTION_CAP
-    return max(1.0 / cap, min(cap, result))
-
-
-# ---------------------------------------------------------------------------
 # FAVORABLE-MOVE hedge trigger multiplier. Added 2026-09-19: the mirror
 # image of ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER above, covering
 # adverse_move < 0 (a move IN the primary position's favor) in CHEAP
@@ -3829,276 +3488,6 @@ def favorable_move_hedge_trigger_multiplier(asset: str, adverse_move: Optional[f
 
 
 # ---------------------------------------------------------------------------
-# MID favorable-move hedge HUMP. Added 2026-09-20, closing checklist item
-# #31 ("MID hedge hump" -- left OPEN in the replication self-audit because
-# the original GP-IRL pass found MID's favorable-move interior hump only
-# POOLED across assets, never checked per-asset before deciding not to
-# ship it (unlike CHEAP's bathtub above, which WAS per-asset-checked).
-#
-# Rebuilt that missing per-asset check (same early-time-since-entry
-# stratum discipline as CHEAP's bathtub, since that's the confound-
-# cleared window): the pooled hump does NOT replicate uniformly.
-#   - Bitcoin: NULL. z=-0.36 comparing the two best-powered bins --
-#     essentially flat (~0.09-0.10) across the whole favorable range.
-#   - Ethereum: real, but a DIFFERENT shape -- monotonically DECLINING
-#     hedge rate as the move gets less extreme (0.20->0.17->0.07->0.04,
-#     z=3.35 deep-vs-near-zero), not an interior hump. Not built here --
-#     would need its own separate characterization, flagged as a future
-#     candidate, not force-fit into this table.
-#   - Solana: the genuine hump. Pooled: z=3.01/2.87 comparing the peak
-#     bin against both neighbors (clears this file's own |z|>=2.58 bar),
-#     bootstrap-confirmed 99.5% (2000 resamples, n=72-182/bin) that the
-#     interior bin beats BOTH neighbors, and NOT a SCOUT-bleed artifact
-#     (peak-bin hedges are properly sized -- median 54% of the position
-#     protected, only 14.3% "tiny", n=14, in line with CHEAP's own
-#     passing SCOUT-bleed check).
-#
-# SUPERSEDED CAVEAT, corrected same day: the first split-half attempt
-# used a naive ROW-COUNT median split, which does NOT align with this
-# project's own documented Sep-18 regime-shift boundary (BOUNDARY=
-# 1789700400 -- see REGIME_HEDGE_POST_SHIFT_MULTIPLIER) -- the 8-day
-# price_history_dense.jsonl window straddles it at 73% through, not the
-# midpoint, so each naive "half" silently mixed pre- and post-boundary
-# regimes together. That mixing, not genuine fragility, is what produced
-# the earlier "clears vs one neighbor but not the other" result.
-#
-# RE-SPLIT ON THE REAL BOUNDARY instead (validated first: this exact
-# dataset shows the same secular dual-siding decline documented
-# elsewhere -- Solana MID dual-share 41.3% pre-boundary -> 25.0% post,
-# confirming this is the right split to trust):
-#   - PRE-boundary (n=375, the dominant regime in this window): the hump
-#     is ROBUST, not fragile -- z=3.11 AND z=2.93 against BOTH
-#     neighbors, comfortably clearing this file's own bar in a real
-#     split-half, not just pooled.
-#   - POST-boundary (n=16 total across all three bins): genuinely
-#     UNTESTABLE, not null -- 4/3/7 observations per bin is far too thin
-#     to confirm OR deny the shape survives into the current regime.
-#     price_history_dense.jsonl only extends 2.15 days past the
-#     boundary; this needs real re-derivation once more accumulates.
-#
-# ELEVATED RISK, disclosed rather than assumed away: DEEP_LONGSHOT_
-# ENTRY_MULTIPLIER (see hedge-rate-secular-decline in project memory)
-# is a DIRECT precedent for a shape FLIPPING (not just shifting level)
-# across this exact boundary, and REGIME_HEDGE_POST_SHIFT_MULTIPLIER
-# exists specifically because MID's overall hedge LEVEL also dropped
-# here. This multiplier's calibration is ~96% pre-boundary data by
-# construction (375 of 391 rows) -- kept live because there is no
-# positive evidence of reversal (unlike DEEP_LONGSHOT, which had one),
-# but this is a HIGH-PRIORITY recheck candidate, not a settled finding,
-# the moment enough post-boundary price_history_dense.jsonl exists.
-#
-# Quartile calibration (n=97-100/quartile, decision-collapsed, early
-# stratum only, 8-day price_history_dense.jsonl window): a real peak
-# around adverse_move=-0.29, dropping off on both sides. The two
-# quartiles closer to zero are noisier (0.45/0.90/0.54, not perfectly
-# monotonic) -- disclosed, not smoothed over, same as every other
-# multiplier here that has real but imperfect quartile-level structure.
-MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER = {
-    "Solana": {-0.291: 2.1274, -0.108: 0.4479, -0.031: 0.8958, -0.002: 0.5431},
-}
-_MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER_CAP = 3.0  # measured range tops out
-# at 2.1274 -- comfortably inside, same discipline as every other table.
-
-
-def mid_favorable_hedge_trigger_multiplier(asset: str, adverse_move: Optional[float]) -> float:
-    """Continuous, mean-neutral multiplier on hedge_attempt_hazard's
-    output as a function of favorable move, MID-only (analogous to
-    favorable_move_hedge_trigger_multiplier's CHEAP scope) -- see this
-    section's docstring above for why only Solana is populated (Bitcoin
-    null, Ethereum a different unshipped shape). 1.0 (no-op) for any
-    asset not in MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER, when adverse_move
-    is unavailable, or when adverse_move >= 0 (that side is
-    adverse_move_hedge_trigger_multiplier's job). Callers are
-    responsible for scoping this to MID. Flat beyond the measured range,
-    clamped to _MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER_CAP."""
-    if adverse_move is None or adverse_move >= 0:
-        return 1.0
-    curve = MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER.get(asset)
-    if curve is None:
-        return 1.0
-    points = sorted(curve.items())
-    lo_move, lo_val = points[0]
-    hi_move, hi_val = points[-1]
-    move = max(lo_move, min(hi_move, adverse_move))
-    result = lo_val
-    for i in range(len(points) - 1):
-        p_move, p_val = points[i]
-        q_move, q_val = points[i + 1]
-        if p_move <= move <= q_move:
-            frac = (move - p_move) / (q_move - p_move) if q_move > p_move else 0.0
-            result = p_val + frac * (q_val - p_val)
-            break
-    cap = _MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER_CAP
-    return max(1.0 / cap, min(cap, result))
-
-
-# ---------------------------------------------------------------------------
-# CROSS-MARKET hedge-RATE persistence. Added 2026-09-11: real, cross-asset
-# finding (r=0.25-0.35, among the strongest correlations found all
-# night) that how hedge-heavy the PREVIOUS market was predicts how
-# hedge-heavy the CURRENT one will be -- survives being confound-checked
-# against current-market regime (fixed to MID, still r=0.2525) and
-# against weekend (survives independently in both subsets). Calibrated
-# on RATE (hedges / total decisions in a market), not raw hedge count --
-# a follow-up check found raw count partly conflates genuine hedge
-# propensity with "markets with more total activity have more hedges
-# too"; rate isolates the propensity-specific signal (smaller effect,
-# r=0.10, but not double-counting general activity clustering).
-#
-# HONEST CAVEAT, disclosed rather than smoothed over: the decay shape
-# barely weakens even out to 20 markets back (~100+ minutes), which is
-# more consistent with some real market-condition persistence (which a
-# bot already inherits for free from live prices) than a purely
-# HIS-OWN-specific behavioral echo -- tested the most obvious version of
-# that alternative (real prior-30min realized volatility -> hedge count)
-# directly and it does NOT explain the pattern (wrong sign), which
-# restores some confidence, but the mechanism isn't fully pinned down.
-# Treat this as the most speculative of tonight's cross-market
-# multipliers.
-#
-# Per-asset, quartile points of PREVIOUS market's hedge rate -> mean-
-# neutral multiplier on hedge_attempt_hazard's output for the CURRENT
-# market. Ethereum has only 3 points (its first two empirical quartiles
-# both landed at prev_rate=0.0 -- merged into one point using each
-# quartile's own n as weight) instead of 4.
-# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 5 -- see full-
-# behavioral-audit-tracker.md's hedge-trigger sub-multipliers note): the
-# first attempt at this (/loop cycle 4) hit a degenerate-zero-mass
-# problem -- so many markets have a previous hedge rate of exactly 0.0
-# that naively quartiling the WHOLE distribution produced a nonsensical
-# bucket. Fixed by isolating prev_hedge_rate==0.0 as its own dedicated
-# point (matching this table's own pre-existing convention -- every
-# asset's lowest key was already exactly 0.0) and only tertile-splitting
-# the REMAINING (>0) markets into the other 3 points. Ethereum now has 4
-# points instead of its previous 3 -- the post-halt sample supports it
-# cleanly. Same real, increasing shape as before (more likely to hedge
-# after a market that itself hedged a lot).
-# RETIRED 2026-09-23 (systematic post-Sep-18 audit). A first, quicker
-# check (rolling 5-market hedge-rate average as a proxy for "previous
-# market's hedge rate") found Bitcoin still holding up (t=2.90) while
-# Ethereum/Solana had weakened -- not confident enough to act on
-# partial results, so redone properly using this table's OWN actual
-# definition (a single market's own hedges/total-decisions fraction,
-# not a rolling multi-market average): corr(previous market's own hedge
-# rate, current market hedged) for all three assets, fresh post-boundary
-# data --
-#   Bitcoin  n=915: r=+0.0016, t=0.05 -- completely null (the earlier
-#     "confirmed" result was an artifact of the wrong proxy definition).
-#   Ethereum n=666: r=-0.0614, t=-1.59 -- null, and wrong-signed (shipped
-#     table implies a positive relationship).
-#   Solana   n=571: r=+0.0163, t=0.39 -- null.
-# All well below this file's own |t|>=2.58 bar. Split-half checked for
-# all three (n=285-458/half): every half independently null too, not
-# just the pooled number. The effect has genuinely vanished for every
-# asset under the correct methodology -- table emptied entirely.
-CROSS_MARKET_HEDGE_RATE_MULTIPLIER = {}
-_CROSS_MARKET_HEDGE_RATE_MULTIPLIER_CAP = 3.0  # same cap tier as HEDGE_LIQUIDITY_MULTIPLIER
-
-
-def cross_market_hedge_rate_multiplier(asset: str, prev_hedge_rate: Optional[float]) -> float:
-    """Continuous, mean-neutral multiplier on hedge_attempt_hazard's
-    output as a function of the PREVIOUS market's hedge rate
-    (hedges/total decisions). 1.0 (no-op) for any asset not in
-    CROSS_MARKET_HEDGE_RATE_MULTIPLIER, or when prev_hedge_rate is
-    unavailable (e.g. no previous market yet this run). Flat beyond the
-    measured range, same discipline as every other multiplier in this
-    file."""
-    curve = CROSS_MARKET_HEDGE_RATE_MULTIPLIER.get(asset)
-    if curve is None or prev_hedge_rate is None:
-        return 1.0
-    points = sorted(curve.items())
-    lo_rate, lo_val = points[0]
-    hi_rate, hi_val = points[-1]
-    rate = max(lo_rate, min(hi_rate, prev_hedge_rate))
-    result = hi_val
-    for i in range(len(points) - 1):
-        p_rate, p_val = points[i]
-        q_rate, q_val = points[i + 1]
-        if p_rate <= rate <= q_rate:
-            frac = (rate - p_rate) / (q_rate - p_rate) if q_rate > p_rate else 0.0
-            result = p_val + frac * (q_val - p_val)
-            break
-    cap = _CROSS_MARKET_HEDGE_RATE_MULTIPLIER_CAP
-    return max(1.0 / cap, min(cap, result))
-
-
-# ---------------------------------------------------------------------------
-# CONVICTION-conditioned hedge trigger. Added 2026-09-11: real, regime-
-# confound-checked finding that the market's own FIRST-entry size,
-# relative to that (asset, regime)'s own typical first-entry size,
-# predicts whether THIS SAME market ends up hedged -- a smaller-than-
-# typical first entry means a higher chance of hedging later, holding
-# regime fixed. Survives weekend and liquidity confounds too. Scoped to
-# MID/CORE/HIGH only -- CHEAP shows no such relationship (checked and
-# confirmed flat: 4.05%/9.76%/16.75%/17.68%-style near-constant win-rate
-# and hedge patterns across conviction levels there, consistent with
-# CHEAP being scout/floor-lot-dominated with little real size variance
-# to carry signal). Confirmed temporally stable across the Aug 7 TWAP
-# change (both eras show the same real decline, MID regime).
-#
-# HONEST CAVEAT: the WHY is unresolved. Tested and ruled out the most
-# obvious explanation (smaller first entry = lower conviction = more
-# often WRONG, needing correction) directly -- trade-count win rate does
-# NOT differ between below/above-median first entries in any regime.
-# Whatever the real mechanism is, it isn't a simple accuracy pathway.
-# Real, usable, currently-unexploited signal; not a solved mystery.
-#
-# Per-asset per-regime, quartile points of log(first_entry_size /
-# regime_median_first_entry_size) -> mean-neutral multiplier on
-# hedge_attempt_hazard's output for THIS SAME market (not cross-market --
-# uses activity.first_entry_price/notional already recorded for the
-# CURRENT market, available the moment a hedge decision is evaluated).
-# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 5 -- see full-
-# behavioral-audit-tracker.md's hedge-trigger sub-multipliers note):
-# re-checked the underlying conviction-vs-hedged point-biserial
-# correlation post-halt, per (asset, regime) cell rather than trusting
-# the quartile shape alone (which looked noisy/non-monotonic almost
-# everywhere -- correlation is the more reliable diagnostic at these
-# sample sizes). Result: the effect has genuinely weakened to
-# near-zero almost everywhere post-halt -- Bitcoin MID r=-0.015 (n=720),
-# CORE r=-0.028, HIGH r=+0.134 (n=71, thin); Ethereum MID r=-0.053, CORE
-# r=-0.075, HIGH r=-0.196 (n=79, thin); Solana CORE r=-0.037, HIGH
-# r=-0.116 (n=82, thin). ALL REMOVED except one: Solana MID is the one
-# cell with both a meaningful correlation (r=-0.202) and a well-powered
-# sample (n=488) -- kept, refreshed with its post-halt quartile shape.
-# Consistent with the same broad post-halt flattening found throughout
-# this session's recalibration pass -- this conviction effect looks like
-# another casualty of it, not a measurement fluke.
-CONVICTION_HEDGE_MULTIPLIER = {
-    "Solana": {
-        "MID": {-5.0398: 1.2384, -0.6648: 0.9659, 0.4301: 0.8916, 0.7586: 0.9040},
-    },
-}
-_CONVICTION_HEDGE_MULTIPLIER_CAP = 3.0
-
-
-def conviction_hedge_multiplier(asset: str, regime: str, conviction_log_ratio: Optional[float]) -> float:
-    """Continuous, mean-neutral multiplier on hedge_attempt_hazard's
-    output as a function of log(this market's first-entry size /
-    (asset, regime)'s typical first-entry size). 1.0 (no-op) for any
-    (asset, regime) not in CONVICTION_HEDGE_MULTIPLIER (includes CHEAP
-    and the three dormant assets by design), or when
-    conviction_log_ratio is unavailable. Flat beyond the measured range."""
-    curve = CONVICTION_HEDGE_MULTIPLIER.get(asset, {}).get(regime)
-    if curve is None or conviction_log_ratio is None:
-        return 1.0
-    points = sorted(curve.items())
-    lo_x, lo_val = points[0]
-    hi_x, hi_val = points[-1]
-    x = max(lo_x, min(hi_x, conviction_log_ratio))
-    result = hi_val
-    for i in range(len(points) - 1):
-        p_x, p_val = points[i]
-        q_x, q_val = points[i + 1]
-        if p_x <= x <= q_x:
-            frac = (x - p_x) / (q_x - p_x) if q_x > p_x else 0.0
-            result = p_val + frac * (q_val - p_val)
-            break
-    cap = _CONVICTION_HEDGE_MULTIPLIER_CAP
-    return max(1.0 / cap, min(cap, result))
-
-
-# ---------------------------------------------------------------------------
 # HEDGE CONTINUATION. Added 2026-09-09, closing the multi-hedge gap found
 # this session: decide_hedge above only ever fired ONCE per market
 # (hedge_placed permanently locked it after the first success). Real data
@@ -4148,26 +3537,6 @@ HEDGE_CONTINUATION_PROBABILITY = {
 }
 _DEFAULT_HEDGE_CONTINUATION_PROBABILITY = 0.505  # hedge_count >= 4
 
-# RECALIBRATED 2026-09-13 (post-halt audit, /loop cycle 16). Item #18's
-# original "CONFIRMED, holds up" verdict used a 10-day pooled window
-# that substantially straddles the halt (same blind-window issue found
-# and fixed for SCOUT_PROBABILITY/TTC_SIZE_MULTIPLIER in cycles 7/15).
-# Redone strictly post-halt-only (ts>=HALT_END), same decision-collapsed
-# methodology, same "ratio to dominant side's running cost at that
-# moment" definition, healthy n=496-914/index: a consistent ~19-23%
-# decline across all 3 indices, same direction and similar relative
-# magnitude at every index -- not a shape change, a level shift, and
-# it matches this session's broader finding that hedge SIZING overall
-# has softened post-halt (see HEDGE_SIZE_RATIO, ADVERSE_MOVE_SIZE_
-# MULTIPLIER, and the standalone hedge-rate-secular-decline memory).
-#   hedge#2: 0.186->0.1517 (n=733)   hedge#3: 0.133->0.1026 (n=496)
-#   hedge#4+: 0.106->0.0837 (n=914)
-HEDGE_CONTINUATION_SIZE_RATIO = {
-    2: 0.1517,
-    3: 0.1026,
-}
-_DEFAULT_HEDGE_CONTINUATION_SIZE_RATIO = 0.0837  # hedge index >= 4
-
 
 def hedge_continuation_probability(hedge_count: int) -> float:
     """hedge_count is how many hedge-shaped entries this market already
@@ -4176,93 +3545,212 @@ def hedge_continuation_probability(hedge_count: int) -> float:
     return HEDGE_CONTINUATION_PROBABILITY.get(hedge_count, _DEFAULT_HEDGE_CONTINUATION_PROBABILITY)
 
 
-def hedge_continuation_size_ratio(hedge_index: int) -> float:
-    """hedge_index is the 1-based index of the hedge ABOUT TO BE placed
-    (2 = the market's 2nd hedge-shaped entry, etc. -- index 1 is not
-    handled here, see HEDGE_SIZE_RATIO/hedge_size_ratio above)."""
-    return HEDGE_CONTINUATION_SIZE_RATIO.get(hedge_index, _DEFAULT_HEDGE_CONTINUATION_SIZE_RATIO)
-
-
 # ---------------------------------------------------------------------------
-# ADVERSE-MOVE-conditioned CONTINUATION hedge size. Added 2026-09-10, same
-# night as ADVERSE_MOVE_SIZE_MULTIPLIER above (which covers hedge_count==0
-# only) -- direct extension of the same confirmed mechanism to hedge_count
-# >= 1 (2nd/3rd/4th+ hedges), using the same since-ORIGIN adverse_move
-# definition (primary_entry_price - primary_current_price_at_this_hedge).
+# SINGLE CONSOLIDATED HEDGE-TRIGGER FUNCTION. Added 2026-09-24, replacing a
+# 13-factor multiplicative stack (liquidity, weekend, cross-market, first-
+# entry conviction, after-a-big-loss, MID/CHEAP favorable-move humps, an
+# adverse-move x time-remaining interaction, and a late-window hedge-
+# urgency hump -- see git history around commit 377f8ac and earlier for
+# what those looked like) with the four drivers that carried essentially
+# all of the real, well-validated signal:
 #
-# NOT just assumed to generalize -- deep-research pass run before building:
-#   - Regime-controlled (fit separately per first_entry_regime): holds in
-#     11 of 12 (asset, regime) cells, r=0.23-0.64, t=4.36-58.17. ONE cell
-#     fails this file's own |t|>=2.58 bar: Solana/HIGH, t=2.46 (n=108,
-#     thin). Every other cell, including small BTC/HIGH (t=4.36, n=66),
-#     clears comfortably. Not chased further per this file's own thin-cell
-#     discipline -- the pooled-per-asset curve below is not regime-split,
-#     so this doesn't block it, but Solana/HIGH specifically shouldn't be
-#     treated as independently confirmed.
-#   - TTC confound ruled out again: r(adverse_move, seconds_to_close) is
-#     ~0 (-0.076 to 0.028 across assets) -- not a lateness proxy here
-#     either.
-#   - REAL open question tested, not assumed: does continuation-hedge size
-#     track cumulative move SINCE HIS ORIGINAL ENTRY, or incremental move
-#     SINCE HIS LAST HEDGE? Tested both as competing hypotheses --
-#     since-origin wins clearly (r=0.44-0.57 pooled) over since-last-hedge
-#     (r=0.13-0.23, still significant but meaningfully weaker). Confirms
-#     reusing MarketActivityState.first_entry_price (not re-anchoring at
-#     each hedge) is the empirically better model, not just a convenient
-#     reuse of existing plumbing.
+#   1. hedge_attempt_hazard(asset, regime, attempt_index) -- the base
+#      per-tick hazard, timed to reproduce the calibrated overall
+#      HEDGE_TRIGGER_PROBABILITY frequency with the real attempt-index
+#      timing shape (median real hedge lands at attempt_index 4, not 1).
+#   2. regime_hedge_post_shift_multiplier(asset, regime) -- the single
+#      most impactful, most recently validated calibration in this whole
+#      chain: the real trader's hedge rate collapsed sharply at the
+#      2026-09-18 boundary in most (asset, regime) cells, and this
+#      dampener is what keeps the bot from massively over-hedging
+#      relative to his CURRENT behavior. Not safe to drop.
+#   3. The adverse/favorable-move shape (via adverse_move_hedge_trigger_
+#      multiplier for adverse_move>=0 and favorable_move_hedge_trigger_
+#      multiplier for adverse_move<0, CHEAP only) -- the strongest single
+#      behavioral driver found in this whole project: a real, monotonic,
+#      confound-checked-every-way-possible relationship between how far
+#      price has moved and whether he hedges, PLUS (in CHEAP specifically)
+#      a genuine bathtub shape showing he also hedges when he's already
+#      winning big (profit-locking insurance, not just defense).
+#   4. hedge_continuation_probability(hedge_count) for the 2nd+ hedge,
+#      once a market is already dual-sided -- structurally necessary for
+#      realistic multi-hedge behavior (60%+ of dual-sided markets get a
+#      2nd hedge; a single-shot design was tested and found to badly
+#      undercount real multi-hedge markets).
 #
-# Per-asset (all continuation-hedge indices 2/3/4+ pooled -- same
-# parsimony rationale as ADVERSE_MOVE_SIZE_MULTIPLIER: per-index slopes
-# were consistent, r=0.24-0.50 BTC / 0.18-0.36 ETH / 0.13-0.27 SOL across
-# individual indices, checked before pooling), 4 quartile points, median-
-# based, median-neutral multiplier on HEDGE_CONTINUATION_SIZE_RATIO's base
-# value -- same construction as ADVERSE_MOVE_SIZE_MULTIPLIER (median over
-# mean for the same right-skew reason). Interpolated as-measured: BTC dips
-# slightly at q3 (matching the first-hedge multiplier's own shape); ETH
-# and SOL are fully monotonic here, unlike the first-hedge case -- kept as
-# real, not forced to match the other table's shape.
-# RECALIBRATED 2026-09-13 (post-halt, /loop cycle 3, same root cause as
-# ADVERSE_MOVE_SIZE_MULTIPLIER's matching note above -- see full-
-# behavioral-audit-tracker.md item 19, the single most severely-flattened
-# multiplier found in the whole audit): post-halt data (n=523-1537),
-# same OLS-quartile-then-normalize methodology.
-ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER = {
-    "Bitcoin": {-0.565: 0.3970, -0.33: 0.5576, -0.09: 0.7879, 0.27: 2.2575},
-    "Ethereum": {-0.63: 0.4040, -0.45: 0.4535, -0.18: 0.7060, 0.24: 2.4365},
-    "Solana": {-0.65: 0.1764, -0.40: 0.5438, -0.12: 0.6932, 0.21: 2.5866},
-}
-_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER_CAP = 6.0  # same cap as
-# ADVERSE_MOVE_SIZE_MULTIPLIER -- measured range tops out at ~3.85 (Solana
-# q3), comfortably inside it.
+# CUT for simplicity (real findings, not discredited ones -- each is
+# individually well-supported, but none carried anywhere near the
+# explanatory weight of the four kept above, and stacking 13 independent
+# probability multipliers onto one coin-flip made the whole chain
+# impossible to reason about or audit as a unit):
+#   - hedge_liquidity_multiplier, cross_market_hedge_rate_multiplier,
+#     hedge_trigger_after_big_loss_multiplier -- all three had ALREADY
+#     independently decayed to an empty, no-op calibration table by the
+#     time of this consolidation (liquidity/cross-market effects
+#     vanished post-halt; after-a-big-loss never cleared post-halt
+#     re-verification) -- removing them is exactly zero fidelity loss.
+#   - weekend_hedge_multiplier -- real but modest (z=9.9, Bitcoin-only).
+#   - conviction_hedge_multiplier -- only one (asset, regime) cell
+#     survived post-halt recalibration (Solana/MID); the other eleven
+#     had already been retracted to no-ops.
+#   - mid_favorable_hedge_trigger_multiplier -- real but Solana-only
+#     (Bitcoin null, Ethereum an unshipped different shape).
+#   - adverse_move_ttc_interaction_multiplier -- a real refinement ON TOP
+#     of the adverse-move shape (more time remaining = more sensitive to
+#     a given adverse move), but scoped to Bitcoin/Solana x CHEAP/MID/
+#     CORE only, and a second-order effect on top of an already-modeled
+#     first-order one.
+#   - late_window_hedge_urgency_multiplier -- the one genuine sacrifice
+#     here: a real, cross-asset-validated hazard hump 150-180s after an
+#     early first entry, shipped (commit 377f8ac) mere hours before this
+#     consolidation. Cut anyway for the sake of one clean function; see
+#     the calibration's own comment (removed just above) for how to
+#     bring it back if hedge-TIMING fidelity is ever prioritized again.
+# CLOSE-URGENCY boost (2026-09-25, research-loop capstone finding): as a
+# market's 5-minute window approaches its close, ALL THREE of his
+# decision types (first entry, same-side add-on, opposite-side hedge)
+# get sharply more likely to fire -- a single "last chance before the
+# outcome locks in" effect, not three separate mechanisms. Confirmed
+# split-half stable (the climbing-then-crashing hazard shape reproduces
+# independently in both halves of the covered trade history). Distinct
+# from and complementary to TTC_SIZE_MULTIPLIER, which governs how BIG
+# an entry is (already captures the same regime-dependent direction --
+# CHEAP shrinks, MID/HIGH grow, late-window) but is clamped flat below
+# 90s remaining; this instead governs how LIKELY an entry/hedge happens
+# at all, specifically extending into the final ~90s that
+# TTC_SIZE_MULTIPLIER doesn't reach (our own MIN_SECONDS_BEFORE_CLOSE=75
+# is the practical floor).
+#
+# BOOST-ONLY construction (ratio to the 165s-remaining hazard specifically,
+# NOT a mean-neutral redistribution) -- deliberately 1.0 (clean no-op) at
+# seconds_remaining>=165, same "only ever a boost or a no-op" discipline
+# already established for mid_boundary_edge_multiplier/
+# cheap_deep_touch_edge_multiplier. A mean-neutral version was tried first
+# and rejected: it made the "baseline" (most of an ordinary window) come
+# out to ~0.78-0.84 instead of 1.0, silently dampening participation
+# everywhere, not just boosting it near close -- exactly the kind of
+# unintended interaction with REGIME_ENGAGEMENT_MULTIPLIER's own
+# calibration this needed to avoid. Derived from real post-Aug-7 trader
+# data:
+#   ENTRY (first-entry hazard, pooled across regimes -- checked and
+#   confirmed regime-AGNOSTIC: the activity boost itself is uniform
+#   across CHEAP/MID/CORE/HIGH; the win-rate CONSEQUENCE differs by
+#   regime, but that's a downstream fact of real resolution outcomes,
+#   not something this multiplier needs to encode):
+#     165s remaining: hazard 15.74% | 135s: 16.85% | 105s: 21.05% | 75s: 27.00%
+#   HEDGE (opposite-side flip hazard, steeper climb than entries):
+#     165s remaining: hazard 5.66%  | 135s: 6.83%  | 105s: 10.84% | 75s: 14.93%
+# RECALIBRATED 2026-09-26 (full-codebase "verify everything against the
+# trader" audit, extended to a proper discrete-time hazard/survival check
+# instead of a raw entry-count density comparison). Original tables above
+# were built by density alone; re-derived here with a real "at risk"
+# denominator per 30s bucket (a market only counts toward a bucket's
+# denominator if the event -- first entry, or first hedge -- hasn't
+# ALREADY happened before that bucket started), over 815 true-on-chain
+# markets across BTC/ETH/SOL, ~434 windows/asset:
+#   ENTRY, pooled hazard ratio vs the 165s bucket: 135=1.062, 105=1.626,
+#     75=2.091 -- same climbing shape as shipped, but the tail (105/75)
+#     runs meaningfully steeper than the old table's 1.337/1.715. Stable
+#     in direction across a temporal split-half (75-bucket ratio 2.156
+#     first half / 2.034 second half; 105-bucket 1.369/1.855 -- both
+#     halves clearly >1). The 135 bucket alone is unstable (1.243 vs
+#     0.894 split-half) and left close to its prior value.
+#   HEDGE, pooled hazard ratio vs the 165s bucket: 135=1.751, 105=3.873,
+#     75=6.086 -- a MUCH steeper real climb than the shipped table
+#     captures (was 1.207/1.915/2.638, roughly half the real magnitude
+#     at the tail). Monotonically climbing in BOTH halves independently
+#     (135/105/75 ratios: 2.026/4.784/6.648 first half, 1.522/3.114/5.620
+#     second half) -- not a fluke, just previously under-calibrated.
+# Standard 80%-of-log-gap shrinkage applied (new = shipped * (measured/
+# shipped)**0.8), since this is a single fresh-data pass without the
+# extra split-half-fit rigor this file reserves for a direct-ship.
+ENTRY_URGENCY_MULTIPLIER = {165: 1.000, 135: 1.064, 105: 1.564, 75: 2.010}
+HEDGE_URGENCY_MULTIPLIER = {165: 1.000, 135: 1.625, 105: 3.364, 75: 5.149}
+_URGENCY_MULTIPLIER_MIDPOINTS = (165, 135, 105, 75)
 
 
-def adverse_move_continuation_size_multiplier(asset: str, adverse_move: Optional[float]) -> float:
-    """Continuous, median-neutral multiplier on HEDGE_CONTINUATION_SIZE_RATIO's
-    base value, as a function of how far price has moved against the
-    primary position since the market's ORIGINAL entry (not since the
-    most recent hedge -- see this section's docstring for why that
-    reference point won the direct comparison). 1.0 (no-op) for any asset
-    not in ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER, or when adverse_move
-    is unavailable. Flat beyond the measured range, same discipline as
-    every other multiplier in this file. Final result clamped to
-    _ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER_CAP."""
-    curve = ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER.get(asset)
-    if curve is None or adverse_move is None:
+def _interpolate_urgency(table: dict, seconds_remaining: float) -> float:
+    sr = max(75.0, min(165.0, seconds_remaining))
+    mids = _URGENCY_MULTIPLIER_MIDPOINTS
+    for i in range(len(mids) - 1):
+        hi_mid, lo_mid = mids[i], mids[i + 1]
+        if lo_mid <= sr <= hi_mid:
+            hi_val, lo_val = table[hi_mid], table[lo_mid]
+            frac = (sr - lo_mid) / (hi_mid - lo_mid)
+            return lo_val + frac * (hi_val - lo_val)
+    return table[mids[0] if sr >= 165 else mids[-1]]
+
+
+_URGENCY_TABLES = {"entry": ENTRY_URGENCY_MULTIPLIER, "hedge": HEDGE_URGENCY_MULTIPLIER}
+
+
+def urgency_multiplier(kind: str, seconds_remaining: Optional[float]) -> float:
+    """MERGED 2026-09-28 (was entry_urgency_multiplier + hedge_urgency_
+    multiplier -- already identical shape, sharing this same
+    _interpolate_urgency helper, differing only by which table). `kind`
+    is "entry" or "hedge".
+
+    Boost-only on ordinary-entry eligibility (kind="entry") or hedge
+    trigger probability (kind="hedge") as the window approaches close:
+    exactly 1.0 (clean no-op) at seconds_remaining>=165 (and for None --
+    no seconds_remaining known), climbing multiplicatively above 1.0 as
+    remaining time shrinks toward 75s. Flat outside [75, 165]s remaining,
+    matching TTC_SIZE_MULTIPLIER's own no-extrapolation discipline.
+
+    For kind="entry": applied to REGIME_ENGAGEMENT_MULTIPLIER's own
+    result, same composition point as PARTICIPATION_ASSET_SCALE/
+    REGIME_DRIFT_CORRECTION. Note the caller composes this under a
+    min(1.0, ...) clamp same as the other overlays there -- correct
+    here since engagement_mult is a skip-probability gate (ceiling is
+    100% chance of not skipping), not a size multiplier; the actual
+    magnitude boost for entries lives in TTC_SIZE_MULTIPLIER instead.
+    For kind="hedge": calibrated separately on the real hedge-flip
+    hazard curve (steeper climb than ordinary entries)."""
+    if seconds_remaining is None:
         return 1.0
-    points = sorted(curve.items())
-    lo_move, lo_val = points[0]
-    hi_move, hi_val = points[-1]
-    move = max(lo_move, min(hi_move, adverse_move))
-    result = hi_val
-    for i in range(len(points) - 1):
-        p_move, p_val = points[i]
-        q_move, q_val = points[i + 1]
-        if p_move <= move <= q_move:
-            frac = (move - p_move) / (q_move - p_move) if q_move > p_move else 0.0
-            result = p_val + frac * (q_val - p_val)
-            break
-    cap = _ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER_CAP
-    return max(1.0 / cap, min(cap, result))
+    return _interpolate_urgency(_URGENCY_TABLES[kind], seconds_remaining)
+
+
+def hedge_probability(asset: str, regime: str, attempt_index: int, hedge_count: int,
+                       adverse_move: Optional[float] = None,
+                       seconds_remaining: Optional[float] = None) -> float:
+    """The single entry point for 'what's the probability THIS hedge
+    attempt fires', for both the first hedge (hedge_count == 0, uses
+    attempt_index = activity.real_fill_count) and every continuation
+    hedge after it (hedge_count >= 1, attempt_index ignored). Always
+    returns a value in [0, 1] -- the caller (decide_hedge) can roll
+    against it directly with no further clamping needed.
+
+    seconds_remaining (added 2026-09-25) feeds hedge_urgency_multiplier
+    -- see its docstring and the CLOSE-URGENCY comment above. Optional
+    (default None -> no-op 1.0) so existing callers/tests keep working
+    unchanged. Applied unconditionally, no feature flag, matching this
+    function's own established design (validated findings are folded
+    in directly, not gated -- see the 2026-09-24 hedge consolidation).
+
+    (streak_length was accepted here 2026-09-25 -> 2026-09-26, removed
+    entirely once STREAK_HEDGE_PROBABILITY_MULTIPLIER's on-chain re-check
+    reversed the finding it fed -- see git history if reviving a
+    streak-conditioned hedge signal is ever warranted.)"""
+    urgency = urgency_multiplier("hedge", seconds_remaining)
+    if hedge_count >= 1:
+        return max(0.0, min(1.0, hedge_continuation_probability(hedge_count) * urgency))
+    p = hedge_attempt_hazard(asset, regime, attempt_index)
+    p *= table_lookup(REGIME_HEDGE_POST_SHIFT_MULTIPLIER, regime, asset)
+    if adverse_move is not None:
+        if adverse_move >= 0:
+            p *= adverse_move_hedge_trigger_multiplier(asset, adverse_move)
+        elif regime == "CHEAP":
+            p *= favorable_move_hedge_trigger_multiplier(asset, adverse_move)
+    p *= urgency
+    return max(0.0, min(1.0, p))
+
+
+# REMOVED 2026-09-24 (single-function hedge consolidation): HEDGE_
+# CONTINUATION_SIZE_RATIO/hedge_continuation_size_ratio and ADVERSE_MOVE_
+# CONTINUATION_SIZE_MULTIPLIER/adverse_move_continuation_size_multiplier
+# -- both superseded by hedge_notional_for_price, which already covers
+# first AND continuation hedges uniformly (see its own docstring).
 
 
 # ---------------------------------------------------------------------------
@@ -4330,115 +3818,6 @@ def adverse_move_continuation_size_multiplier(asset: str, adverse_move: Optional
 # built to replicate has almost entirely disappeared -- he still picks the
 # eventually-wrong side about a third of the time (SCOUT_PROBABILITY
 # above), but no longer discounts its size much when he does.
-# ACCURACY-conditioned scout rate. Added 2026-09-11: real, cross-asset-
-# POOLED finding (BTC-only was marginal, z=2.18; pooling all three assets
-# strengthens it to z=6.94) that his ROLLING recent accuracy (correctness
-# of his last ~10 markets' dominant-side calls, per asset) predicts how
-# often his NEXT first entry is scout-sized (tentative/small) rather than
-# a full-conviction entry -- worse recent accuracy, more scouting.
-# Pooled rather than per-asset because only the pooled version was
-# thoroughly circularity-checked (below); a per-asset table would imply a
-# precision this finding wasn't actually validated at.
-#
-# CIRCULARITY CHECKED, not assumed: scout bets are separately known to be
-# less accurate than committed bets, so "recent accuracy" computed from
-# ALL recent trades is partly mechanically caused by recent scouting
-# itself -- a spurious self-referential loop, not a real predictive
-# signal. Re-tested using accuracy computed from ONLY non-scout trades in
-# the rolling window: survives, actually strengthens (z=4.80). Does NOT
-# extend to overall sizing beyond the scout/commit decision itself (r=
-# 0.0156, t=1.24 for general entry sizing vs rolling accuracy) -- scoped
-# strictly to SCOUT_PROBABILITY.
-#
-# BIGGEST ARCHITECTURAL LIFT of this session's implementation pass: the
-# bot has never before needed real-time resolution feedback during
-# trading (resolution_tick previously only fed settle_order() for P&L,
-# never fed back into strategy state) -- bot.py now maintains a rolling
-# per-asset accuracy tracker (deque of the last 10 markets' correctness,
-# dominant_side vs actual winning_side) populated inside resolution_tick.
-#
-# Rolling-accuracy bucket -> mean-neutral multiplier on SCOUT_PROBABILITY.
-# Pooled across BTC/ETH/SOL (overall pooled scout rate = 0.07475).
-#
-# RECALIBRATED 2026-09-13 (post-halt audit, /loop cycle 8 -- the last item
-# flagged unchecked in item #21's own audit note). Post-halt-only
-# (ts>=HALT_END), same rolling-accuracy definition as production
-# (dominant_side==winning_side over the last ACCURACY_ROLLING_WINDOW=10
-# resolved markets, pooled across assets, resolved via resolution_cache.
-# json joined on slug), n=3770 rows with a full-enough window (>=3
-# resolved markets) to bucket. Re-ran the exact same circularity check
-# the original build used (recompute rolling accuracy from ONLY non-
-# scout/committed markets, since scout bets are separately known to be
-# less accurate and would otherwise mechanically bias recent accuracy
-# down right after a scouting streak) -- the finding SURVIVES and even
-# slightly strengthens under that correction (r=0.0976, t=6.014 vs
-# r=0.0917, t=5.655 using the production all-trades definition), exactly
-# matching how the original passed its own circularity check.
-#
-# The surprising part: the RELATIONSHIP HAS REVERSED SIGN post-halt.
-# Original (pre-halt): worse recent accuracy -> more scouting (a
-# "hedge my uncertainty" story), multiplier fell monotonically from
-# 1.8753 at the low end to 0.4133 at the high end. Post-halt: BETTER
-# recent accuracy now predicts MORE scouting (0.9450 -> 1.2676, rising).
-# Verified this isn't a fluke: pooled effect is stable across a time
-# split (first-half r=0.0782/t=3.405, second-half r=0.0599/t=2.604 --
-# same sign, comparable size, both windows well within post-halt data),
-# and the same "Bitcoin alone is only marginal, Ethereum/Solana carry
-# the pooled signal" pattern the original build reported also holds here
-# (Bitcoin t=0.999, not significant; Ethereum t=2.815; Solana t=3.553).
-# Also, like the other 9 tables fixed this session, the EFFECT SIZE has
-# collapsed even though the direction flipped: post-halt range is
-# 0.945-1.268 (a ~1.3x spread) vs the original 0.413-1.875 (a ~4.5x
-# spread) -- another instance of the broad post-halt flattening pattern,
-# just with an added sign reversal this table alone shows.
-# RETIRED 2026-09-23 (systematic post-Sep-18 audit, follow-up on the
-# SCOUT_PROBABILITY/SCOUT_SIZE_RATIO recalibration this composes on top
-# of). This mechanism's own track record across two regime boundaries:
-# pre-halt NEGATIVE relationship (1.8753 -> 0.4133, declining), post-halt
-# (2026-09-13) REVERSED to POSITIVE (0.9450 -> 1.2676, rising) -- and now,
-# re-derived with the correct scout definition on fresh post-Sep-18 data
-# (rolling last-10-market accuracy per asset, pooled, n=259): NULL. Pooled
-# r=-0.0173, t=-0.28; circularity-checked (accuracy from non-scout
-# markets only, matching the original build's own confound check) r=0.0381,
-# t=0.60 -- both far below this file's own |t|>=2.58 bar, and note the
-# sign isn't even consistent between the two versions of the same check.
-# Also: post-boundary rolling accuracy never drops below ~0.6 in this
-# window, so most of the shipped table's own range (0.3-0.6) is currently
-# unreachable regardless. A relationship that has now been negative,
-# positive, and null across three different windows isn't a stable trait
-# being measured with noise -- it's noise being re-fit each time. Retired
-# rather than recalibrated a third time.
-ACCURACY_SCOUT_MULTIPLIER = {}
-_ACCURACY_SCOUT_MULTIPLIER_CAP = 3.0
-
-
-def accuracy_scout_multiplier(rolling_accuracy: Optional[float]) -> float:
-    """Continuous, mean-neutral multiplier on scout_probability's output
-    as a function of a per-asset rolling recent-accuracy fraction
-    (caller-maintained, last ~10 resolved markets' dominant-side
-    correctness). 1.0 (no-op) when rolling_accuracy is unavailable (e.g.
-    fewer than a few resolved markets observed yet this run), or when
-    ACCURACY_SCOUT_MULTIPLIER is empty (RETIRED 2026-09-23 -- see its
-    docstring). Flat beyond the measured range, same discipline as every
-    other multiplier in this file."""
-    if rolling_accuracy is None or not ACCURACY_SCOUT_MULTIPLIER:
-        return 1.0
-    points = sorted(ACCURACY_SCOUT_MULTIPLIER.items())
-    lo_x, lo_val = points[0]
-    hi_x, hi_val = points[-1]
-    x = max(lo_x, min(hi_x, rolling_accuracy))
-    result = hi_val
-    for i in range(len(points) - 1):
-        p_x, p_val = points[i]
-        q_x, q_val = points[i + 1]
-        if p_x <= x <= q_x:
-            frac = (x - p_x) / (q_x - p_x) if q_x > p_x else 0.0
-            result = p_val + frac * (q_val - p_val)
-            break
-    cap = _ACCURACY_SCOUT_MULTIPLIER_CAP
-    return max(1.0 / cap, min(cap, result))
-
-
 # RECALIBRATED 2026-09-23 (post-Sep-18-boundary audit): both cells above
 # were last touched 2026-09-13, before the Sep-18 shift this project has
 # repeatedly found invalidates prior calibrations. Direct on-chain-
@@ -4496,12 +3875,15 @@ SCOUT_SIZE_RATIO = {
 _DEFAULT_SCOUT_SIZE_RATIO = 0.5
 
 
-def scout_probability(asset: str) -> float:
-    return SCOUT_PROBABILITY.get(asset, 0.0)
-
-
-def scout_size_ratio(asset: str) -> float:
-    return SCOUT_SIZE_RATIO.get(asset, _DEFAULT_SCOUT_SIZE_RATIO)
+def scout_params(asset: str) -> tuple[float, float]:
+    """(probability, size_ratio) for this asset's scout mechanism --
+    MERGED 2026-09-28 (was scout_probability + scout_size_ratio, always
+    called together at both existing call sites: roll the probability,
+    then apply the ratio only if it fires). 0.0 probability for an
+    uncalibrated asset (no-op, scouting never triggers) with the size
+    ratio still returned for interface consistency even though it can
+    never be reached in that case."""
+    return SCOUT_PROBABILITY.get(asset, 0.0), SCOUT_SIZE_RATIO.get(asset, _DEFAULT_SCOUT_SIZE_RATIO)
 
 
 # ---------------------------------------------------------------------------
@@ -4649,6 +4031,87 @@ def reentry_fatigue_multiplier(asset: str, regime: str,
 
 
 # ---------------------------------------------------------------------------
+# ADD-ON CONTINUATION PROBABILITY. Added 2026-09-26, closing a real
+# structural gap found while auditing every real_fill_count==0-scoped
+# mechanism in strategy.py: unlike hedges (which have an explicit
+# HEDGE_CONTINUATION_PROBABILITY[k] gate governing whether a 2nd/3rd/etc.
+# hedge happens -- see hedge_continuation_probability above), ordinary
+# same-side ADD-ON entries have NO equivalent continuation gate anywhere
+# in the codebase. Once past the first entry, the bot places another
+# same-side entry whenever the existing eligibility gates (regime,
+# timing, order cap) pass, with no independent "should I keep adding?"
+# throttle -- the first half of hedge's own first/continuation split
+# exists for add-ons, not the second half.
+#
+# Original design pass (2026-09-25, addon-continuation-probability-gap-
+# and-design in project memory) measured this on trades.jsonl's 5-second
+# merge convention -- since confirmed DECISIVELY WRONG for decision
+# reconstruction (five-second-merge-convention-decisively-wrong), so
+# those per-k numbers were NOT shipped directly. RE-DERIVED 2026-09-26
+# ("implement everything ready, with second-time validation") on TRUE
+# on-chain order identity (815 markets, ~37h clean window): the
+# qualitative finding fully SURVIVES -- Bitcoin continues adding at a
+# dramatically and consistently higher rate than Ethereum/Solana, in
+# EVERY regime, not just CHEAP -- but the exact per-k curve shape from
+# the original pass could not be independently confirmed (per-k cells in
+# the clean sample are thin, n=8-146) and its absolute magnitudes
+# disagreed substantially with the clean numbers (e.g. Bitcoin/CHEAP/k=0
+# was 59.2% on the merge convention vs 78.3% on true on-chain data) --
+# the same direction of distortion this project has now found repeatedly
+# from that convention (TTC_SIZE_MULTIPLIER, HEDGE_PRICE_SIZING_SCALE,
+# STREAK_HEDGE_PROBABILITY_MULTIPLIER).
+#
+# Shipped as a coarser POOLED-ACROSS-k rate per (asset, regime) instead
+# of a per-k curve -- what the clean on-chain sample actually supports
+# well (n=25-458 per cell, all comfortably powered):
+#            CHEAP   MID    CORE   HIGH
+#   Bitcoin  0.795  0.885  0.869  0.762
+#   Ethereum 0.545  0.705  0.672  0.433
+#   Solana   0.469  0.571  0.560  0.245
+# Bitcoin > {Ethereum, Solana} holds cleanly in every single regime;
+# Ethereum vs Solana specifically is less clean-cut (Solana edges out
+# Ethereum in CHEAP on this sample, 0.469 vs 0.545 -- close either way)
+# but Ethereum > Solana holds clearly in HIGH and MID. Ordering by asset,
+# not the exact per-cell numbers, is the well-replicated part of this
+# finding; re-derive with more data before trusting the precise values
+# past a few weeks, same caution as every other freshly-calibrated table.
+#
+# Applied as a skip-probability gate (same convention as
+# REGIME_ENGAGEMENT_MULTIPLIER/CHEAP_JOINT_ENTRY_MULTIPLIER), scoped to
+# ordinary (non-hedge) SAME-SIDE add-ons only (real_fill_count > 0) --
+# the complementary case to every real_fill_count==0-scoped first-entry
+# gate elsewhere in this file. Latched per (side, k) episode via
+# MarketActivityState.rejected_addon_episodes, mirroring
+# rejected_regime_episodes/rejected_hedge_episodes exactly, so a resting
+# order that gets cancelled and re-attempted at the same k can't
+# eventually pass a low probability by chance alone.
+ADD_ON_CONTINUATION_PROBABILITY = {
+    ("Bitcoin", "CHEAP"): 0.795,
+    ("Bitcoin", "MID"): 0.885,
+    ("Bitcoin", "CORE"): 0.869,
+    ("Bitcoin", "HIGH"): 0.762,
+    ("Ethereum", "CHEAP"): 0.545,
+    ("Ethereum", "MID"): 0.705,
+    ("Ethereum", "CORE"): 0.672,
+    ("Ethereum", "HIGH"): 0.433,
+    ("Solana", "CHEAP"): 0.469,
+    ("Solana", "MID"): 0.571,
+    ("Solana", "CORE"): 0.560,
+    ("Solana", "HIGH"): 0.245,
+}
+
+
+def addon_continuation_probability(asset: str, regime: str) -> float:
+    """1.0 (no-op, i.e. today's unthrottled behavior) for any (asset,
+    regime) cell not in ADD_ON_CONTINUATION_PROBABILITY (the three
+    dormant assets -- no data). Only ever called for real_fill_count > 0
+    (an ordinary same-side add-on being considered, not a first entry or
+    a hedge) -- see its call site in build_order_intent for the episode-
+    latch this composes with."""
+    return ADD_ON_CONTINUATION_PROBABILITY.get((asset, regime), 1.0)
+
+
+# ---------------------------------------------------------------------------
 # HEDGE-COUNT REINFORCEMENT. Added 2026-09-13 (/loop iters 131-133 found and
 # validated it, iter 138 verified the LIVE version and built it): the
 # counterpart signal to REENTRY_FATIGUE above -- another market-OUTCOME
@@ -4778,163 +4241,13 @@ def hedge_count_reinforcement_multiplier(asset: str, regime: str,
     return result
 
 
-# ---------------------------------------------------------------------------
-# HEDGE TTC (time-to-close) SIZE MULTIPLIER. Added 2026-09-13: hedge sizing's
-# own version of TTC_SIZE_MULTIPLIER above, which only ever covered ordinary
-# entries. The original urgency-scaling finding (iters 60-62) was measured
-# on hedges specifically, generalized to entries (iter 82) and shipped
-# there as TTC_SIZE_MULTIPLIER -- but the regime-composition correction that
-# followed (iter 84, confirmed cross-asset at iter 115/117) was verified
-# only for entries, never re-checked against the ORIGINAL hedge data. Redone
-# here specifically for hedges before building this:
+# REMOVED 2026-09-24 (single-function hedge consolidation): HEDGE_TTC_
+# SIZE_MULTIPLIER/hedge_ttc_size_multiplier and HEDGE_TRIGGER_AFTER_BIG_
+# LOSS_MULTIPLIER/hedge_trigger_after_big_loss_multiplier (the latter's
+# table was already empty -- effect vanished post-halt, verdict
+# unchanged on re-verification). Both cut for simplicity; hedge_notional_
+# for_price handles all hedge sizing now with no TTC dimension.
 #
-# Regime-composition-controlled hedge size by TTC quartile, TWAP-era,
-# cross-asset (Welch t comparing the most-urgent vs least-urgent quartile
-# within each regime, same-side hedge trades only):
-#   CHEAP: BTC t=-18.15, ETH t=-11.25, SOL t=-11.05 -- all REVERSED (urgent
-#          hedges are SMALLER), consistent cross-asset, matches the
-#          direction already confirmed for entries in this band.
-#   HIGH:  BTC t=+7.83, ETH t=+2.10, SOL t=+6.62 -- consistently POSITIVE
-#          (urgent hedges are BIGGER), matches entries' strongest band.
-#   MID:   BTC t=-7.47, ETH t=+0.44, SOL t=+7.45 -- genuinely inconsistent
-#          across assets (different signs), unlike entries' MID cell.
-#          NOT included -- would need per-asset calibration to be safe,
-#          not attempted here.
-#   CORE:  BTC t=-2.09, ETH t=-5.94, SOL t=+2.87 -- also inconsistent
-#          across assets. NOT included, same reasoning as MID.
-#
-# Temporal stability (both halves): CHEAP survives cleanly for BTC/ETH
-# (t=-17.05/-8.88 and -7.75/-6.42); SOL's second half is borderline
-# (t=-2.35, just under the bar but same direction, n=6635). HIGH shows a
-# real STRENGTHENING-OVER-TIME pattern for all 3 assets rather than flat
-# stability -- first half is weak/sub-bar (t=1.72-2.43), second half is
-# strong (t=2.97-8.83), same direction both halves, no sign flip. Built
-# anyway (same direction throughout, growing not reversing -- a different
-# failure mode than the sign-flipping instability that killed other
-# threads this session), but this is a real caveat worth remembering if
-# HIGH's calibration is ever revisited with fresh data.
-#
-# Continuous, mean-neutral multiplier at the same 4 TTC midpoints as
-# TTC_SIZE_MULTIPLIER (270/210/150/90s remaining), same bucket-mean-ratio
-# construction. Thin early-window HIGH buckets (BTC/ETH n=18-24, SOL n=48
-# at the 270 midpoint) clamped to the next trusted bucket's value, same
-# "don't trust a thin ratio" discipline TTC_SIZE_MULTIPLIER's own docstring
-# already applies. MID/CORE deliberately absent (not just uncalibrated) --
-# hedge_ttc_size_multiplier returns 1.0 (no-op) for any (asset, regime) not
-# in this table.
-HEDGE_TTC_SIZE_MULTIPLIER = {
-    "Bitcoin": {
-        "CHEAP": {270: 1.3295, 210: 1.1142, 150: 1.0334, 90: 0.8815},
-        "HIGH": {270: 0.6268, 210: 0.6268, 150: 0.8964, 90: 1.1139},
-    },
-    "Ethereum": {
-        "CHEAP": {270: 1.0950, 210: 1.1240, 150: 1.0712, 90: 0.8705},
-        "HIGH": {270: 0.7633, 210: 0.7633, 150: 0.8937, 90: 1.0683},
-    },
-    "Solana": {
-        "CHEAP": {270: 1.3698, 210: 1.1546, 150: 0.9997, 90: 0.9000},
-        "HIGH": {270: 0.6247, 210: 0.6247, 150: 0.8840, 90: 1.1200},
-    },
-}
-
-
-def hedge_ttc_size_multiplier(asset: str, regime: str, seconds_remaining: float) -> float:
-    """Continuous, mean-neutral size multiplier on HEDGE notional as a
-    function of time remaining in the market's 5-minute window. 1.0
-    (no-op) for any (asset, regime) not in HEDGE_TTC_SIZE_MULTIPLIER --
-    MID and CORE deliberately excluded (real, cross-asset-inconsistent
-    signs found there, not just uncalibrated), same treatment as every
-    other deliberately-scoped-narrow multiplier in this file. Flat beyond
-    the measured [90, 270] range -- clamped to the nearest endpoint's
-    value, same interpolation logic as ttc_size_multiplier above (shares
-    the same 4 TTC midpoints, deliberately kept as separate tables/
-    functions since the two curves' shapes and included regimes differ)."""
-    curve = HEDGE_TTC_SIZE_MULTIPLIER.get(asset, {}).get(regime)
-    if curve is None:
-        return 1.0
-    ttc = max(90.0, min(270.0, seconds_remaining))
-    for i in range(len(_TTC_MULTIPLIER_MIDPOINTS) - 1):
-        hi_mid, lo_mid = _TTC_MULTIPLIER_MIDPOINTS[i], _TTC_MULTIPLIER_MIDPOINTS[i + 1]
-        if lo_mid <= ttc <= hi_mid:
-            hi_val, lo_val = curve[hi_mid], curve[lo_mid]
-            frac = (ttc - lo_mid) / (hi_mid - lo_mid)
-            return lo_val + frac * (hi_val - lo_val)
-    return curve[_TTC_MULTIPLIER_MIDPOINTS[0] if ttc >= 270 else _TTC_MULTIPLIER_MIDPOINTS[-1]]
-
-
-# ---------------------------------------------------------------------------
-# HEDGE TRIGGER, conditioned on a recent big loss. Added 2026-09-13: real
-# loss-aversion-style reaction -- a top-decile single-market loss raises
-# hedge propensity in the very next market for that asset, confirmed via
-# Mantel-Haenszel stratified odds ratio (controlling for the separately-
-# discovered secular hedge-rate decline over the TWAP era, which a crude
-# before/after split couldn't distinguish from a real reactive effect):
-#   Ethereum: raw pooled OR=1.859 -> MH-controlled OR=1.613
-#   Solana:   raw pooled OR=2.606 -> MH-controlled OR=1.569
-# Bitcoin null throughout (same recurring pattern as several other
-# findings this session). Confirmed ASYMMETRIC: the mirror-image "after a
-# big WIN" version mostly evaporates under the same MH control (Bitcoin
-# 0.972, Ethereum 1.208, Solana 0.925 -- Solana actually reverses from its
-# own raw pooled 1.563) -- this is genuine loss-aversion, not generic
-# reactivity to any big outcome, so deliberately NOT mirrored for wins.
-#
-# Multiplier values use the MH-controlled odds ratios directly as
-# probability multipliers (same convention as every other HEDGE_TRIGGER-
-# scaling multiplier in this file, e.g. cross_market_hedge_rate_multiplier
-# -- an approximation, not a rigorous odds-to-probability transform, but
-# consistent with how every other hedge-trigger finding here has been
-# implemented, and decide_hedge already clamps the combined probability to
-# [0, 1] regardless).
-#
-# CHECKED FOR POST-HALT FRESHNESS 2026-09-13 (/loop cycle 11) -- REMOVED,
-# effect not detectable post-halt. Simplified re-check (raw pooled
-# comparison, not the full Mantel-Haenszel stratification the original
-# used -- a reasonable simplification here since the post-halt window is
-# only ~4.9 days, far too short for the kind of secular hedge-rate drift
-# MH-stratification exists to control for in the first place):
-#   Ethereum: after-big-loss hedge rate 0.4730 (n=74) vs baseline 0.4526
-#     (n=1149), ratio=1.045, z=0.341
-#   Solana:   after-big-loss hedge rate 0.5469 (n=64) vs baseline 0.5401
-#     (n=1172), ratio=1.013, z=0.106
-# Both ratios sit within 5% of 1.0 with z well under 1 -- no detectable
-# effect, a much weaker signal than a borderline case, though n=64-74
-# flagged markets (vs the original's much larger multi-week sample) means
-# this can't fully rule out a real but smaller remaining effect the way
-# REENTRY_FATIGUE's cleaner removals could. Removed rather than kept at a
-# stale, unverifiable-either-way value, consistent with this session's
-# discipline -- revisit once meaningfully more post-halt data
-# accumulates (both the flag's own >=20-loss-sample warmup and the
-# comparison itself need more history than ~5 days can provide).
-#
-# RE-VERIFIED 2026-09-13 (/loop cycle 18) with a corrected post-halt
-# boundary: this session's own research scripts (including the cycle-11
-# check above) used HALT_END=1788870060 (2026-09-08 12:21 UTC), but a
-# direct gap-scan of the full trade mirror confirms the real halt ended
-# at 1788704494 (2026-09-06 14:21:34 UTC) -- every prior "post-halt-
-# only" filter this session excluded the first ~46 hours of genuinely
-# valid data. Re-ran this check with the corrected boundary and the
-# null HOLDS UP just as cleanly: Ethereum ratio=1.062 (n=94, z=0.540),
-# Solana ratio=1.047 (n=90, z=0.482) -- still no detectable effect, now
-# on ~25-40% more data. Retirement verdict unchanged.
-HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER: dict = {}
-
-
-def hedge_trigger_after_big_loss_multiplier(asset: str, after_big_loss: Optional[bool]) -> float:
-    """1.0 (no-op) for Bitcoin/dormant assets (not in
-    HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER -- deliberately excluded, not
-    just uncalibrated, see the module comment above), or when
-    after_big_loss is None/False (no recent-big-loss signal, the caller
-    has no rolling-loss history yet for this asset, or this market's
-    outcome wasn't itself a top-decile loss). Only meaningful for the
-    FIRST hedge decision (real_hedge_fill_count == 0) -- the underlying
-    finding was measured against whether a market gets hedged at all, the
-    same scope as every other hedge_attempt_hazard-scaling multiplier in
-    this file."""
-    if not after_big_loss:
-        return 1.0
-    return HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER.get(asset, 1.0)
-
-
 # ADDED 2026-09-24: TICK-OFFSET PLACEMENT (queue-position/tick-priority).
 #
 # See queue-position-reattempt-blocked-marketlens-limit / tick-offset-
@@ -4987,78 +4300,15 @@ def sample_tick_offset(rng: "random.Random") -> int:
     return TICK_OFFSET_DISTRIBUTION[-1][0]
 
 
-# ADDED 2026-09-24: LATE-WINDOW HEDGE URGENCY (see late-window-hedge-urgency-design
-# / late-window-hedge-urgency-bot-baseline-check in project memory for the full
-# audit + design + a same-day self-corrected impact analysis). hedge_attempt_
-# hazard above is keyed PURELY on (asset, regime, attempt_index) -- zero
-# time-remaining dependency. A proper survival analysis (Kaplan-Meier + hazard
-# function, right-censored at resolution) of real hedge timing found a genuine,
-# cross-asset-robust hump in hedge hazard 150-180s after an EARLY first entry
-# (t_in<120s) -- confirmed via stratification (the hump only exists for early
-# entrants, not late ones) AND per-asset breakdown (Bitcoin/Ethereum/Solana all
-# independently elevated). Decisively cleared of double-counting with
-# ADVERSE_MOVE_TTC_INTERACTION (Ethereum has zero calibration there yet
-# independently shows the hump) and every other hedge-chain member (none of
-# them have a time-since-entry axis at all).
-#
-# Mean-neutral multiplier per 30s bucket (seconds since THIS market's first
-# real entry), derived from the real early-entry stratum (t_in<120s, n=402,
-# post-Sep-18 real trades) discrete hazard-by-bin table, normalized by the
-# stratum's own mean hazard (25.94 per 1000):
-#   0-30s: 0.575    30-60s: 1.558    60-90s: 0.913    90-120s: 1.870
-#   120-150s: 1.420  150-180s: 2.381 (the peak)  180-210s: 1.088
-#   210-240s: 0.195  240-270s/270-300s: 0.000 (moot in practice --
-#   MIN_SECONDS_BEFORE_CLOSE=75 already vetoes any bot activity this late in
-#   the window for any early entrant, so these two buckets are unreachable
-#   regardless of their value)
-#
-# Scope: ONLY applies when the market's first entry was itself EARLY
-# (first_entry_t_in < EARLY_ENTRY_THRESHOLD_S) -- late first-entries showed NO
-# hump at all (hazard decays monotonically from the start), confirmed via
-# stratification. A hard no-op (1.0) otherwise.
-#
-# KNOWN SIMPLIFICATION, disclosed rather than silently assumed away: these
-# bucket values come from the full early-entry stratum, not a held-out
-# train/test split (unlike, e.g., the Solana WITHIN_BAND_SIZE_SLOPE
-# recalibration) -- the underlying finding survived two independent "dig
-# deeper" rounds (stratification + per-asset breakdown) before this was
-# shipped, but the exact bucket VALUES haven't been separately cross-
-# validated. EARLY_ENTRY_THRESHOLD_S=120s is the same boundary used to
-# originally isolate the hump, not independently re-optimized.
-EARLY_ENTRY_THRESHOLD_S = 120.0
-
-LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER: dict = {
-    (0, 30): 0.575,
-    (30, 60): 1.558,
-    (60, 90): 0.913,
-    (90, 120): 1.870,
-    (120, 150): 1.420,
-    (150, 180): 2.381,
-    (180, 210): 1.088,
-    (210, 240): 0.195,
-    (240, 270): 0.000,
-    (270, 300): 0.000,
-}
-
-
-def late_window_hedge_urgency_multiplier(first_entry_t_in: Optional[float],
-                                          seconds_since_first_entry: Optional[float]) -> float:
-    """1.0 (no-op) if either input is missing, if first_entry_t_in is at or
-    beyond EARLY_ENTRY_THRESHOLD_S (late first entries showed no hump at all
-    -- see this module's LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER comment above),
-    or if seconds_since_first_entry falls outside the calibrated 0-300s
-    range (flat/no-op beyond the measured range, same convention as
-    conviction_hedge_multiplier). Otherwise returns the mean-neutral bucket
-    value for the matching 30s bucket."""
-    if first_entry_t_in is None or seconds_since_first_entry is None:
-        return 1.0
-    if first_entry_t_in >= EARLY_ENTRY_THRESHOLD_S:
-        return 1.0
-    if seconds_since_first_entry < 0:
-        return 1.0
-    for (lo, hi), mult in LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER.items():
-        if lo <= seconds_since_first_entry < hi:
-            return mult
-    return 1.0
+# REMOVED 2026-09-24 (single-function hedge consolidation): EARLY_ENTRY_
+# THRESHOLD_S/LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER/late_window_hedge_
+# urgency_multiplier. This WAS a real, cross-asset-validated finding
+# (survival-analysis-confirmed hazard hump 150-180s after an early first
+# entry, shipped just hours before this consolidation, commit 377f8ac) --
+# cut deliberately for simplicity, not because it stopped being real. If
+# hedge-timing fidelity matters enough to bring back, this is the one
+# mechanism worth re-adding first; the calibration is preserved in git
+# history (commit 377f8ac) and in project memory (late-window-hedge-
+# urgency-design) if needed.
 
 

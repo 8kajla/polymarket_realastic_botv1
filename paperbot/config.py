@@ -619,31 +619,6 @@ ENABLE_TTC_SIZE_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
-# Feature flag for HEDGE_TTC_SIZE_MULTIPLIER (see its docstring in
-# behavior_config.py). Added 2026-09-13 -- hedge sizing's own version of
-# TTC_SIZE_MULTIPLIER above. Re-derived and regime-composition-checked
-# specifically against hedge data (not just inherited from the entry-side
-# correction) -- real and cross-asset-consistent in CHEAP/HIGH only; MID/
-# CORE deliberately excluded (genuinely inconsistent signs across assets
-# there). Default TRUE everywhere.
-ENABLE_HEDGE_TTC_SIZE_MULTIPLIER = os.environ.get(
-    "ENABLE_HEDGE_TTC_SIZE_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for HEDGE_LIQUIDITY_MULTIPLIER (see its docstring in
-# behavior_config.py). Added 2026-09-10, same night and same reasoning as
-# ENABLE_TTC_SIZE_MULTIPLIER directly above -- default TRUE everywhere,
-# explicit FALSE for paperbot-mini (the $100 control instance), same
-# env-var-driven, restart-durable mechanism, same rationale: don't change
-# the control's behavior while it's specifically being watched to isolate
-# what its OWN config change (SIZE_SCALE_FACTOR/MAX_HEDGE_COUNT_PER_MARKET)
-# does on its own.
-ENABLE_HEDGE_LIQUIDITY_MULTIPLIER = os.environ.get(
-    "ENABLE_HEDGE_LIQUIDITY_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
 # Feature flag for RESUMPTION_SIZE_MULTIPLIER (see its docstring in
 # behavior_config.py).
 #
@@ -673,86 +648,6 @@ ENABLE_RESUMPTION_SIZE_MULTIPLIER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
-# Feature flag for WEEKEND_HEDGE_MULTIPLIER (see its docstring in
-# behavior_config.py). Added 2026-09-10, same pattern and reasoning as
-# ENABLE_TTC_SIZE_MULTIPLIER/ENABLE_HEDGE_LIQUIDITY_MULTIPLIER/
-# ENABLE_RESUMPTION_SIZE_MULTIPLIER above -- default TRUE everywhere,
-# explicit FALSE for paperbot-mini (the $100 control instance).
-ENABLE_WEEKEND_HEDGE_MULTIPLIER = os.environ.get(
-    "ENABLE_WEEKEND_HEDGE_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for ADVERSE_MOVE_SIZE_MULTIPLIER (see its docstring in
-# behavior_config.py). Added 2026-09-10, same pattern and reasoning as
-# ENABLE_TTC_SIZE_MULTIPLIER/ENABLE_HEDGE_LIQUIDITY_MULTIPLIER/
-# ENABLE_RESUMPTION_SIZE_MULTIPLIER/ENABLE_WEEKEND_HEDGE_MULTIPLIER above --
-# default TRUE everywhere, explicit FALSE for paperbot-mini (the $100
-# control instance).
-ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER = os.environ.get(
-    "ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER (see its
-# docstring in behavior_config.py). Added 2026-09-10, same night, same
-# pattern as ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER above (which this one
-# extends to hedge_count >= 1) -- default TRUE everywhere, explicit FALSE
-# for paperbot-mini (the $100 control instance).
-ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER = os.environ.get(
-    "ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER (see its docstring
-# in behavior_config.py). Added 2026-09-12 -- confirmed via partial
-# correlation (controlling for adverse_move) that the hedge side's own
-# absolute price predicts hedge size independently of how far price has
-# moved since entry. Same pattern as ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER
-# above -- default TRUE everywhere, explicit FALSE for paperbot-mini (the
-# $100 control instance).
-ENABLE_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER = os.environ.get(
-    "ENABLE_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER (see its
-# docstring in behavior_config.py). Added 2026-09-10, same night --
-# distinct from the two SIZE flags above, this one scales WHETHER a hedge
-# triggers at all (hedge_attempt_hazard's output), not how big it is once
-# one happens. Default TRUE everywhere, explicit FALSE for paperbot-mini
-# (the $100 control instance).
-ENABLE_ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER = os.environ.get(
-    "ENABLE_ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER (see its
-# docstring in behavior_config.py). Added 2026-09-19 -- the mirror-image
-# of ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER above, covering adverse_move<0
-# (a favorable move) in CHEAP specifically, which that table always
-# treated as a flat no-op. A GP-IRL reward-surface fit (this project's
-# first fully data-driven, non-parametric-shape hedge-trigger analysis)
-# found a real, per-asset-confirmed, four-times-confound-checked bathtub:
-# hedge propensity is LOWEST near adverse_move=0 and rises at BOTH
-# extremes, not flat. Default TRUE everywhere.
-ENABLE_FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER = os.environ.get(
-    "ENABLE_FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for ADVERSE_MOVE_TTC_INTERACTION_COEF (see its docstring in
-# behavior_config.py). Added 2026-09-20 after a code audit found this file
-# had extensive time-to-close awareness for SIZING but none for the hedge
-# TRIGGER decision -- an Avellaneda-Stoikov-derived, confound-checked,
-# bootstrap-confirmed interaction (his sensitivity to a given adverse move
-# scales with time remaining until close) closes that gap. Bitcoin/Solana,
-# CHEAP/MID/CORE only. Default TRUE everywhere.
-ENABLE_ADVERSE_MOVE_TTC_INTERACTION = os.environ.get(
-    "ENABLE_ADVERSE_MOVE_TTC_INTERACTION", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
 # Feature flag for CHEAP_TTC_SELECTIVITY_REFERENCE_PRICE (see its
 # docstring in behavior_config.py). Added 2026-09-20, the entry-side half
 # of the same code-audit gap -- first-entry price selectivity had no
@@ -760,17 +655,6 @@ ENABLE_ADVERSE_MOVE_TTC_INTERACTION = os.environ.get(
 # Default TRUE everywhere.
 ENABLE_CHEAP_TTC_SELECTIVITY = os.environ.get(
     "ENABLE_CHEAP_TTC_SELECTIVITY", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER (see its docstring
-# in behavior_config.py). Added 2026-09-20, closing replication-checklist
-# item #31 ("MID hedge hump"): the original pooled GP-IRL hump was never
-# checked per-asset before being left unshipped -- redone per-asset, it
-# only replicates for Solana (Bitcoin null, Ethereum a different,
-# unshipped monotonic shape). Solana/MID only. Default TRUE everywhere.
-ENABLE_MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER = os.environ.get(
-    "ENABLE_MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER", "true"
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
@@ -833,29 +717,6 @@ ENABLE_DEEP_CHEAP_TAIL_CORRECTION = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
-# Feature flag for CROSS_MARKET_HEDGE_RATE_MULTIPLIER (see its docstring
-# in behavior_config.py). Added 2026-09-11 -- the most speculative of
-# this pass's cross-market multipliers (real r=0.25-0.35 on raw hedge
-# count, but the mechanism isn't fully pinned down; calibrated on the
-# smaller-but-real RATE version, r=0.10, to avoid double-counting general
-# activity clustering). Default TRUE everywhere, explicit FALSE for
-# paperbot-mini.
-ENABLE_CROSS_MARKET_HEDGE_RATE_MULTIPLIER = os.environ.get(
-    "ENABLE_CROSS_MARKET_HEDGE_RATE_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for CONVICTION_HEDGE_MULTIPLIER (see its docstring in
-# behavior_config.py). Added 2026-09-11 -- real, regime/weekend/liquidity
-# confound-checked finding that a market's own below-median first-entry
-# size predicts that SAME market needing more hedging later (mechanism
-# unexplained, but the predictor itself survives every confound checked).
-# Default TRUE everywhere, explicit FALSE for paperbot-mini.
-ENABLE_CONVICTION_HEDGE_MULTIPLIER = os.environ.get(
-    "ENABLE_CONVICTION_HEDGE_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
 # Feature flag for the win/loss-conditioned upgrade to
 # CROSS_MARKET_SIDE_PERSISTENCE (see its docstring in behavior_config.py).
 # Added 2026-09-11 -- shares the same underlying table/function as
@@ -871,41 +732,10 @@ ENABLE_WIN_LOSS_SIDE_PERSISTENCE = os.environ.get(
     "ENABLE_WIN_LOSS_SIDE_PERSISTENCE", "true"
 ).strip().lower() not in ("false", "0", "no")
 
-# ---------------------------------------------------------------------------
-# Feature flag for CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER (see its
-# docstring in behavior_config.py). Added 2026-09-11 -- real, cross-asset,
-# temporally-stable finding that first-entry size persists (slow EWMA
-# decay) across consecutive markets, independent of the within-market
-# WITHIN_BAND_SIZE_SLOPE/TTC/resumption multipliers it stacks with.
-# Default TRUE everywhere, explicit FALSE for paperbot-mini.
-ENABLE_CROSS_MARKET_SIZE_MOMENTUM = os.environ.get(
-    "ENABLE_CROSS_MARKET_SIZE_MOMENTUM", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for ACCURACY_SCOUT_MULTIPLIER (see its docstring in
-# behavior_config.py). Added 2026-09-11 -- real, cross-asset-pooled,
-# circularity-checked finding that recent per-asset accuracy predicts
-# scout-vs-commit rate on the next first entry. The biggest architectural
-# lift of this pass: requires bot.py's new real-time resolution-feedback
-# rolling accuracy tracker (see resolution_tick). Default TRUE
-# everywhere, explicit FALSE for paperbot-mini.
-ENABLE_ACCURACY_SCOUT_MULTIPLIER = os.environ.get(
-    "ENABLE_ACCURACY_SCOUT_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for BANKROLL_PNL_SIZE_MULTIPLIER (see its docstring in
-# behavior_config.py). Added 2026-09-12 -- real, well-powered, confound-
-# checked (survives time-detrending AND a partial-correlation check
-# against the already-shipped ADVERSE_MOVE_SIZE_MULTIPLIER) finding that
-# Ethereum/Solana first-entry size scales DOWN after accumulated profit
-# and UP after a drawdown. Also confirmed temporally stable across the
-# Aug 7 TWAP change. Default TRUE everywhere, explicit FALSE for
-# paperbot-mini (the frozen control instance).
-ENABLE_BANKROLL_PNL_SIZE_MULTIPLIER = os.environ.get(
-    "ENABLE_BANKROLL_PNL_SIZE_MULTIPLIER", "true"
-).strip().lower() not in ("false", "0", "no")
+# (ENABLE_CROSS_MARKET_SIZE_MOMENTUM, ENABLE_ACCURACY_SCOUT_MULTIPLIER,
+# and ENABLE_BANKROLL_PNL_SIZE_MULTIPLIER removed 2026-09-26 -- all three
+# gated mechanisms had permanently retired to empty/no-op calibration
+# tables in behavior_config.py; the flags had nothing left to gate.)
 
 # ---------------------------------------------------------------------------
 # Feature flag for REENTRY_FATIGUE_MULTIPLIER (see its docstring in
@@ -922,6 +752,19 @@ ENABLE_REENTRY_FATIGUE_DAMPENER = os.environ.get(
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
+# Feature flag for ADD_ON_CONTINUATION_PROBABILITY (see its docstring in
+# behavior_config.py). Added 2026-09-26 -- closes a real structural gap:
+# ordinary same-side add-ons had no continuation-probability gate at all
+# (unlike hedges' HEDGE_CONTINUATION_PROBABILITY), so the bot added
+# unconditionally past the first entry. Re-derived on true on-chain order
+# data before shipping (the original 5s-merge-based numbers didn't
+# survive independent re-verification, only the asset ordering did).
+# Default TRUE everywhere.
+ENABLE_ADDON_CONTINUATION_PROBABILITY = os.environ.get(
+    "ENABLE_ADDON_CONTINUATION_PROBABILITY", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
 # Feature flag for HEDGE_COUNT_REINFORCEMENT_MULTIPLIER (see its docstring
 # in behavior_config.py). Added 2026-09-13 (/loop iters 131-133, 138) --
 # the mirror-image signal to REENTRY_FATIGUE_DAMPENER: needing 2+ hedges
@@ -933,18 +776,6 @@ ENABLE_REENTRY_FATIGUE_DAMPENER = os.environ.get(
 # Default TRUE everywhere.
 ENABLE_HEDGE_COUNT_REINFORCEMENT = os.environ.get(
     "ENABLE_HEDGE_COUNT_REINFORCEMENT", "true"
-).strip().lower() not in ("false", "0", "no")
-
-# ---------------------------------------------------------------------------
-# Feature flag for HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER (see its
-# docstring in behavior_config.py). Added 2026-09-13 -- real loss-aversion
-# reaction: a top-decile single-market loss raises hedge propensity in the
-# very next market, confirmed via Mantel-Haenszel stratified odds ratio
-# (Ethereum/Solana only, Bitcoin null). Confirmed asymmetric -- the mirror
-# "after a big win" version mostly evaporates under the same control, so
-# deliberately not built as a symmetric reaction. Default TRUE everywhere.
-ENABLE_HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER = os.environ.get(
-    "ENABLE_HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER", "true"
 ).strip().lower() not in ("false", "0", "no")
 
 # ---------------------------------------------------------------------------
@@ -1053,6 +884,27 @@ COINBASE_POLL_INTERVAL_SECONDS = float(os.environ.get("COINBASE_POLL_INTERVAL_SE
 # population. Also used by MarketActivityState.update_decisive_crossings.
 DECISIVENESS_THRESHOLD = float(os.environ.get("DECISIVENESS_THRESHOLD", "0.70"))
 
+# ---------------------------------------------------------------------------
+# STREAK_RESOLUTION_DECISIVE_THRESHOLD: the book price a retiring market's
+# winning side must reach for PaperBot._retire_market to infer (and record
+# into the streak-fade tracker) which side actually won -- see
+# bc.streak_fade_probability's docstring. Deliberately reused here as a
+# SEPARATE, stricter constant from DECISIVENESS_THRESHOLD above (0.70,
+# which marks the CORE/HIGH regime boundary, a much lower bar): a WRONG
+# streak entry corrupts every fade decision downstream of it until the
+# streak naturally breaks, so this needs to be safely decisive, not just
+# "probably right." Close to (but slightly below) market_discovery.
+# infer_resolution_from_price's own 0.99 threshold for the same purpose
+# against Gamma's outcomePrices -- set a little lower here since a live
+# orderbook's best_bid at the moment a market retires from discovery isn't
+# quite the same quantity as Gamma's own settlement price and can lag it
+# slightly. A reasoned choice, not a directly-measured calibration (no
+# real data exists on "book-price-at-retirement vs. actual-outcome"
+# accuracy specifically) -- deliberately conservative in favor of fewer,
+# more reliable streak entries over broader coverage.
+STREAK_RESOLUTION_DECISIVE_THRESHOLD = float(
+    os.environ.get("STREAK_RESOLUTION_DECISIVE_THRESHOLD", "0.97"))
+
 # Feature flag for DECISIVENESS_ONSET_MULTIPLIER (see its docstring in
 # behavior_config.py). Added 2026-09-13 -- real reaction-speed effect,
 # confirmed cross-asset (Bitcoin/Ethereum well-powered, Solana thin but
@@ -1131,18 +983,6 @@ ENABLE_SHARE_BASED_SIZING = os.environ.get(
     "ENABLE_SHARE_BASED_SIZING", "false"
 ).strip().lower() not in ("false", "0", "no")
 
-# ---------------------------------------------------------------------------
-# Feature flag for PRICE-BASED HEDGE SIZING (see hedge_notional_for_price in
-# behavior_config.py). Added 2026-09-22 (share-based-sizing Phase 3): replaces
-# the dominant-cost-ratio hedge chain with a price-only model that fits the
-# real trader's hedge sizes far better out-of-sample. Default FALSE
-# everywhere; enabled on paperbot-100 first (controlled rollout, same
-# discipline as ENABLE_SHARE_BASED_SIZING) because it changes hedge dollars
-# materially (CORE/HIGH smaller, CHEAP larger than the legacy chain).
-ENABLE_PRICE_BASED_HEDGE_SIZING = os.environ.get(
-    "ENABLE_PRICE_BASED_HEDGE_SIZING", "false"
-).strip().lower() not in ("false", "0", "no")
-
 # ADDED 2026-09-22: Bitcoin entry base-size level correction (see
 # ENTRY_SIZE_LEVEL_CORRECTION in behavior_config.py). Default ON.
 ENABLE_ENTRY_SIZE_LEVEL_CORRECTION = os.environ.get(
@@ -1172,6 +1012,17 @@ ENABLE_CHEAP_DEEP_TOUCH_EDGE = os.environ.get(
 # Default OFF; enabled on paperbot only for the initial paper A/B.
 ENABLE_PARTICIPATION_ASSET_SCALE = os.environ.get(
     "ENABLE_PARTICIPATION_ASSET_SCALE", "false"
+).strip().lower() not in ("false", "0", "no")
+
+# ADDED 2026-09-28: CHEAP deep-tail participation boost (see
+# cheap_deep_tail_participation_multiplier in behavior_config.py) -- a
+# real, well-powered but first-pass (no split-half validation possible
+# yet) finding that all bots underweight the genuine CHEAP deep tail
+# relative to the trader, at real cost to CHEAP ROI. Same controlled-
+# rollout caution as ENABLE_PARTICIPATION_ASSET_SCALE/
+# ENABLE_CHEAP_DEEP_TOUCH_EDGE above. Default OFF.
+ENABLE_CHEAP_DEEP_TAIL_PARTICIPATION_BOOST = os.environ.get(
+    "ENABLE_CHEAP_DEEP_TAIL_PARTICIPATION_BOOST", "false"
 ).strip().lower() not in ("false", "0", "no")
 
 # ADDED 2026-09-22: MID boundary-adjacency structural edge (see
@@ -1216,6 +1067,16 @@ ENABLE_REGIME_ENGAGEMENT_MULTIPLIER = os.environ.get(
     "ENABLE_REGIME_ENGAGEMENT_MULTIPLIER", "true"
 ).strip().lower() not in ("false", "0", "no")
 
+# ADDED 2026-09-26: closes the hedge-chain episode-latch gap (see
+# strategy.decide_hedge's own docstring and project memory: hedge-chain-
+# missing-episode-latch-architectural-gap). Default ON since this is a
+# correctness fix (removes a confirmed, quantified over-firing bug), but
+# still flag-gated as a safety valve, same discipline as every other
+# correctness-affecting table in this codebase.
+ENABLE_HEDGE_EPISODE_LATCH = os.environ.get(
+    "ENABLE_HEDGE_EPISODE_LATCH", "true"
+).strip().lower() not in ("false", "0", "no")
+
 # Feature flag for REGIME_DRIFT_CORRECTION (behavior_config.regime_drift_
 # correction) -- a closed-loop overlay ON TOP of REGIME_ENGAGEMENT_MULTIPLIER,
 # see that function's docstring for the full derivation (validated held-out,
@@ -1227,6 +1088,22 @@ ENABLE_REGIME_ENGAGEMENT_MULTIPLIER = os.environ.get(
 # in this codebase (paperbot-100-first, not all bots at once).
 ENABLE_REGIME_DRIFT_CORRECTION = os.environ.get(
     "ENABLE_REGIME_DRIFT_CORRECTION", "false"
+).strip().lower() not in ("false", "0", "no")
+
+# CLOSE-URGENCY boost (2026-09-25 research-loop capstone finding): boosts
+# ordinary first-entry eligibility as a market's window approaches close,
+# mirroring the same effect already unconditionally live in
+# bc.hedge_probability's own hedge_urgency_multiplier. See
+# bc.entry_urgency_multiplier's docstring for the full derivation --
+# split-half-confirmed real hazard climb (15.7%->27.0% as remaining time
+# shrinks from 165s to 75s), regime-agnostic. Default ON: unlike
+# REGIME_DRIFT_CORRECTION above (a standalone-simulation-only result at
+# ship time), this is derived directly from real trade-history hazard
+# rates and confirmed stable across an independent split-half check --
+# the same confidence bar hedge_probability's own (flag-less) mechanisms
+# were held to.
+ENABLE_CLOSE_URGENCY_BOOST = os.environ.get(
+    "ENABLE_CLOSE_URGENCY_BOOST", "true"
 ).strip().lower() not in ("false", "0", "no")
 
 # Feature flag for MID_CONTRARIAN_BIAS_PROBABILITY (see its docstring in
@@ -1260,26 +1137,55 @@ ENABLE_CROSS_ASSET_CARRYOVER = os.environ.get(
     "ENABLE_CROSS_ASSET_CARRYOVER", "true"
 ).strip().lower() not in ("false", "0", "no")
 
-# Feature flag for REGIME_HEDGE_POST_SHIFT_MULTIPLIER (see its
-# docstring in behavior_config.py). Added 2026-09-19 as
-# ENABLE_CHEAP_HEDGE_POST_SHIFT_DAMPENER (CHEAP only), renamed same day
-# when extended to CORE/HIGH/MID (every regime -- MID was initially
-# excluded on the mistaken belief it needed a different fix; retracted
-# same day once measured on the correct population) -- the real
-# trader's hedge-trigger rate crashed to a fraction of its old level in
-# most (regime, asset) cells at a sharp, discrete boundary (~2026-09-18
-# 03:00 UTC, held 33+ hours and tightening on every re-check), while
-# HEDGE_TRIGGER_PROBABILITY is still calibrated on the old, pre-shift
-# regime -- confirmed live to be directly costing paper P&L (hedges
-# were 76% of a CHEAP-band loss in one checked window, driven by the
-# bot dual-siding ~6x more than the trader currently does). HONEST
-# CAVEAT: calibrated on only ~33h of post-shift data -- default TRUE
-# since the shift is well past any reasonable noise explanation in
-# every CALIBRATED cell, but set false to revert to the un-dampened
-# historical rate if this turns out to reverse.
-ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER = os.environ.get(
-    "ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER", "true"
+# ---------------------------------------------------------------------------
+# Feature flag for STREAK_FADE (see bc.streak_fade_probability's docstring
+# in behavior_config.py). Added 2026-09-25: after 2+ consecutive
+# same-direction RESOLVED outcomes for an asset (independent of whether he
+# traded any of them), his first-entry side choice fades the streak
+# direction 57-73% of the time vs a 50% baseline -- confound-checked six
+# ways (price-level, regime-bucket, own win/loss interaction, cross-asset
+# consistency, two independent out-of-sample replications, and the
+# streak-detection logic itself unit-tested). Priority override ahead of
+# decide_side, same architectural slot as ENABLE_MID_CONTRARIAN_BIAS/
+# ENABLE_CROSS_ASSET_CARRYOVER above, checked after both of those (they
+# keep first refusal on their own narrower CHEAP/MID-scoped cases).
+# HONEST CAVEAT, same category as those two: verified this is NOT
+# primarily a rational response to a real market tendency -- the real
+# market's own base-rate reversal after a streak is only ~45-55%, while
+# his fade rate is 57-73% and rises with length. Built anyway to replicate
+# his real observed behavior, not "correct" it. Default TRUE; set false to
+# fall back to pre-2026-09-25 first-entry side selection (mid-contrarian /
+# cross-asset-carryover / cross-market persistence only, no streak
+# awareness).
+ENABLE_STREAK_FADE = os.environ.get(
+    "ENABLE_STREAK_FADE", "true"
 ).strip().lower() not in ("false", "0", "no")
+
+# ---------------------------------------------------------------------------
+# Feature flag for HOUR_SIZE_BOOST_MULTIPLIER (see bc.hour_size_multiplier's
+# docstring in behavior_config.py). Added 2026-09-25: his median first-entry
+# size runs ~19-26% higher during the 06:00-07:00 UTC hour specifically,
+# confirmed on two independent samples. Boost-only (1.0 no-op every other
+# hour), scoped to first entries only -- matches what was actually
+# measured, same discipline as ENABLE_CHEAP_DEEP_TOUCH_EDGE/
+# ENABLE_MID_BOUNDARY_EDGE. Deliberately modest, tracking his own observed
+# size reaction rather than the much larger (~4.4x) per-trade edge measured
+# in the same hour -- see hour_size_multiplier's own docstring for why
+# chasing the edge itself would be "optimizing," not "replicating." Default
+# TRUE; set false to fall back to pre-2026-09-25 sizing (no hour-of-day
+# awareness).
+ENABLE_HOUR_SIZE_BOOST = os.environ.get(
+    "ENABLE_HOUR_SIZE_BOOST", "true"
+).strip().lower() not in ("false", "0", "no")
+
+# NOTE 2026-09-24: ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER was removed in
+# the single-function hedge consolidation -- REGIME_HEDGE_POST_SHIFT_
+# MULTIPLIER is now unconditionally applied inside bc.hedge_probability
+# (see its docstring), not a togglable flag. It's real, current-as-of-
+# today trader behavior (the 2026-09-18 hedge-rate collapse), not a
+# speculative mechanism that needs a quick-revert lever -- if it ever
+# needs reverting, set REGIME_HEDGE_POST_SHIFT_MULTIPLIER's own cells
+# back to 1.0 in behavior_config.py directly.
 
 # ---------------------------------------------------------------------------
 # Feature flag for TICK_OFFSET_DISTRIBUTION (see its docstring in
@@ -1302,21 +1208,3 @@ ENABLE_TICK_OFFSET_PLACEMENT = os.environ.get(
     "ENABLE_TICK_OFFSET_PLACEMENT", "false"
 ).strip().lower() not in ("false", "0", "no")
 
-# ---------------------------------------------------------------------------
-# Feature flag for LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER (see its docstring in
-# behavior_config.py). Added 2026-09-24: hedge_attempt_hazard has zero
-# time-remaining dependency, but a real survival analysis found a genuine,
-# cross-asset-robust hedge-hazard hump 150-180s after an early (t_in<120s)
-# first entry -- decisively cleared of double-counting with every other
-# hedge-chain member (see late-window-hedge-urgency-design in project
-# memory). A same-day baseline check (late-window-hedge-urgency-bot-
-# baseline-check) found the bot's hazard shape currently runs BACKWARDS
-# relative to this (strong early, weak late) -- applying this multiplier's
-# own mean-neutral bucket values to the bot's own hazard corrects that
-# direction without overshooting (verified: 2.38x on the bot's own 150-180s
-# hazard lands well under its own early peak, not a runaway). Default FALSE
-# everywhere: a genuine new hedge-trigger mechanism, controlled rollout
-# first, same discipline as every other addition to decide_hedge's chain.
-ENABLE_LATE_WINDOW_HEDGE_URGENCY = os.environ.get(
-    "ENABLE_LATE_WINDOW_HEDGE_URGENCY", "false"
-).strip().lower() not in ("false", "0", "no")

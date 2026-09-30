@@ -20,7 +20,6 @@ import argparse
 import asyncio
 import dataclasses
 import logging
-import math
 import random
 import signal
 import sys
@@ -59,32 +58,11 @@ logger = logging.getLogger("paperbot.bot")
 # avoidable). Sized with headroom above the current worst case.
 SESSION_POOL_SIZE = 30
 
-# ADDED 2026-09-11: per-asset EWMA decay for ewma_size_residual_by_asset
-# (see its docstring in PaperBot.__init__), calibrated to roughly match
-# the real, measured autocorrelation decay of size residuals across
-# consecutive markets (barely weakens lag1->lag10: r=0.1445->0.1163, a
-# ratio of ~0.805 over 9 lags -- see cross-market-sizing-momentum-gap in
-# project memory). Solving (1-alpha)^9 ~= 0.805 gives alpha ~= 0.024;
-# rounded to a clean, still-slow value. Deliberately NOT close to 1.0
-# (which would make this behave like a simple last-market lookup, the
-# lag-1-only model the real data explicitly does NOT support).
-SIZE_MOMENTUM_EWMA_ALPHA = 0.03
-
-# ADDED 2026-09-11: how many of the most recent resolved markets'
-# dominant-side correctness feed rolling_accuracy_by_asset (see its
-# docstring in PaperBot.__init__) -- matches
-# ACCURACY_SCOUT_MULTIPLIER's own calibration window (behavior_config.py).
-ACCURACY_ROLLING_WINDOW = 10
-
-# ADDED 2026-09-13: how many of the most recent LOSING markets' magnitudes
-# feed recent_losses_by_asset (see its docstring in PaperBot.__init__),
-# used to compute a rolling "was this a top-decile loss" threshold live.
-# The real finding (HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER) was measured
-# against a global p90 over thousands of real losses -- a live bot can't
-# wait that long, so this uses a more generous window than
-# ACCURACY_ROLLING_WINDOW (which only needs a simple win/loss fraction)
-# to keep the rolling 90th-percentile estimate reasonably stable.
-LOSS_ROLLING_WINDOW = 50
+# (SIZE_MOMENTUM_EWMA_ALPHA, ACCURACY_ROLLING_WINDOW, and
+# LOSS_ROLLING_WINDOW removed 2026-09-26 -- all three fed trackers for
+# mechanisms that had already permanently retired to empty/no-op tables
+# in behavior_config.py: CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER,
+# ACCURACY_SCOUT_MULTIPLIER, HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER.)
 
 
 def _make_session() -> requests.Session:
@@ -100,11 +78,25 @@ def _make_session() -> requests.Session:
 class PaperBot:
     def __init__(self, assets: list[str] | None = None,
                  queue_safety_factor: float = config.QUEUE_SAFETY_FACTOR,
-                 seed: int | None = None):
+                 seed: int | None = None,
+                 build_order_intent_fn=None):
         # get_trading_mode() raises if anything but paper mode is requested;
         # calling it here means a misconfigured LIVE attempt fails at
         # construction time, before any market state is even touched.
         config.get_trading_mode()
+
+        # ADDED 2026-09-24: extension point for a subclass/caller to swap
+        # in a whole different decision engine -- e.g.
+        # consolidated_engine.build_order_intent, the "one function per
+        # decision type" rewrite -- without forking _evaluate_one_market
+        # itself. None (the default) means "use whatever build_order_intent
+        # currently resolves to at call time" (looked up fresh in
+        # _evaluate_one_market, not cached here) -- deliberately NOT
+        # defaulted to the build_order_intent name directly, since several
+        # existing tests monkeypatch that module-level name after a bot is
+        # already constructed and expect _evaluate_one_market to pick up
+        # the patched version.
+        self._build_order_intent_fn = build_order_intent_fn
 
         self.assets = assets or config.ALL_ASSETS
         self.session = _make_session()
@@ -163,7 +155,6 @@ class PaperBot:
         self.resting_order_ids: dict[str, set[int]] = {}       # condition_id -> {order_id, ...}
         self.halted_conditions: set[str] = set()
         self.pending_resolution: dict[str, Market] = {}
-        self.last_price_by_token: dict[str, float] = {}
         # ADDED 2026-09-11: per-asset tracker for CROSS_MARKET_SIDE_PERSISTENCE
         # (see its docstring in behavior_config.py) -- the side chosen on
         # the MOST RECENT market's first entry, per asset, so the NEXT
@@ -192,6 +183,32 @@ class PaperBot:
         # In-memory only, resets on restart, same discipline as every
         # other per-run tracker in this file.
         self.last_first_entry_by_asset: dict[str, dict] = {}
+        # ADDED 2026-09-25: per-asset rolling history of recent RESOLVED
+        # window outcomes ("Up"/"Down"), feeding decide_side's/
+        # decide_entry_side's streak-fade override -- see
+        # bc.streak_fade_probability's docstring in behavior_config.py.
+        # {asset: deque[(window_start, "Up"/"Down")]}, maxlen=10 (more
+        # than enough for the max relevant streak length this table
+        # covers, "5+"). Populated in _retire_market from each retiring
+        # market's own last-known DECISIVE book price -- deliberately NOT
+        # waiting on resolution_tick's slower, Gamma-confirmed outcome
+        # (which the RESOLUTION_MAX_AGE_SECONDS/backoff machinery above
+        # documents can lag 30+ minutes) -- because the real effect is
+        # strongest in the first 60s of the NEXT window, well before a
+        # typical resolution confirmation would arrive; a delayed signal
+        # would systematically miss exactly the decisions where it
+        # matters most. Same "trust a decisive price immediately"
+        # principle already used by market_discovery.
+        # infer_resolution_from_price for the identical reason. A window
+        # whose price ISN'T decisive at retirement time (rare) is simply
+        # never appended -- this correctly reads as a gap (breaks any
+        # streak) rather than a guess, same as a genuinely missing/
+        # unresolved window would. In-memory only, resets on restart,
+        # same discipline as every other per-asset tracker here (a
+        # restart naturally starts the streak state cold, which is the
+        # conservative/safe direction -- no false streak carried across a
+        # restart it can't actually verify).
+        self.asset_recent_resolutions: dict[str, deque] = {}
         # ADDED 2026-09-23: per-asset cumulative counts of ordinary
         # (non-hedge) entries that have PASSED the regime-engagement gate,
         # feeding bc.regime_drift_correction -- see build_order_intent's
@@ -202,18 +219,16 @@ class PaperBot:
         # documented total==0 -> no-op cold-start handling).
         self.regime_engagement_state: dict[str, dict] = {}
         # ADDED 2026-09-11, alongside this session's 6-finding
-        # implementation pass -- four more per-asset cross-market
-        # trackers, same in-memory-only/resets-on-restart discipline as
+        # implementation pass -- per-asset cross-market trackers, same
+        # in-memory-only/resets-on-restart discipline as
         # last_first_entry_side_by_asset above.
         #
-        # last_hedge_rate_by_asset: the MOST RECENT market's hedge_count/
-        # entry_count, per asset -- feeds decide_hedge's
-        # CROSS_MARKET_HEDGE_RATE_MULTIPLIER. Set in _retire_market (once
-        # a market's entry count is final), not resolution_tick (hedge
-        # rate doesn't depend on the eventual win/loss outcome, so there's
-        # no need to wait for resolution the way win/loss persistence and
-        # accuracy below do).
-        self.last_hedge_rate_by_asset: dict[str, float] = {}
+        # (last_hedge_rate_by_asset removed 2026-09-26 -- fed only
+        # prev_hedge_rate, which strategy.py's build_order_intent stopped
+        # threading into decide_hedge on 2026-09-24, when
+        # CROSS_MARKET_HEDGE_RATE_MULTIPLIER was cut in the single-
+        # function hedge consolidation.)
+        #
         # last_first_entry_won_by_asset: whether the MOST RECENT market's
         # first-entry side actually won, per asset -- feeds decide_side's
         # win/loss-conditioned CROSS_MARKET_SIDE_PERSISTENCE upgrade.
@@ -222,45 +237,15 @@ class PaperBot:
         # resolution_tick via _retired_activity_snapshot below, not at
         # retire time.
         self.last_first_entry_won_by_asset: dict[str, bool] = {}
-        # ewma_size_residual_by_asset: a slow-decaying (see
-        # _SIZE_MOMENTUM_EWMA_ALPHA below) exponentially-weighted running
-        # average of log(first_entry_notional / regime_median), per asset
-        # -- feeds decide_size's CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER.
-        # Updated in _evaluate_one_market right after an order actually
-        # places (using the REALIZED first-entry notional, same "update
-        # from what actually happened" pattern as
-        # last_first_entry_side_by_asset), never read-then-immediately-
-        # written in the same step (the read that feeds THIS market's own
-        # sizing always reflects only markets before it).
-        self.ewma_size_residual_by_asset: dict[str, float] = {}
-        # rolling_accuracy_by_asset: a per-asset deque of the last
-        # ACCURACY_ROLLING_WINDOW resolved markets' correctness (True =
-        # activity.dominant_side() matched the real winning_side) -- feeds
-        # decide_size's scout-probability ACCURACY_SCOUT_MULTIPLIER. The
-        # first-ever real-time resolution-feedback loop in this codebase;
-        # resolution_tick previously only used winning_side for
-        # settle_order()'s P&L math, never fed it back into strategy
-        # state. Populated inside resolution_tick via
-        # _retired_activity_snapshot below.
-        self.rolling_accuracy_by_asset: dict[str, deque] = {}
-        # recent_losses_by_asset: a per-asset deque of the last
-        # LOSS_ROLLING_WINDOW LOSING markets' loss magnitudes (this
-        # market's own total realized pnl, when negative) -- feeds
-        # after_big_loss_by_asset below. A live analogue of the offline
-        # research's global p90 threshold: can't wait for thousands of
-        # real losses, so this estimates a rolling 90th percentile from
-        # whatever loss history this bot instance has accumulated so far.
-        # Populated inside resolution_tick, same place/pattern as
-        # rolling_accuracy_by_asset above.
-        self.recent_losses_by_asset: dict[str, deque] = {}
-        # after_big_loss_by_asset: whether the MOST RECENT resolved
-        # market for this asset was itself a top-decile loss (by this
-        # bot's own recent_losses_by_asset history) -- feeds decide_hedge's
-        # HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER. Defaults to False (not
-        # just missing) until recent_losses_by_asset has enough samples to
-        # estimate a percentile from, same "no false trigger on thin data"
-        # caution as everywhere else rolling state gates a live decision.
-        self.after_big_loss_by_asset: dict[str, bool] = {}
+        # (ewma_size_residual_by_asset, rolling_accuracy_by_asset,
+        # recent_losses_by_asset, and after_big_loss_by_asset all removed
+        # 2026-09-26 -- they fed size_momentum_residual/rolling_accuracy/
+        # after_big_loss, all of which the mechanisms they were named for
+        # (CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER, ACCURACY_SCOUT_
+        # MULTIPLIER, HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER) had already
+        # permanently retired to empty/no-op, in bankroll_pnl_size_
+        # multiplier's case since 2026-09-23/24. See behavior_config.py's
+        # git history for any of these if reviving one is ever warranted.)
         # _retired_activity_snapshot: bridges _retire_market (where
         # MarketActivityState is popped, since strategy_tick will never
         # evaluate that market again) to resolution_tick (where the real
@@ -452,6 +437,26 @@ class PaperBot:
         logger.info("RETIRE market=%s asset=%s condition=%s", market.slug, market.asset,
                     market.condition_id)
         self.pending_resolution[market.condition_id] = market
+        # STREAK-FADE tracking (2026-09-25): capture this market's own
+        # last-known DECISIVE book price BEFORE it gets popped just below
+        # -- see asset_recent_resolutions's own docstring in __init__ for
+        # why this uses the immediate book price rather than waiting for
+        # resolution_tick's slower Gamma-confirmed outcome. Checks the Up
+        # side's price first, then Down's -- Up + Down ~= 1 always, so at
+        # most one of the two can be decisive in any real market.
+        up_book = self.book_states.get(market.token_id_up)
+        down_book = self.book_states.get(market.token_id_down)
+        inferred_outcome = None
+        if up_book is not None and up_book.best_bid is not None \
+                and up_book.best_bid >= config.STREAK_RESOLUTION_DECISIVE_THRESHOLD:
+            inferred_outcome = "Up"
+        elif down_book is not None and down_book.best_bid is not None \
+                and down_book.best_bid >= config.STREAK_RESOLUTION_DECISIVE_THRESHOLD:
+            inferred_outcome = "Down"
+        if inferred_outcome is not None:
+            window_start = market.end_time - 300.0
+            history = self.asset_recent_resolutions.setdefault(market.asset, deque(maxlen=10))
+            history.append((window_start, inferred_outcome))
         self.book_states.pop(market.token_id_up, None)
         self.book_states.pop(market.token_id_down, None)
         self.token_id_to_asset.pop(market.token_id_up, None)
@@ -477,46 +482,56 @@ class PaperBot:
         # the ratio guard immediately below, which was already
         # real_fill_count-gated.
         if activity is not None and activity.real_fill_count > 0:
-            # ADDED 2026-09-11: snapshot the two things this market's
-            # eventual resolution needs to feed forward, BEFORE popping
-            # activity below -- see last_hedge_rate_by_asset/
-            # last_first_entry_won_by_asset/rolling_accuracy_by_asset's
-            # docstrings in __init__. Only for markets that actually had a
-            # real entry -- an untraded market has nothing worth carrying
-            # forward, same gating last_first_entry_side_by_asset already
-            # uses (is_first_entry in _evaluate_one_market).
+            # ADDED 2026-09-11: snapshot what this market's eventual
+            # resolution needs to feed forward, BEFORE popping activity
+            # below -- see last_first_entry_won_by_asset's docstring in
+            # __init__. Only for markets that actually had a real entry --
+            # an untraded market has nothing worth carrying forward, same
+            # gating last_first_entry_side_by_asset already uses
+            # (is_first_entry in _evaluate_one_market).
             #
-            # CHANGED 2026-09-12 (bug audit #5): hedge_count/entry_count ->
-            # real_hedge_fill_count/real_fill_count. The original ratio used
-            # both PLACEMENT-based counters (each independently contaminated
-            # by unfilled orders), so it systematically understated the true
-            # hedge rate CROSS_MARKET_HEDGE_RATE_MULTIPLIER was calibrated
-            # against on the trader's real, fill-only data. Guarded against
-            # real_fill_count==0 (a market with placements but zero real
-            # fills yet at retire time -- rare but possible) to avoid a
-            # ZeroDivisionError; falls back to skipping the update that
-            # market, same as if it had never been snapshotted.
-            if activity.real_fill_count > 0:
-                self.last_hedge_rate_by_asset[market.asset] = (
-                    activity.real_hedge_fill_count / activity.real_fill_count
-                )
+            # (the last_hedge_rate_by_asset update that used to live here
+            # was removed 2026-09-26 -- CROSS_MARKET_HEDGE_RATE_MULTIPLIER
+            # was already cut in the 2026-09-24 hedge consolidation.)
             self._retired_activity_snapshot[market.condition_id] = {
                 "asset": market.asset,
                 "first_entry_side": activity.first_entry_side,
-                "dominant_side": activity.dominant_side(),
             }
         self.activity.pop(market.condition_id, None)
-        self.last_price_by_token.pop(market.token_id_up, None)
         self.halted_conditions.discard(market.condition_id)
 
-    # -- strategy ------------------------------------------------------
+    def _asset_streak(self, asset: str, current_window_start: float) -> tuple[str | None, int]:
+        """Returns (streak_side, streak_length) of the asset's own
+        consecutive-same-outcome run immediately preceding
+        current_window_start, or (None, 0) if the immediately-preceding
+        window's outcome isn't known (never recorded, or broken by a gap
+        -- see asset_recent_resolutions's own docstring in __init__).
 
-    def _recent_price_delta(self, token_id: str, current_price: float) -> float | None:
-        prev = self.last_price_by_token.get(token_id)
-        self.last_price_by_token[token_id] = current_price
-        if prev is None:
-            return None
-        return current_price - prev
+        Structurally identical to the research-verified streak_before
+        logic this table's own calibration was derived from (unit-tested
+        against 5 hand-built cases before this was ever built -- see
+        market-outcome-streak-fading-found.md in project memory) --
+        walks backward requiring EXACT 300s adjacency between consecutive
+        entries, so a missing/indecisive window correctly breaks the
+        streak rather than silently bridging across it."""
+        history = self.asset_recent_resolutions.get(asset)
+        if not history:
+            return None, 0
+        entries = list(history)  # oldest to newest, deque preserves insertion order
+        idx_map = {w: i for i, (w, _r) in enumerate(entries)}
+        prev_w = current_window_start - 300.0
+        if prev_w not in idx_map:
+            return None, 0
+        i = idx_map[prev_w]
+        streak_side = entries[i][1]
+        length = 1
+        j = i - 1
+        while j >= 0 and entries[j][0] == entries[j + 1][0] - 300.0 and entries[j][1] == streak_side:
+            length += 1
+            j -= 1
+        return streak_side, length
+
+    # -- strategy ------------------------------------------------------
 
     def _hours_since_resumption(self, now: float) -> float | None:
         """Current value of the resumption-caution clock, as of the START
@@ -527,42 +542,12 @@ class PaperBot:
             return None
         return (now - self._resumption_started_at) / 3600.0
 
-    def _rolling_accuracy(self, asset: str) -> Optional[float]:
-        """Fraction correct over rolling_accuracy_by_asset's window for
-        this asset, or None if no resolved markets have been observed for
-        it yet this run (matches every other Optional cross-market signal
-        here -- None means no-op, not 0.0/"always wrong")."""
-        window = self.rolling_accuracy_by_asset.get(asset)
-        if not window:
-            return None
-        return sum(1 for correct in window if correct) / len(window)
-
-    _MIN_LOSS_SAMPLES_FOR_PERCENTILE = 20
-
-    def _is_top_decile_loss(self, asset: str, loss_amount: float) -> bool:
-        """True if `loss_amount` (already known positive -- the caller
-        only calls this for an actual loss) is at or above the rolling
-        90th percentile of recent_losses_by_asset's window for this
-        asset, AFTER appending it. Requires at least
-        _MIN_LOSS_SAMPLES_FOR_PERCENTILE samples before ever returning
-        True -- same "don't trust a thin estimate" caution as every other
-        rolling-window signal in this file (e.g. TTC_SIZE_MULTIPLIER's
-        own thin-bucket clamping), so a bot instance can't flag its very
-        first few losses as "top-decile" against no real history. Pure
-        Python (no numpy on the server) -- linear interpolation between
-        the two nearest ranks, the same percentile convention used by the
-        offline research this was calibrated from."""
-        window = self.recent_losses_by_asset.setdefault(asset, deque(maxlen=LOSS_ROLLING_WINDOW))
-        window.append(loss_amount)
-        if len(window) < self._MIN_LOSS_SAMPLES_FOR_PERCENTILE:
-            return False
-        sorted_losses = sorted(window)
-        n = len(sorted_losses)
-        rank = 0.90 * (n - 1)
-        lo, hi = int(rank), min(int(rank) + 1, n - 1)
-        frac = rank - lo
-        p90 = sorted_losses[lo] + frac * (sorted_losses[hi] - sorted_losses[lo])
-        return loss_amount >= p90
+    # (_rolling_accuracy and _is_top_decile_loss removed 2026-09-26 --
+    # they fed rolling_accuracy/after_big_loss, both of which the
+    # mechanisms they were named for (ACCURACY_SCOUT_MULTIPLIER,
+    # HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER) had already permanently
+    # retired to empty/no-op. See behavior_config.py's git history if
+    # reviving either is ever warranted.)
 
     def _record_global_trade(self, now: float) -> None:
         """Called AFTER a trade actually places this tick (never before --
@@ -690,7 +675,6 @@ class PaperBot:
             return
 
         activity = self.activity[market.condition_id]
-        delta = self._recent_price_delta(market.token_id_up, up_book.best_bid)
         # DECISIVENESS-ONSET tracking (2026-09-13): records the first tick
         # each side's price reaches config.DECISIVENESS_THRESHOLD, feeding
         # build_order_intent's decisiveness_fraction computation. Must run
@@ -814,21 +798,25 @@ class PaperBot:
             self._forced_first_entry_side(market, up_book, down_book, now) if is_first_entry else None
         )
 
-        intent = build_order_intent(
+        # STREAK-FADE tracking (2026-09-25): see asset_recent_resolutions's
+        # docstring in __init__ and _asset_streak's own docstring above.
+        # Computed here (not inside build_order_intent) since it needs
+        # this bot instance's own cross-market state, same reasoning as
+        # every other per-asset tracker threaded through this call.
+        streak_side, streak_length = self._asset_streak(market.asset, market.end_time - 300.0)
+
+        build_intent_fn = self._build_order_intent_fn or build_order_intent
+        intent = build_intent_fn(
             market, up_book, down_book, activity, self.rng,
-            recent_price_delta=delta, now=now,
+            now=now,
             hours_since_resumption=hours_since_resumption,
             previous_market_first_side=self.last_first_entry_side_by_asset.get(market.asset),
             previous_market_won=self.last_first_entry_won_by_asset.get(market.asset),
-            prev_hedge_rate=self.last_hedge_rate_by_asset.get(market.asset),
             forced_first_entry_side=forced_first_entry_side,
-            size_momentum_residual=self.ewma_size_residual_by_asset.get(market.asset),
-            rolling_accuracy=self._rolling_accuracy(market.asset),
             max_notional_usd=max_notional_usd,
-            bankroll_pnl_residual=self.ledger.realized_pnl_by_asset().get(market.asset),
-            after_big_loss=self.after_big_loss_by_asset.get(market.asset),
             last_first_entry_by_asset=self.last_first_entry_by_asset,
-            regime_engagement_state=self.regime_engagement_state)
+            regime_engagement_state=self.regime_engagement_state,
+            streak_side=streak_side, streak_length=streak_length)
         if intent is None:
             return
 
@@ -905,26 +893,10 @@ class PaperBot:
             # CROSS_ASSET_CARRYOVER_PROBABILITY's docstring in
             # behavior_config.py.
             self.last_first_entry_by_asset[market.asset] = {"side": intent.side, "ts": now}
-            # ADDED 2026-09-11: updates ewma_size_residual_by_asset from
-            # the REALIZED first-entry notional (matches the pattern
-            # directly above) -- feeds the NEXT market's
-            # CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER. Guarded the same way
-            # decide_hedge guards its own median lookup: an unknown
-            # (asset, regime, "first") cell (the three dormant assets)
-            # raises BehaviorLookupError, in which case this tracker is
-            # simply left unset for that asset, same as if no prior market
-            # had ever been observed.
-            try:
-                regime_median = bc.median_entry_notional(market.asset, intent.regime, "first")
-            except bc.BehaviorLookupError:
-                regime_median = 0.0
-            if regime_median > 0 and intent.notional_usd > 0:
-                residual = math.log(intent.notional_usd / regime_median)
-                prev_state = self.ewma_size_residual_by_asset.get(market.asset, 0.0)
-                self.ewma_size_residual_by_asset[market.asset] = (
-                    (1.0 - SIZE_MOMENTUM_EWMA_ALPHA) * prev_state
-                    + SIZE_MOMENTUM_EWMA_ALPHA * residual
-                )
+            # (the ewma_size_residual_by_asset update that used to live
+            # here was removed 2026-09-26 -- CROSS_MARKET_SIZE_MOMENTUM_
+            # MULTIPLIER had already permanently retired to an empty/
+            # no-op table.)
         self._record_global_trade(now)
 
     def _maybe_place_companion(self, market, intent, order_book, now) -> None:
@@ -1370,11 +1342,16 @@ class PaperBot:
             )
             # ADDED 2026-09-11: the first-ever real-time resolution-
             # feedback loop in this codebase -- feeds winning_side (known
-            # only right here, right now) back into TWO per-asset
-            # cross-market trackers that decide_side/decide_size read on
-            # the NEXT market. snapshot was captured in _retire_market,
-            # before activity got popped there (this market is long gone
-            # from self.activity by the time resolution ever completes).
+            # only right here, right now) back into a per-asset
+            # cross-market tracker that decide_side reads on the NEXT
+            # market. snapshot was captured in _retire_market, before
+            # activity got popped there (this market is long gone from
+            # self.activity by the time resolution ever completes).
+            #
+            # (the rolling_accuracy_by_asset and after_big_loss_by_asset
+            # updates that used to live here were removed 2026-09-26 --
+            # ACCURACY_SCOUT_MULTIPLIER and HEDGE_TRIGGER_AFTER_BIG_LOSS_
+            # MULTIPLIER had already permanently retired to empty/no-op.)
             snapshot = self._retired_activity_snapshot.get(cid)
             if snapshot is not None:
                 asset = snapshot["asset"]
@@ -1385,30 +1362,6 @@ class PaperBot:
                     # cross_market_side_persistence's docstring in
                     # behavior_config.py.
                     self.last_first_entry_won_by_asset[asset] = (first_entry_side == winning_side)
-                dominant_side = snapshot["dominant_side"]
-                if dominant_side is not None:
-                    # Feeds decide_size's ACCURACY_SCOUT_MULTIPLIER --
-                    # measured against the DOMINANT (by-cost) side
-                    # specifically, not first_entry_side, per
-                    # accuracy-conditioned-scout-rate-gap in project
-                    # memory (a genuinely different quantity from the
-                    # win/loss-persistence tracker above).
-                    window = self.rolling_accuracy_by_asset.setdefault(
-                        asset, deque(maxlen=ACCURACY_ROLLING_WINDOW))
-                    window.append(dominant_side == winning_side)
-                # ADDED 2026-09-13: feeds decide_hedge's
-                # HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER on the NEXT
-                # market for this asset. market_pnl is THIS market's own
-                # total realized pnl (directional, no rebate -- matching
-                # what the offline research measured), summed across every
-                # settled order in it. Reset to False on anything that
-                # wasn't itself a top-decile loss (including a win) --
-                # this reflects only the IMMEDIATELY PRECEDING market's
-                # outcome, not a longer-lived state.
-                market_pnl = sum(r.pnl for r in settled)
-                self.after_big_loss_by_asset[asset] = (
-                    market_pnl < 0 and self._is_top_decile_loss(asset, -market_pnl)
-                )
             del self.pending_resolution[cid]
             self._forget_resolution_tracking(cid)
             self.fill_sim.remove_orders_for_condition(cid)

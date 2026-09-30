@@ -153,14 +153,17 @@ class TestSidePersistence:
             values = set(bc.SIDE_PERSISTENCE[asset].values())
             assert len(values) > 1, f"{asset} should vary by regime"
 
-    def test_side_persistence_for_matches_the_table(self):
+    def test_side_persistence_matches_the_base_table_with_override_disabled(self):
+        # use_recent_override=False isolates the BASE table this test is
+        # actually about -- RECENT_SIDE_PERSISTENCE_OVERRIDE's own
+        # coverage lives in TestRecentSidePersistenceOverride below.
         for asset, by_regime in bc.SIDE_PERSISTENCE.items():
             for regime, p in by_regime.items():
-                assert bc.side_persistence_for(asset, regime) == p
+                assert bc.side_persistence(asset, regime, use_recent_override=False) == p
 
-    def test_side_persistence_for_raises_on_unknown_regime(self):
+    def test_side_persistence_raises_on_unknown_regime(self):
         with pytest.raises(bc.BehaviorLookupError):
-            bc.side_persistence_for("Bitcoin", "NOT_A_REGIME")
+            bc.side_persistence("Bitcoin", "NOT_A_REGIME")
 
 
 class TestCrossMarketSidePersistence:
@@ -329,32 +332,43 @@ class TestWithinBandSizeMultiplier:
 class TestDeepCheapTailMultiplier:
     """ADDED 2026-09-23 -- corrects the deep CHEAP tail (price<0.08), where
     WITHIN_BAND_SIZE_SLOPE's single whole-band slope badly under-corrects
-    (real sizes there run 1.4-4.2x smaller than predicted). See
-    DEEP_CHEAP_TAIL_MULTIPLIER's docstring for the on-chain derivation."""
+    (real sizes there run 1.4-4.2x smaller than predicted). RECALIBRATED
+    2026-09-25 (research-loop sizing audit) -- even the original 2026-09-23
+    correction was itself found to under-predict on fresh data (Bitcoin
+    and Solana now need the multiplier to be a BOOST, not a dampener; see
+    DEEP_CHEAP_TAIL_MULTIPLIER's docstring for the full derivation)."""
 
     def test_matches_documented_calibration(self):
-        assert bc.deep_cheap_tail_multiplier("Bitcoin") == pytest.approx(0.759)
-        assert bc.deep_cheap_tail_multiplier("Ethereum") == pytest.approx(0.433)
-        assert bc.deep_cheap_tail_multiplier("Solana") == pytest.approx(0.319)
+        assert bc.table_lookup(bc.DEEP_CHEAP_TAIL_MULTIPLIER, "Bitcoin") == pytest.approx(1.052)
+        assert bc.table_lookup(bc.DEEP_CHEAP_TAIL_MULTIPLIER, "Ethereum") == pytest.approx(0.608)
+        assert bc.table_lookup(bc.DEEP_CHEAP_TAIL_MULTIPLIER, "Solana") == pytest.approx(1.121)
 
-    def test_every_calibrated_value_dampens_not_boosts(self):
+    def test_every_calibrated_value_is_positive(self):
         for asset, mult in bc.DEEP_CHEAP_TAIL_MULTIPLIER.items():
-            assert 0.0 < mult < 1.0
+            assert mult > 0.0
 
     def test_unknown_asset_is_a_noop(self):
-        assert bc.deep_cheap_tail_multiplier("Dogecoin") == 1.0
+        assert bc.table_lookup(bc.DEEP_CHEAP_TAIL_MULTIPLIER, "Dogecoin") == 1.0
 
     def test_threshold_matches_documented_value(self):
         assert bc.DEEP_CHEAP_TAIL_PRICE_THRESHOLD == pytest.approx(0.08)
 
 
 class TestTtcSizeMultiplier:
-    """Time-to-close size scaling, added 2026-09-10 -- confirmed the
-    trader actually SIZES differently by time remaining (not just present
-    more late-window), unlike a separately-tested price-velocity signal
-    that was checked the same way and rejected for not being something he
-    actually acts on. See TTC_SIZE_MULTIPLIER's docstring for the real
-    numbers this was calibrated from."""
+    """Time-to-close size scaling, added 2026-09-10, RETIRED 2026-09-26
+    (full sizing-mechanism audit against TRUE on-chain order identity --
+    see project memory five-second-merge-convention-decisively-wrong).
+    Every prior freshness check on this table (2026-09-10, 2026-09-13)
+    used the project's off-chain 5-second merge convention, since
+    confirmed to fit the real formula 4.75x worse than true on-chain
+    order data. Re-checked directly against 3,594 true on-chain orders
+    (~37h clean window): including this table's ttc_mult factor HURT
+    first-entry sizing fit in 10 of 12 (asset, regime) cells, stable
+    across both halves of the window (not a fluke) -- the apparently
+    "confirmed, holds up well" earlier freshness checks were re-measuring
+    the merge artifact, not the real relationship. Table emptied; these
+    tests now confirm the no-op state, not the original (retracted)
+    shape."""
 
     def test_neutral_for_assets_not_in_the_table(self):
         # Dogecoin/Hyperliquid/BNB aren't live-traded -- no data, must
@@ -366,26 +380,17 @@ class TestTtcSizeMultiplier:
     def test_neutral_for_an_unrecognized_regime(self):
         assert bc.ttc_size_multiplier("Bitcoin", "NOT_A_REGIME", 150.0) == 1.0
 
-    def test_exact_at_each_calibrated_midpoint(self):
-        # At exactly a bucket midpoint, the interpolated value must equal
-        # the calibrated value exactly (not an interpolation artifact).
-        for asset, regimes in bc.TTC_SIZE_MULTIPLIER.items():
-            for regime, curve in regimes.items():
-                for midpoint, expected in curve.items():
-                    got = bc.ttc_size_multiplier(asset, regime, float(midpoint))
-                    assert abs(got - expected) < 1e-9, f"{asset}/{regime}@{midpoint}: {got} != {expected}"
-
-    def test_interpolates_between_midpoints(self):
-        # Bitcoin/HIGH: 210->0.6673, 150->0.9282 -- the midpoint of those
-        # two (ttc=180) must fall exactly between them.
-        low = bc.ttc_size_multiplier("Bitcoin", "HIGH", 210.0)
-        high = bc.ttc_size_multiplier("Bitcoin", "HIGH", 150.0)
-        mid = bc.ttc_size_multiplier("Bitcoin", "HIGH", 180.0)
-        assert abs(mid - (low + high) / 2) < 1e-9
+    def test_table_is_empty_and_every_live_asset_is_now_a_noop(self):
+        assert bc.TTC_SIZE_MULTIPLIER == {}
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            for regime in ("CHEAP", "MID", "CORE", "HIGH"):
+                for ttc in (10.0, 90.0, 150.0, 180.0, 210.0, 270.0, 295.0):
+                    assert bc.ttc_size_multiplier(asset, regime, ttc) == 1.0
 
     def test_flat_beyond_the_measured_range_no_extrapolation(self):
         # Below 90s or above 270s must clamp to the nearest endpoint, not
-        # extrapolate past what the data supports.
+        # extrapolate past what the data supports -- still true trivially
+        # now that every value is the same 1.0 no-op.
         at_90 = bc.ttc_size_multiplier("Bitcoin", "HIGH", 90.0)
         below_90 = bc.ttc_size_multiplier("Bitcoin", "HIGH", 10.0)
         assert at_90 == below_90
@@ -393,290 +398,6 @@ class TestTtcSizeMultiplier:
         at_270 = bc.ttc_size_multiplier("Bitcoin", "HIGH", 270.0)
         above_270 = bc.ttc_size_multiplier("Bitcoin", "HIGH", 295.0)
         assert at_270 == above_270
-
-    def test_high_regime_grows_toward_close_for_every_live_asset(self):
-        # The cleanest, most consistent real signal found: HIGH-band size
-        # grows sharply as close approaches, for all three live assets.
-        for asset in ("Bitcoin", "Ethereum", "Solana"):
-            early = bc.ttc_size_multiplier(asset, "HIGH", 270.0)
-            late = bc.ttc_size_multiplier(asset, "HIGH", 90.0)
-            assert late > early, f"{asset}: expected HIGH size to grow toward close"
-
-    def test_cheap_regime_shrinks_toward_close_for_every_live_asset(self):
-        for asset in ("Bitcoin", "Ethereum", "Solana"):
-            early = bc.ttc_size_multiplier(asset, "CHEAP", 270.0)
-            late = bc.ttc_size_multiplier(asset, "CHEAP", 90.0)
-            assert late < early, f"{asset}: expected CHEAP size to shrink toward close"
-        mult_low = bc.within_band_size_multiplier("Ethereum", "HIGH", 0.90)
-        assert mult_low >= 1.0 / 5.0
-
-
-class TestHedgeTtcSizeMultiplier:
-    """Hedge sizing's own time-to-close scaling, added 2026-09-13 --
-    re-derived and regime-composition-checked specifically against hedge
-    data (the entry-side TTC_SIZE_MULTIPLIER's regime correction was never
-    verified against the original hedge data). Real and cross-asset-
-    consistent in CHEAP/HIGH only -- MID/CORE showed genuinely
-    inconsistent signs across assets and are deliberately excluded."""
-
-    def test_neutral_for_assets_not_in_the_table(self):
-        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
-            for regime in ("CHEAP", "MID", "CORE", "HIGH"):
-                assert bc.hedge_ttc_size_multiplier(asset, regime, 150.0) == 1.0
-
-    def test_neutral_for_mid_and_core_not_just_unrecognized_regimes(self):
-        # Deliberately excluded (real, cross-asset-inconsistent signs),
-        # not just uncalibrated -- see the module docstring.
-        for asset in ("Bitcoin", "Ethereum", "Solana"):
-            for regime in ("MID", "CORE"):
-                assert bc.hedge_ttc_size_multiplier(asset, regime, 90.0) == 1.0
-                assert bc.hedge_ttc_size_multiplier(asset, regime, 270.0) == 1.0
-
-    def test_exact_at_each_calibrated_midpoint(self):
-        for asset, regimes in bc.HEDGE_TTC_SIZE_MULTIPLIER.items():
-            for regime, curve in regimes.items():
-                for midpoint, expected in curve.items():
-                    got = bc.hedge_ttc_size_multiplier(asset, regime, float(midpoint))
-                    assert abs(got - expected) < 1e-9, f"{asset}/{regime}@{midpoint}: {got} != {expected}"
-
-    def test_interpolates_between_midpoints(self):
-        low = bc.hedge_ttc_size_multiplier("Bitcoin", "HIGH", 210.0)
-        high = bc.hedge_ttc_size_multiplier("Bitcoin", "HIGH", 150.0)
-        mid = bc.hedge_ttc_size_multiplier("Bitcoin", "HIGH", 180.0)
-        assert abs(mid - (low + high) / 2) < 1e-9
-
-    def test_flat_beyond_the_measured_range_no_extrapolation(self):
-        at_90 = bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 90.0)
-        below_90 = bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 10.0)
-        assert at_90 == below_90
-
-        at_270 = bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 270.0)
-        above_270 = bc.hedge_ttc_size_multiplier("Bitcoin", "CHEAP", 295.0)
-        assert at_270 == above_270
-
-    def test_high_regime_grows_toward_close_for_every_live_asset(self):
-        for asset in ("Bitcoin", "Ethereum", "Solana"):
-            early = bc.hedge_ttc_size_multiplier(asset, "HIGH", 270.0)
-            late = bc.hedge_ttc_size_multiplier(asset, "HIGH", 90.0)
-            assert late > early, f"{asset}: expected HIGH hedge size to grow toward close"
-
-    def test_cheap_regime_shrinks_toward_close_for_every_live_asset(self):
-        for asset in ("Bitcoin", "Ethereum", "Solana"):
-            early = bc.hedge_ttc_size_multiplier(asset, "CHEAP", 270.0)
-            late = bc.hedge_ttc_size_multiplier(asset, "CHEAP", 90.0)
-            assert late < early, f"{asset}: expected CHEAP hedge size to shrink toward close"
-
-
-class TestHedgeLiquidityMultiplier:
-    """Liquidity-conditioned first-hedge trigger, added 2026-09-10 --
-    originally confirmed real, well-powered (t=5.263, n=1023/322)
-    correlation between a market's liquidity and whether he hedges it at
-    all. RETIRED 2026-09-13 (post-halt, /loop cycle 6 -- see full-
-    behavioral-audit-tracker.md's hedge-trigger sub-multipliers note):
-    unblocked from its earlier "no liquidity data available" status by
-    finding /opt/trader-intel/data/market_snapshots.jsonl, a separate
-    collector that does capture it -- joined against post-halt trades
-    (n=1263-1357 per asset) and found the correlation has genuinely
-    vanished for all three assets (Bitcoin r=+0.010, Ethereum r=+0.022,
-    Solana r=+0.056 -- all essentially zero). HEDGE_LIQUIDITY_MULTIPLIER
-    is now an empty dict; every asset (including the three that used to
-    have a real curve) gets the function's own no-op fallback."""
-
-    def test_always_neutral_now_the_table_is_empty(self):
-        # Every asset, including the three that used to have a real
-        # curve, must be a strict no-op now the underlying signal is gone.
-        for asset in ("Bitcoin", "Ethereum", "Solana", "Dogecoin", "Hyperliquid", "BNB"):
-            assert bc.hedge_liquidity_multiplier(asset, 10000.0) == 1.0
-
-    def test_neutral_when_liquidity_is_unavailable(self):
-        assert bc.hedge_liquidity_multiplier("Bitcoin", None) == 1.0
-
-    def test_table_is_empty(self):
-        assert bc.HEDGE_LIQUIDITY_MULTIPLIER == {}
-
-
-class TestAdverseMoveSizeMultiplier:
-    """First-hedge-size-vs-adverse-move multiplier, added 2026-09-10 --
-    real, cross-asset-generalizing finding that first-hedge SIZE scales
-    with how far price has moved against the dominant side since entry.
-    Controlled for first_entry_regime (fit separately per regime, still
-    holds), and for the TTC confound (r(adverse_move, seconds_to_close)
-    ~0 -- ruled out being a lateness proxy). Restricted to first-hedge-
-    only data (HEDGE_CONTINUATION_SIZE_RATIO covers 2nd+ separately):
-    BTC t=32.5 (n=8,670), ETH t=24.1 (n=6,387), SOL t=20.6 (n=8,237)."""
-
-    def test_neutral_for_assets_not_in_the_table(self):
-        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
-            assert bc.adverse_move_size_multiplier(asset, 0.3) == 1.0
-
-    def test_neutral_when_adverse_move_is_unavailable(self):
-        assert bc.adverse_move_size_multiplier("Bitcoin", None) == 1.0
-
-    def test_exact_at_each_calibrated_point(self):
-        for asset, curve in bc.ADVERSE_MOVE_SIZE_MULTIPLIER.items():
-            for move, expected in curve.items():
-                got = bc.adverse_move_size_multiplier(asset, float(move))
-                assert abs(got - expected) < 1e-9, f"{asset}@{move}: {got} != {expected}"
-
-    def test_interpolates_between_points(self):
-        # Bitcoin: -0.10->0.5621, 0.05->2.8117 -- the midpoint move value
-        # must interpolate to (roughly) the midpoint multiplier.
-        mid_move = (-0.10 + 0.05) / 2
-        mid_val = bc.adverse_move_size_multiplier("Bitcoin", mid_move)
-        assert 0.5621 < mid_val < 2.8117
-
-    def test_flat_beyond_the_measured_range_no_extrapolation(self):
-        # Endpoints derived from the table itself (not hardcoded) --
-        # robust to recalibration, since the exact min/max keys shift
-        # every time this table gets re-derived from fresh data.
-        keys = sorted(bc.ADVERSE_MOVE_SIZE_MULTIPLIER["Bitcoin"])
-        at_min = bc.adverse_move_size_multiplier("Bitcoin", keys[0])
-        below_min = bc.adverse_move_size_multiplier("Bitcoin", keys[0] - 0.5)
-        assert at_min == below_min
-
-        at_max = bc.adverse_move_size_multiplier("Bitcoin", keys[-1])
-        above_max = bc.adverse_move_size_multiplier("Bitcoin", keys[-1] + 0.5)
-        assert at_max == above_max
-
-    def test_largest_adverse_move_scores_higher_than_most_favorable_move(self):
-        # Not strictly monotonic (q2 > q3 for all three assets, kept
-        # as-measured rather than smoothed) -- but the two extremes
-        # (most-favorable vs most-adverse) are ordered correctly for
-        # every live asset.
-        for asset in ("Bitcoin", "Ethereum", "Solana"):
-            curve = bc.ADVERSE_MOVE_SIZE_MULTIPLIER[asset]
-            most_favorable = min(curve)
-            most_adverse = max(curve)
-            low_val = bc.adverse_move_size_multiplier(asset, most_favorable)
-            high_val = bc.adverse_move_size_multiplier(asset, most_adverse)
-            assert high_val > low_val, f"{asset}: expected the most-adverse move to score above the most-favorable"
-
-    def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
-        for asset, curve in bc.ADVERSE_MOVE_SIZE_MULTIPLIER.items():
-            assert max(curve.values()) < bc._ADVERSE_MOVE_SIZE_MULTIPLIER_CAP
-
-
-class TestAbsolutePriceHedgeSizeMultiplier:
-    """First-hedge-size-vs-absolute-hedge-price multiplier, added
-    2026-09-12 -- real, confirmed-INDEPENDENT (via partial correlation
-    controlling for adverse_move_size_multiplier's own driving variable,
-    r_raw=0.749 collinearity between the two) finding: the hedge side's
-    own absolute current price predicts size beyond the delta-from-entry
-    effect. RECALIBRATED 2026-09-13 (post-halt, /loop cycle 4 -- see
-    full-behavioral-audit-tracker.md item 17): redone with the same
-    partial-correlation methodology on post-halt-only data. The relation
-    is real and, if anything, stronger than the original (partial corr
-    r=0.335-0.454 vs the original r=0.103) -- but the SHAPE has changed:
-    this used to be U-shaped (extra sizing at BOTH price extremes), and
-    is now MONOTONICALLY INCREASING with price instead for all three
-    assets. Kept as measured, not forced back into the old shape."""
-
-    def test_neutral_for_assets_not_in_the_table(self):
-        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
-            assert bc.absolute_price_hedge_size_multiplier(asset, 0.5) == 1.0
-
-    def test_neutral_when_hedge_price_is_unavailable(self):
-        assert bc.absolute_price_hedge_size_multiplier("Bitcoin", None) == 1.0
-
-    def test_exact_at_each_calibrated_point(self):
-        for asset, curve in bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER.items():
-            for price, expected in curve.items():
-                got = bc.absolute_price_hedge_size_multiplier(asset, float(price))
-                assert abs(got - expected) < 1e-9, f"{asset}@{price}: {got} != {expected}"
-
-    def test_interpolates_between_points(self):
-        # Endpoints derived from the table itself -- the two calibrated
-        # points closest to the middle of Bitcoin's range must bound the
-        # midpoint's interpolated value, whatever they happen to be after
-        # a recalibration.
-        points = sorted(bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER["Bitcoin"].items())
-        lo_price, lo_val = points[1]
-        hi_price, hi_val = points[2]
-        mid_price = (lo_price + hi_price) / 2
-        mid_val = bc.absolute_price_hedge_size_multiplier("Bitcoin", mid_price)
-        assert min(lo_val, hi_val) < mid_val < max(lo_val, hi_val)
-
-    def test_flat_beyond_the_measured_range_no_extrapolation(self):
-        # Endpoints derived from the table itself -- robust to
-        # recalibration, since the exact min/max keys shift every time
-        # this table gets re-derived from fresh data.
-        keys = sorted(bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER["Bitcoin"])
-        at_min = bc.absolute_price_hedge_size_multiplier("Bitcoin", keys[0])
-        below_min = bc.absolute_price_hedge_size_multiplier("Bitcoin", keys[0] - 0.1)
-        assert at_min == below_min
-
-        at_max = bc.absolute_price_hedge_size_multiplier("Bitcoin", keys[-1])
-        above_max = bc.absolute_price_hedge_size_multiplier("Bitcoin", keys[-1] + 0.1)
-        assert at_max == above_max
-
-    def test_monotonically_increases_with_price_for_every_live_asset(self):
-        # Post-2026-09-13 recalibration: monotonically increasing, not
-        # U-shaped -- higher hedge price predicts a bigger hedge size,
-        # consistently across all three live assets.
-        for asset, curve in bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER.items():
-            points = sorted(curve.items())
-            values = [v for _, v in points]
-            assert values == sorted(values), f"{asset}: expected monotonically increasing, got {values}"
-
-    def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
-        for asset, curve in bc.ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER.items():
-            assert max(curve.values()) < bc._ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER_CAP
-
-
-class TestAdverseMoveContinuationSizeMultiplier:
-    """Continuation-hedge (hedge_count>=1) extension of
-    TestAdverseMoveSizeMultiplier, added 2026-09-10 same night. Deep-
-    research pass before building: regime-controlled holds in 11/12 cells
-    (Solana/HIGH is the one exception, t=2.46, thin n=108); TTC confound
-    ruled out (r~0 across assets); since-ORIGIN reference beats a tested
-    since-last-hedge alternative (r=0.44-0.57 vs r=0.13-0.23 pooled).
-    Pooled across hedge indices 2/3/4+: BTC t=31.3/25.2/34.3, ETH
-    t=20.0/17.6/24.1, SOL t=17.4/15.3/16.6 -- every cell clears the bar."""
-
-    def test_neutral_for_assets_not_in_the_table(self):
-        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
-            assert bc.adverse_move_continuation_size_multiplier(asset, 0.3) == 1.0
-
-    def test_neutral_when_adverse_move_is_unavailable(self):
-        assert bc.adverse_move_continuation_size_multiplier("Bitcoin", None) == 1.0
-
-    def test_exact_at_each_calibrated_point(self):
-        for asset, curve in bc.ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER.items():
-            for move, expected in curve.items():
-                got = bc.adverse_move_continuation_size_multiplier(asset, float(move))
-                assert abs(got - expected) < 1e-9, f"{asset}@{move}: {got} != {expected}"
-
-    def test_interpolates_between_points(self):
-        # Bitcoin: -0.09->0.6799, 0.12->2.5175 -- the midpoint move value
-        # must interpolate to (roughly) the midpoint multiplier.
-        mid_move = (-0.09 + 0.12) / 2
-        mid_val = bc.adverse_move_continuation_size_multiplier("Bitcoin", mid_move)
-        assert 0.6799 < mid_val < 2.5175
-
-    def test_flat_beyond_the_measured_range_no_extrapolation(self):
-        # Endpoints derived from the table itself, same robustness reason
-        # as TestAdverseMoveSizeMultiplier's matching test.
-        keys = sorted(bc.ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER["Bitcoin"])
-        at_min = bc.adverse_move_continuation_size_multiplier("Bitcoin", keys[0])
-        below_min = bc.adverse_move_continuation_size_multiplier("Bitcoin", keys[0] - 0.5)
-        assert at_min == below_min
-
-        at_max = bc.adverse_move_continuation_size_multiplier("Bitcoin", keys[-1])
-        above_max = bc.adverse_move_continuation_size_multiplier("Bitcoin", keys[-1] + 0.5)
-        assert at_max == above_max
-
-    def test_largest_adverse_move_scores_higher_than_most_favorable_move(self):
-        for asset in ("Bitcoin", "Ethereum", "Solana"):
-            curve = bc.ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER[asset]
-            most_favorable = min(curve)
-            most_adverse = max(curve)
-            low_val = bc.adverse_move_continuation_size_multiplier(asset, most_favorable)
-            high_val = bc.adverse_move_continuation_size_multiplier(asset, most_adverse)
-            assert high_val > low_val, f"{asset}: expected the most-adverse move to score above the most-favorable"
-
-    def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
-        for asset, curve in bc.ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER.items():
-            assert max(curve.values()) < bc._ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER_CAP
 
 
 class TestAdverseMoveHedgeTriggerMultiplier:
@@ -787,237 +508,267 @@ class TestFavorableMoveHedgeTriggerMultiplier:
             assert max(curve.values()) < bc._FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER_CAP
 
 
-class TestMidFavorableHedgeTriggerMultiplier:
-    """MID's favorable-move hump, added 2026-09-20 to close replication-
-    checklist item #31. Unlike the CHEAP sibling above, a per-asset
-    replication check found this shape is Solana-only (Bitcoin null,
-    Ethereum a different unshipped shape) -- so only Solana is populated."""
+class TestHedgeProbabilityConsolidated:
+    """The single hedge-TRIGGER entry point, added 2026-09-24 (single-
+    function hedge consolidation -- see that function's own docstring in
+    behavior_config.py for exactly which of the previous 13 factors
+    survived and which were cut). Direct, focused coverage of the
+    function itself, on top of whatever incidental coverage it gets via
+    decide_hedge in test_strategy.py."""
 
-    def test_neutral_for_assets_not_in_the_table(self):
-        for asset in ("Bitcoin", "Ethereum", "Dogecoin"):
-            assert bc.mid_favorable_hedge_trigger_multiplier(asset, -0.2) == 1.0
+    def test_first_hedge_matches_base_hazard_times_post_shift_dampener(self):
+        p = bc.hedge_probability("Bitcoin", "MID", attempt_index=1, hedge_count=0)
+        expected = bc.hedge_attempt_hazard("Bitcoin", "MID", 1) * bc.table_lookup(bc.REGIME_HEDGE_POST_SHIFT_MULTIPLIER, "MID", "Bitcoin")
+        assert p == pytest.approx(max(0.0, min(1.0, expected)))
 
-    def test_neutral_when_adverse_move_is_unavailable(self):
-        assert bc.mid_favorable_hedge_trigger_multiplier("Solana", None) == 1.0
+    def test_adverse_move_scales_the_first_hedge_probability(self):
+        base = bc.hedge_probability("Bitcoin", "CORE", 1, 0, adverse_move=None)
+        moved = bc.hedge_probability("Bitcoin", "CORE", 1, 0, adverse_move=0.30)
+        assert moved != base, "a real adverse move must actually change the probability"
 
-    def test_neutral_for_nonnegative_adverse_move(self):
-        assert bc.mid_favorable_hedge_trigger_multiplier("Solana", 0.0) == 1.0
-        assert bc.mid_favorable_hedge_trigger_multiplier("Solana", 0.01) == 1.0
-        assert bc.mid_favorable_hedge_trigger_multiplier("Solana", 5.0) == 1.0
+    def test_favorable_move_only_applies_in_cheap(self):
+        # Same negative adverse_move, different regime -- CHEAP should
+        # diverge from its own adverse_move=None baseline (the favorable
+        # multiplier fires), MID should not (no favorable-move
+        # calibration outside CHEAP in the consolidated design).
+        cheap_base = bc.hedge_probability("Bitcoin", "CHEAP", 1, 0, adverse_move=None)
+        cheap_favorable = bc.hedge_probability("Bitcoin", "CHEAP", 1, 0, adverse_move=-0.5)
+        assert cheap_favorable != cheap_base
 
-    def test_exact_at_each_calibrated_point(self):
-        for move, expected in bc.MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER["Solana"].items():
-            got = bc.mid_favorable_hedge_trigger_multiplier("Solana", float(move))
-            assert abs(got - expected) < 1e-9, f"Solana@{move}: {got} != {expected}"
+        mid_base = bc.hedge_probability("Bitcoin", "MID", 1, 0, adverse_move=None)
+        mid_favorable = bc.hedge_probability("Bitcoin", "MID", 1, 0, adverse_move=-0.5)
+        assert mid_favorable == mid_base, "favorable-move scaling is CHEAP-only in the consolidated design"
 
-    def test_interpolates_between_points(self):
-        # -0.291->2.1274, -0.108->0.4479 -- the midpoint move must land
-        # strictly between the two calibrated multipliers.
-        mid_move = (-0.291 + -0.108) / 2
-        mid_val = bc.mid_favorable_hedge_trigger_multiplier("Solana", mid_move)
-        assert 0.4479 < mid_val < 2.1274
+    def test_continuation_ignores_attempt_index_and_adverse_move(self):
+        # hedge_count >= 1 must go through hedge_continuation_probability
+        # regardless of attempt_index or adverse_move -- those only
+        # matter for the FIRST hedge.
+        p1 = bc.hedge_probability("Bitcoin", "CHEAP", attempt_index=1, hedge_count=1, adverse_move=0.9)
+        p2 = bc.hedge_probability("Bitcoin", "HIGH", attempt_index=9, hedge_count=1, adverse_move=-0.9)
+        assert p1 == p2 == pytest.approx(bc.hedge_continuation_probability(1))
 
-    def test_flat_beyond_the_measured_range_no_extrapolation(self):
-        at_min = bc.mid_favorable_hedge_trigger_multiplier("Solana", -0.291)
-        below_min = bc.mid_favorable_hedge_trigger_multiplier("Solana", -5.0)
-        assert at_min == below_min
+    def test_always_returns_a_valid_probability(self):
+        for regime in bc.REGIME_NAMES:
+            for adverse_move in (None, -1.0, 0.0, 1.0):
+                p = bc.hedge_probability("Ethereum", regime, 1, 0, adverse_move=adverse_move)
+                assert 0.0 <= p <= 1.0
 
-    def test_peak_is_the_interior_bin_not_an_extreme(self):
-        # The confirmed hump shape: the deepest-measured favorable move
-        # scores ABOVE the near-zero point, matching the real per-asset
-        # finding (peak around -0.29, not at either edge).
-        deep = bc.mid_favorable_hedge_trigger_multiplier("Solana", -0.291)
-        near_zero = bc.mid_favorable_hedge_trigger_multiplier("Solana", -0.002)
-        assert deep > near_zero
+    def test_seconds_remaining_none_is_a_no_op(self):
+        # Default (no seconds_remaining passed) must match explicitly
+        # passing None -- both are the pre-2026-09-25 behavior, for
+        # existing callers that don't know about window-close timing.
+        p_default = bc.hedge_probability("Bitcoin", "MID", 1, 0, adverse_move=0.2)
+        p_none = bc.hedge_probability("Bitcoin", "MID", 1, 0, adverse_move=0.2, seconds_remaining=None)
+        assert p_default == p_none
 
-    def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
-        for asset, curve in bc.MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER.items():
-            assert max(curve.values()) < bc._MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER_CAP
+    def test_seconds_remaining_boosts_the_first_hedge_near_close(self):
+        far = bc.hedge_probability("Bitcoin", "MID", 1, 0, adverse_move=0.2, seconds_remaining=200.0)
+        near = bc.hedge_probability("Bitcoin", "MID", 1, 0, adverse_move=0.2, seconds_remaining=75.0)
+        assert near > far
 
+    def test_seconds_remaining_boosts_continuation_hedges_too(self):
+        far = bc.hedge_probability("Bitcoin", "CHEAP", attempt_index=1, hedge_count=1, seconds_remaining=200.0)
+        near = bc.hedge_probability("Bitcoin", "CHEAP", attempt_index=1, hedge_count=1, seconds_remaining=75.0)
+        assert near > far
+        assert far == pytest.approx(bc.hedge_continuation_probability(1))
 
-class TestAdverseMoveTtcInteractionMultiplier:
-    """Added 2026-09-20 after a code audit found decide_hedge had zero
-    time-to-close awareness for the TRIGGER decision (only for sizing).
-    Avellaneda-Stoikov-derived: his sensitivity to a given adverse move
-    scales with time REMAINING until close, confound-checked (GTD ~60s
-    cutoff, freshly-opened-window dip both excluded) and bootstrap-
-    confirmed. Bitcoin/Solana, CHEAP/MID/CORE only."""
+    def test_still_clamped_to_a_valid_probability_with_urgency_applied(self):
+        for seconds_remaining in (None, 165.0, 120.0, 75.0, 10.0, 500.0):
+            p = bc.hedge_probability("Bitcoin", "HIGH", 9, 0, adverse_move=1.0,
+                                      seconds_remaining=seconds_remaining)
+            assert 0.0 <= p <= 1.0
 
-    def test_neutral_outside_the_confirmed_assets(self):
-        assert bc.adverse_move_ttc_interaction_multiplier("Ethereum", "CHEAP", 0.2, 150.0) == 1.0
-        assert bc.adverse_move_ttc_interaction_multiplier("Dogecoin", "CHEAP", 0.2, 150.0) == 1.0
-
-    def test_neutral_outside_the_confirmed_regimes(self):
-        # HIGH was confirmed ABSENT (z=-0.76, wrong sign, n.s.) -- strict no-op.
-        assert bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "HIGH", 0.2, 150.0) == 1.0
-
-    def test_neutral_when_inputs_unavailable(self):
-        assert bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", None, 150.0) == 1.0
-        assert bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, None) == 1.0
-
-    def test_neutral_for_favorable_moves(self):
-        # Out of scope -- the favorable side's own time-interaction was never tested.
-        assert bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", -0.1, 150.0) == 1.0
-
-    def test_noop_at_ttc_center(self):
-        # Mean-neutral by construction: exp(0)==1.0 at the center of the
-        # tested window (150s remaining), regardless of adverse_move.
-        assert bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, 150.0) == pytest.approx(1.0)
-        assert bc.adverse_move_ttc_interaction_multiplier("Solana", "CORE", 0.05, 150.0) == pytest.approx(1.0)
-
-    def test_more_time_remaining_amplifies_a_given_adverse_move(self):
-        # The confirmed direction: MORE time remaining -> MORE eager to
-        # hedge for the same adverse move (multiplier > 1), LESS time
-        # remaining -> LESS eager (multiplier < 1).
-        for asset in ("Bitcoin", "Solana"):
-            for regime in ("CHEAP", "MID", "CORE"):
-                high_ttc = bc.adverse_move_ttc_interaction_multiplier(asset, regime, 0.2, 240.0)
-                low_ttc = bc.adverse_move_ttc_interaction_multiplier(asset, regime, 0.2, 60.0)
-                assert high_ttc > 1.0, f"{asset}/{regime}: expected >1.0 at high ttc, got {high_ttc}"
-                assert low_ttc < 1.0, f"{asset}/{regime}: expected <1.0 at low ttc, got {low_ttc}"
-                assert high_ttc > low_ttc
-
-    def test_flat_beyond_the_confound_clean_range_no_extrapolation(self):
-        # Confound-clean tested range is [60,240]s -- flat beyond it.
-        at_hi = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, 240.0)
-        above_hi = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, 299.0)
-        assert at_hi == above_hi
-        at_lo = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, 60.0)
-        below_lo = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 0.2, 0.0)
-        assert at_lo == below_lo
-
-    def test_cap_bounds_the_result(self):
-        # Even at the most extreme clamped inputs, stays within the cap.
-        extreme = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 10.0, 240.0)
-        assert extreme <= bc._ADVERSE_MOVE_TTC_INTERACTION_CAP
-        extreme_low = bc.adverse_move_ttc_interaction_multiplier("Bitcoin", "CHEAP", 10.0, 60.0)
-        assert extreme_low >= 1.0 / bc._ADVERSE_MOVE_TTC_INTERACTION_CAP
+    # (streak_length tests removed 2026-09-28 -- the parameter itself was
+    # deleted from hedge_probability's signature once STREAK_HEDGE_
+    # PROBABILITY_MULTIPLIER/STREAK_HEDGE_SIZE_MULTIPLIER's on-chain
+    # re-check reversed the finding they fed. See git history for the
+    # retired functions/tables if reviving a streak-conditioned hedge
+    # signal is ever warranted.)
 
 
-class TestCheapTtcSelectivityMultiplier:
-    """Added 2026-09-20, the entry-side half of the same code-audit gap
-    -- first-entry price selectivity had no time-to-close awareness.
-    Avellaneda-Stoikov spread-widening prediction, confirmed after
-    fixing a self-caught confound (raw price vs ttc looked like a
-    rejection but was really the mechanical price-drift-over-window-
-    time effect; the occupancy-normalized percentile version confirms
-    the correct direction for Ethereum/Solana). Bitcoin excluded."""
+class TestUrgencyMultipliers:
+    """CLOSE-URGENCY boost, added 2026-09-25 (research-loop capstone
+    finding): as a market's window approaches close, first-entry and
+    hedge activity both get sharply more likely -- see ENTRY_URGENCY_
+    MULTIPLIER/HEDGE_URGENCY_MULTIPLIER's own module comment for the
+    real hazard numbers and why this is boost-only (ratio to the 165s-
+    remaining hazard specifically), not mean-neutral like TTC_SIZE_
+    MULTIPLIER -- a mean-neutral version was tried first and rejected
+    because it silently dampened baseline (non-urgent) participation
+    everywhere, not just boosting it near close.
 
-    def test_neutral_outside_the_confirmed_assets(self):
-        assert bc.cheap_ttc_selectivity_multiplier("Bitcoin", 0.20, 250.0) == 1.0
-        assert bc.cheap_ttc_selectivity_multiplier("Dogecoin", 0.20, 250.0) == 1.0
+    entry_urgency_multiplier/hedge_urgency_multiplier were merged into
+    one urgency_multiplier(kind, seconds_remaining) function 2026-09-28
+    -- already identical shape, sharing _interpolate_urgency, differing
+    only by which table "entry"/"hedge" selects."""
 
-    def test_neutral_when_seconds_remaining_unavailable(self):
-        assert bc.cheap_ttc_selectivity_multiplier("Ethereum", 0.20, None) == 1.0
+    def test_none_is_a_no_op_for_both(self):
+        assert bc.urgency_multiplier("entry", None) == 1.0
+        assert bc.urgency_multiplier("hedge", None) == 1.0
 
-    def test_neutral_when_price_is_at_or_below_the_reference(self):
-        # A price at or below what's typically available right now is
-        # never dampened -- nothing to be selective about.
-        ref = bc.CHEAP_TTC_SELECTIVITY_REFERENCE_PRICE["Ethereum"][3][2]  # the (180,240) bucket's reference
-        assert bc.cheap_ttc_selectivity_multiplier("Ethereum", ref, 200.0) == 1.0
-        assert bc.cheap_ttc_selectivity_multiplier("Ethereum", ref - 0.01, 200.0) == 1.0
+    def test_no_op_at_and_beyond_165s_remaining(self):
+        # Boost-only design: the baseline (most of an ordinary window)
+        # must be an exact 1.0, never a dampener, unlike a mean-neutral
+        # table would produce.
+        assert bc.urgency_multiplier("entry", 165.0) == 1.0
+        assert bc.urgency_multiplier("entry", 300.0) == 1.0
+        assert bc.urgency_multiplier("hedge", 165.0) == 1.0
+        assert bc.urgency_multiplier("hedge", 300.0) == 1.0
 
-    def test_worse_than_reference_price_gets_dampened(self):
-        ref = bc.CHEAP_TTC_SELECTIVITY_REFERENCE_PRICE["Ethereum"][3][2]
-        mult = bc.cheap_ttc_selectivity_multiplier("Ethereum", ref + 0.05, 200.0)
-        assert mult < 1.0
+    def test_exact_at_each_calibrated_midpoint(self):
+        for midpoint, expected in bc.ENTRY_URGENCY_MULTIPLIER.items():
+            got = bc.urgency_multiplier("entry", float(midpoint))
+            assert abs(got - expected) < 1e-9, f"entry@{midpoint}: {got} != {expected}"
+        for midpoint, expected in bc.HEDGE_URGENCY_MULTIPLIER.items():
+            got = bc.urgency_multiplier("hedge", float(midpoint))
+            assert abs(got - expected) < 1e-9, f"hedge@{midpoint}: {got} != {expected}"
 
-    def test_more_time_remaining_dampens_a_worse_price_more(self):
-        # The confirmed direction: MORE time remaining -> MORE selective
-        # (a worse-than-reference price is dampened harder). Uses a
-        # single fixed price that's worse than EVERY bucket's own
-        # reference (reference itself rises with more time remaining,
-        # by construction -- the same mechanical drift this whole
-        # mechanism exists to see past), so the comparison isn't
-        # confounded by which bucket's reference happens to apply.
-        for asset in ("Ethereum", "Solana"):
-            worse_price = 0.29  # worse than every bucket's reference for both assets
-            high_ttc_mult = bc.cheap_ttc_selectivity_multiplier(asset, worse_price, 290.0)
-            low_ttc_mult = bc.cheap_ttc_selectivity_multiplier(asset, worse_price, 10.0)
-            assert high_ttc_mult < low_ttc_mult, \
-                f"{asset}: expected more dampening (lower mult) with more time remaining"
+    def test_interpolates_between_midpoints(self):
+        low = bc.urgency_multiplier("entry", 135.0)
+        high = bc.urgency_multiplier("entry", 105.0)
+        mid = bc.urgency_multiplier("entry", 120.0)
+        assert abs(mid - (low + high) / 2) < 1e-9
 
-    def test_floor_bounds_the_result(self):
-        for asset in ("Ethereum", "Solana"):
-            ref = bc.CHEAP_TTC_SELECTIVITY_REFERENCE_PRICE[asset][0][2]
-            extreme = bc.cheap_ttc_selectivity_multiplier(asset, ref + 10.0, 300.0)
-            assert extreme >= bc._CHEAP_TTC_SELECTIVITY_FLOOR
+    def test_flat_below_75s_no_extrapolation(self):
+        # Our own MIN_SECONDS_BEFORE_CLOSE=75 is the practical floor any
+        # live decision can ever see, but the function itself must still
+        # clamp rather than extrapolate past the measured range.
+        at_75 = bc.urgency_multiplier("entry", 75.0)
+        below_75 = bc.urgency_multiplier("entry", 10.0)
+        assert at_75 == below_75
+        at_75_hedge = bc.urgency_multiplier("hedge", 75.0)
+        below_75_hedge = bc.urgency_multiplier("hedge", 0.0)
+        assert at_75_hedge == below_75_hedge
 
+    def test_climbs_monotonically_toward_close(self):
+        entry_vals = [bc.urgency_multiplier("entry", s) for s in (165.0, 135.0, 105.0, 75.0)]
+        assert entry_vals == sorted(entry_vals)
+        hedge_vals = [bc.urgency_multiplier("hedge", s) for s in (165.0, 135.0, 105.0, 75.0)]
+        assert hedge_vals == sorted(hedge_vals)
 
-class TestWeekendHedgeMultiplier:
-    """Weekend-conditioned first-hedge trigger, added 2026-09-10 --
-    real, well-powered (z=9.9, n=10,183/3,902) finding that his
-    dual-sided (hedged) rate is higher on weekends, with a fully
-    confirmed causal chain (lower weekend volatility -> more MID/
-    undecided markets -> more hedging). Per-market binary measurement,
-    not a hedge-count, so immune to the raw-fill-vs-decision
-    fragmentation bug that ruled out raising MAX_HEDGE_COUNT_PER_MARKET
-    the same night. BTC-only -- ETH/SOL were checked and don't show this
-    shift."""
+    def test_never_below_one_boost_only(self):
+        # The whole point of the redesign: this must never dampen below
+        # 1.0 at any point in the covered range, unlike the rejected
+        # mean-neutral version.
+        for seconds_remaining in (0.0, 75.0, 90.0, 120.0, 150.0, 165.0, 500.0):
+            assert bc.urgency_multiplier("entry", seconds_remaining) >= 1.0
+            assert bc.urgency_multiplier("hedge", seconds_remaining) >= 1.0
 
-    def test_neutral_on_weekdays(self):
-        assert bc.weekend_hedge_multiplier("Bitcoin", False) == 1.0
+    def test_hedge_climbs_steeper_than_entry(self):
+        # Real data: hedge hazard climbs from 5.66% to 14.93% (~2.6x),
+        # entries from 15.74% to 27.00% (~1.7x) -- the hedge curve should
+        # be the steeper of the two at the 75s endpoint.
+        assert bc.urgency_multiplier("hedge", 75.0) > bc.urgency_multiplier("entry", 75.0)
 
-    def test_neutral_when_is_weekend_is_none(self):
-        assert bc.weekend_hedge_multiplier("Bitcoin", None) == 1.0
-
-    def test_neutral_for_assets_not_in_the_table(self):
-        for asset in ("Ethereum", "Solana", "Dogecoin", "Hyperliquid", "BNB"):
-            assert bc.weekend_hedge_multiplier(asset, True) == 1.0
-
-    def test_bitcoin_weekend_multiplier_matches_the_calibrated_ratio(self):
-        got = bc.weekend_hedge_multiplier("Bitcoin", True)
-        expected = 68.2 / 58.87
-        assert abs(got - expected) < 1e-9
-
-    def test_weekend_multiplier_is_greater_than_one(self):
-        # Real finding: hedging is MORE common on weekends, not less.
-        assert bc.weekend_hedge_multiplier("Bitcoin", True) > 1.0
+    def test_unknown_kind_raises(self):
+        with pytest.raises(KeyError):
+            bc.urgency_multiplier("bogus", 100.0)
 
 
-class TestResumptionSizeMultiplier:
-    """Resumption-caution ramp, added 2026-09-10 -- a real, precise
-    3-phase shape (suppressed 0-6h, overshoot 7-9h, back to baseline
-    10h+) found from the largest known real silence this session. See
-    its docstring for the confirmed scope caveat: only gaps >=
-    RESUMPTION_GAP_THRESHOLD_HOURS qualify -- smaller gaps were
-    separately checked and found to show no such reset."""
+class TestStreakFadeProbability:
+    """STREAK-FADE first-entry side bias, added 2026-09-25 (research-loop
+    finding, fully re-verified -- see market-outcome-streak-fading-found.md
+    in project memory): after 2+ consecutive same-direction resolved
+    outcomes for an asset, his first-entry side fades the streak direction
+    57-73% of the time depending on streak length and elapsed time since
+    the window opened. Confound-checked six ways (price-level, regime,
+    own win/loss interaction, cross-asset consistency, two independent
+    out-of-sample replications, and the streak-detection logic itself
+    unit-tested)."""
 
-    def test_neutral_when_no_resumption_is_tracked(self):
-        assert bc.resumption_size_multiplier(None) == 1.0
+    def test_below_length_2_is_a_neutral_no_op(self):
+        assert bc.streak_fade_probability(0) == 0.5
+        assert bc.streak_fade_probability(1) == 0.5
 
-    def test_neutral_for_a_negative_value(self):
-        # Defensive: should never happen in practice, but must not crash
-        # or misbehave if it somehow does.
-        assert bc.resumption_size_multiplier(-1.0) == 1.0
+    def test_no_elapsed_time_uses_the_pooled_length_only_rate(self):
+        # seconds_elapsed=None -> elapsed factor no-ops at 1.0.
+        expected = bc.STREAK_FADE_BASE_PROBABILITY * bc.STREAK_FADE_LENGTH_MULTIPLIER[2]
+        assert bc.streak_fade_probability(2) == pytest.approx(expected)
 
-    def test_suppressed_in_the_early_hours(self):
-        # Hours 0-6: confirmed 15-35% below baseline -- must be < 1.0.
-        assert bc.resumption_size_multiplier(0.0) < 1.0
-        assert bc.resumption_size_multiplier(3.0) < 1.0
+    def test_exact_at_each_calibrated_elapsed_midpoint(self):
+        for midpoint, mult in bc.STREAK_FADE_ELAPSED_MULTIPLIER.items():
+            expected = bc.STREAK_FADE_BASE_PROBABILITY * bc.STREAK_FADE_LENGTH_MULTIPLIER[2] * mult
+            got = bc.streak_fade_probability(2, float(midpoint))
+            assert abs(got - expected) < 1e-9, f"elapsed@{midpoint}: {got} != {expected}"
 
-    def test_overshoots_in_the_middle_window(self):
-        # Hours 7-9: confirmed 68-138% ABOVE baseline -- must be > 1.0,
-        # and clearly higher than the early suppressed phase.
-        early = bc.resumption_size_multiplier(3.0)
-        overshoot = bc.resumption_size_multiplier(8.0)
-        assert overshoot > 1.0
-        assert overshoot > early
+    def test_interpolates_between_elapsed_midpoints(self):
+        low = bc.streak_fade_probability(2, 30.0)
+        high = bc.streak_fade_probability(2, 90.0)
+        mid = bc.streak_fade_probability(2, 60.0)
+        assert abs(mid - (low + high) / 2) < 1e-9
 
-    def test_genuinely_neutral_beyond_the_measured_window(self):
-        # Hour 10+: settles into noisy oscillation around baseline --
-        # a STRICT 1.0 no-op, not clamped to hour-10's specific ratio
-        # the way TTC/liquidity clamp to their edge values.
-        assert bc.resumption_size_multiplier(10.0) == 1.0
-        assert bc.resumption_size_multiplier(50.0) == 1.0
+    def test_flat_outside_measured_elapsed_range_no_extrapolation(self):
+        at_30 = bc.streak_fade_probability(2, 30.0)
+        below_30 = bc.streak_fade_probability(2, 0.0)
+        assert at_30 == below_30
+        at_210 = bc.streak_fade_probability(2, 210.0)
+        above_210 = bc.streak_fade_probability(2, 500.0)
+        assert at_210 == above_210
 
-    def test_interpolates_smoothly_between_calibrated_points(self):
-        # Between hour 3 (0.72) and hour 8 (1.90), the value at hour 5.5
-        # (the midpoint) must land between them.
-        low = bc.resumption_size_multiplier(3.0)
-        mid = bc.resumption_size_multiplier(5.5)
-        high = bc.resumption_size_multiplier(8.0)
-        assert low < mid < high
+    def test_decays_monotonically_as_elapsed_time_grows(self):
+        vals = [bc.streak_fade_probability(2, s) for s in (30.0, 90.0, 150.0, 210.0)]
+        assert vals == sorted(vals, reverse=True)
+
+    def test_length_beyond_5_extrapolates_flat_at_the_5plus_rate(self):
+        assert bc.streak_fade_probability(5, 100.0) == bc.streak_fade_probability(10, 100.0)
+        assert bc.streak_fade_probability(5, 100.0) == bc.streak_fade_probability(99, 100.0)
+
+    def test_length_not_smoothed_matches_real_measured_shape(self):
+        # Deliberately non-monotonic (length=4 dips below length=3) --
+        # kept exactly as measured, not smoothed. Confirm the table
+        # itself (not just the function) preserves this shape.
+        assert bc.STREAK_FADE_LENGTH_MULTIPLIER[4] < bc.STREAK_FADE_LENGTH_MULTIPLIER[3]
+
+    def test_always_returns_a_valid_probability(self):
+        for length in (2, 3, 4, 5, 10):
+            for elapsed in (None, 0.0, 30.0, 120.0, 210.0, 1000.0):
+                p = bc.streak_fade_probability(length, elapsed)
+                assert 0.0 <= p <= 1.0
+
+
+class TestHourSizeMultiplier:
+    """HOUR-CONDITIONED SIZE BOOST, added 2026-09-25 (research-loop
+    finding): his median first-entry size runs ~19-26% higher during
+    06:00-07:00 UTC specifically, confirmed on two independent samples.
+    Boost-only, deliberately modest (tracks his observed size reaction,
+    not the much larger per-trade edge measured in the same hour)."""
+
+    def test_boost_during_the_hour(self):
+        assert bc.hour_size_multiplier(6) == bc.HOUR_SIZE_BOOST_MULTIPLIER
+        assert bc.hour_size_multiplier(6) > 1.0
+
+    def test_no_op_every_other_hour(self):
+        for hour in range(24):
+            if hour in bc.HOUR_SIZE_BOOST_UTC_HOURS:
+                continue
+            assert bc.hour_size_multiplier(hour) == 1.0
+
+    def test_no_op_for_none(self):
+        assert bc.hour_size_multiplier(None) == 1.0
+
+
+class TestHedgeNotionalForPriceIsTheOnlySizeFunction:
+    """hedge_notional_for_price, promoted 2026-09-24 to the single hedge-
+    SIZE entry point (the old dominant-cost-ratio chain -- HEDGE_SIZE_
+    RATIO plus five sibling adjustment multipliers -- was deleted
+    entirely, not just bypassed)."""
+
+    def test_returns_none_for_dormant_assets(self):
+        # BNB/Dogecoin/Hyperliquid are not part of --assets and were
+        # never calibrated for this formula.
+        for asset in ("BNB", "Dogecoin", "Hyperliquid", "NotAnAsset"):
+            assert bc.hedge_notional_for_price(asset, 0.5) is None
+
+    def test_returns_a_positive_notional_for_every_live_asset(self):
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            for price in (0.05, 0.25, 0.5, 0.75, 0.95):
+                notional = bc.hedge_notional_for_price(asset, price)
+                assert notional is not None and notional > 0
+
+    def test_none_for_a_price_outside_the_open_unit_interval(self):
+        assert bc.hedge_notional_for_price("Bitcoin", 0.0) is None
+        assert bc.hedge_notional_for_price("Bitcoin", 1.0) is None
+        assert bc.hedge_notional_for_price("Bitcoin", None) is None
 
 
 class TestHedgeCalibration:
@@ -1025,23 +776,23 @@ class TestHedgeCalibration:
     a dramatically better worst-case outcome than single-sided ones
     (-20.5% of stake on average vs -100%), and 24.9% are outright
     arbitrage. All six assets and four regimes must have real, distinct
-    calibration data -- not a single shared fallback."""
+    calibration data -- not a single shared fallback.
+
+    NOTE 2026-09-24: HEDGE_SIZE_RATIO and the hedge_trigger_probability/
+    hedge_size_ratio wrapper functions were removed in the single-
+    function hedge consolidation (hedge size is now hedge_notional_for_
+    price, asset+price only, not asset+regime) -- these tests now read
+    HEDGE_TRIGGER_PROBABILITY directly rather than through the deleted
+    hedge_trigger_probability() wrapper, which was already dead code
+    (unused outside this test file) before the consolidation."""
 
     def test_all_six_assets_and_four_regimes_present_for_trigger_probability(self):
         assert set(bc.HEDGE_TRIGGER_PROBABILITY.keys()) == set(bc.ASSET_NAMES)
         for asset in bc.ASSET_NAMES:
             assert set(bc.HEDGE_TRIGGER_PROBABILITY[asset].keys()) == set(bc.REGIME_NAMES)
 
-    def test_all_six_assets_and_four_regimes_present_for_size_ratio(self):
-        assert set(bc.HEDGE_SIZE_RATIO.keys()) == set(bc.ASSET_NAMES)
-        for asset in bc.ASSET_NAMES:
-            assert set(bc.HEDGE_SIZE_RATIO[asset].keys()) == set(bc.REGIME_NAMES)
-
-    def test_size_ratio_falls_back_to_default_for_an_unknown_asset(self):
-        assert bc.hedge_size_ratio("NotAnAsset", "CHEAP") == bc._DEFAULT_HEDGE_SIZE_RATIO
-
     def test_probabilities_are_valid_and_asset_specific(self):
-        cheap_probs = {a: bc.hedge_trigger_probability(a, "CHEAP") for a in bc.ASSET_NAMES}
+        cheap_probs = {a: bc.HEDGE_TRIGGER_PROBABILITY[a]["CHEAP"] for a in bc.ASSET_NAMES}
         for p in cheap_probs.values():
             assert 0.0 <= p <= 1.0
         assert len(set(cheap_probs.values())) == len(cheap_probs)
@@ -1051,103 +802,31 @@ class TestHedgeCalibration:
         confident that a hedge is added far less often than from any
         other regime, consistently across every asset."""
         for asset in bc.ASSET_NAMES:
-            high_p = bc.hedge_trigger_probability(asset, "HIGH")
+            high_p = bc.HEDGE_TRIGGER_PROBABILITY[asset]["HIGH"]
             for regime in ("CHEAP", "MID", "CORE"):
-                assert high_p <= bc.hedge_trigger_probability(asset, regime)
-
-    def test_unknown_asset_or_regime_falls_back_safely(self):
-        assert bc.hedge_trigger_probability("NotAnAsset", "CHEAP") == 0.0
+                assert high_p <= bc.HEDGE_TRIGGER_PROBABILITY[asset][regime]
 
 
-class TestCrossMarketHedgeRateMultiplier:
-    """Cross-market hedge-RATE persistence, added 2026-09-11, RETIRED
-    2026-09-23 (systematic post-Sep-18 audit). A quick check with a
-    wrong proxy definition (rolling multi-market average) found Bitcoin
-    still holding up -- redone properly using this table's own actual
-    definition (a single market's own hedges/total-decisions fraction)
-    and all three assets came back a clean, well-powered null (t=0.05/
-    -1.59/0.39), split-half confirmed. Table now empty for every asset."""
+class TestScoutParams:
+    """scout_params, merged 2026-09-28 from scout_probability +
+    scout_size_ratio -- always called together at both existing call
+    sites (roll the probability, apply the ratio only if it fires)."""
 
-    def test_noop_for_unknown_asset_or_missing_rate(self):
-        assert bc.cross_market_hedge_rate_multiplier("Dogecoin", 0.3) == 1.0
-        assert bc.cross_market_hedge_rate_multiplier("Bitcoin", None) == 1.0
-
-    def test_table_is_empty_and_every_asset_is_now_a_noop(self):
-        assert bc.CROSS_MARKET_HEDGE_RATE_MULTIPLIER == {}
+    def test_matches_the_calibrated_tables_for_live_assets(self):
         for asset in ("Bitcoin", "Ethereum", "Solana"):
-            assert bc.cross_market_hedge_rate_multiplier(asset, 0.0) == 1.0
-            assert bc.cross_market_hedge_rate_multiplier(asset, 0.5) == 1.0
+            prob, ratio = bc.scout_params(asset)
+            assert prob == pytest.approx(bc.SCOUT_PROBABILITY[asset])
+            assert ratio == pytest.approx(bc.SCOUT_SIZE_RATIO[asset])
 
+    def test_uncalibrated_asset_gets_a_zero_probability_and_default_ratio(self):
+        prob, ratio = bc.scout_params("XRP")
+        assert prob == 0.0
+        assert ratio == bc._DEFAULT_SCOUT_SIZE_RATIO
 
-class TestConvictionHedgeMultiplier:
-    """Own-market conviction (first-entry size vs regime median) predicts
-    THIS market's eventual hedge need, added 2026-09-11 -- real, survives
-    regime/weekend/liquidity confounds. Scoped to MID/CORE/HIGH only
-    (CHEAP shows no such relationship)."""
-
-    def test_noop_for_unscoped_regime_or_missing_ratio(self):
-        assert bc.conviction_hedge_multiplier("Bitcoin", "CHEAP", 0.5) == 1.0
-        assert bc.conviction_hedge_multiplier("Bitcoin", "MID", None) == 1.0
-        assert bc.conviction_hedge_multiplier("Dogecoin", "MID", 0.5) == 1.0
-
-    def test_decreases_with_conviction(self):
-        # The finding: a BELOW-median first entry (negative log-ratio)
-        # predicts MORE hedging than an above-median one.
-        for asset, regimes in bc.CONVICTION_HEDGE_MULTIPLIER.items():
-            for regime, curve in regimes.items():
-                xs = sorted(curve.keys())
-                low = bc.conviction_hedge_multiplier(asset, regime, xs[0])
-                high = bc.conviction_hedge_multiplier(asset, regime, xs[-1])
-                assert low > high, f"{asset}/{regime}: expected decreasing, got {low}/{high}"
-
-
-class TestCrossMarketSizeMomentumMultiplier:
-    """Cross-market sizing momentum, added 2026-09-11 -- real, cross-asset,
-    slow EWMA-like decay, temporally stable across the Aug 7 TWAP change.
-    Scoped to first-entry size only. Bitcoin/Ethereum already removed at
-    the 2026-09-13 post-halt check; Solana (the last survivor) RETIRED
-    2026-09-23 (systematic post-Sep-18 audit) -- a proper regime-
-    normalized re-derivation found the effect has genuinely vanished
-    (r=0.0531, t=1.27, null in both split halves). Table now empty."""
-
-    def test_noop_for_unknown_asset_or_missing_residual(self):
-        assert bc.cross_market_size_momentum_multiplier("Dogecoin", 0.5) == 1.0
-        assert bc.cross_market_size_momentum_multiplier("Bitcoin", None) == 1.0
-
-    def test_table_is_empty_and_every_asset_is_now_a_noop(self):
-        assert bc.CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER == {}
-        for asset in ("Bitcoin", "Ethereum", "Solana"):
-            assert bc.cross_market_size_momentum_multiplier(asset, -5.0) == 1.0
-            assert bc.cross_market_size_momentum_multiplier(asset, 5.0) == 1.0
-
-
-class TestBankrollPnlSizeMultiplier:
-    """Bankroll-linked sizing, added 2026-09-12, RETIRED 2026-09-23
-    (systematic post-Sep-18 audit) -- the original Ethereum/Solana
-    finding (size scales down after accumulated profit, up after a
-    drawdown) had a repeated history of borderline/unstable re-checks
-    (2026-09-08, 2026-09-13) and was separately found permanently inert
-    on live bots (paperbot's Ethereum PnL sits far below the calibrated
-    floor). A fresh, leak-free, rolling-window re-derivation found BOTH
-    assets independently fail to replicate the claimed direction (null
-    for Ethereum, wrong-signed for Solana) -- see
-    BANKROLL_PNL_SIZE_MULTIPLIER's docstring in behavior_config.py.
-    Table emptied; these tests now confirm the no-op state, not the
-    original (retracted) finding."""
-
-    def test_noop_for_unknown_asset_or_missing_pnl(self):
-        assert bc.bankroll_pnl_size_multiplier("Bitcoin", 100.0) == 1.0
-        assert bc.bankroll_pnl_size_multiplier("Dogecoin", 100.0) == 1.0
-        assert bc.bankroll_pnl_size_multiplier("Ethereum", None) == 1.0
-
-    def test_bitcoin_is_deliberately_excluded_not_just_uncalibrated(self):
-        assert "Bitcoin" not in bc.BANKROLL_PNL_SIZE_MULTIPLIER
-
-    def test_table_is_empty_and_every_asset_is_now_a_noop(self):
-        assert bc.BANKROLL_PNL_SIZE_MULTIPLIER == {}
-        for asset in ("Bitcoin", "Ethereum", "Solana", "Dogecoin"):
-            assert bc.bankroll_pnl_size_multiplier(asset, -1000.0) == 1.0
-            assert bc.bankroll_pnl_size_multiplier(asset, 1000.0) == 1.0
+    def test_returns_a_two_tuple(self):
+        result = bc.scout_params("Bitcoin")
+        assert isinstance(result, tuple)
+        assert len(result) == 2
 
 
 class TestReentryFatigueMultiplier:
@@ -1214,6 +893,43 @@ class TestReentryFatigueMultiplier:
             assert 0.0 < mult < 1.0, f"{key}: expected a dampener (0,1), got {mult}"
 
 
+class TestAddOnContinuationProbability:
+    """Add-on continuation probability, added 2026-09-26 -- closes the
+    real structural gap that ordinary same-side add-ons had no
+    continuation-probability gate at all (unlike hedges'
+    HEDGE_CONTINUATION_PROBABILITY). Re-derived on true on-chain order
+    identity after the original 5-second-merge-based numbers failed
+    independent re-verification -- see ADD_ON_CONTINUATION_PROBABILITY's
+    docstring for the full derivation."""
+
+    def test_noop_for_dormant_assets(self):
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            for regime in ("CHEAP", "MID", "CORE", "HIGH"):
+                assert bc.addon_continuation_probability(asset, regime) == 1.0
+
+    def test_every_live_asset_regime_cell_is_calibrated(self):
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            for regime in ("CHEAP", "MID", "CORE", "HIGH"):
+                p = bc.addon_continuation_probability(asset, regime)
+                assert 0.0 < p < 1.0, f"{asset}/{regime}: expected a real dampener, got {p}"
+
+    def test_matches_the_calibrated_table_exactly(self):
+        for (asset, regime), expected in bc.ADD_ON_CONTINUATION_PROBABILITY.items():
+            assert bc.addon_continuation_probability(asset, regime) == pytest.approx(expected)
+
+    def test_bitcoin_continues_more_than_ethereum_and_solana_in_every_regime(self):
+        # The well-replicated part of this finding (survived re-derivation
+        # on a completely different, methodologically cleaner dataset) --
+        # the exact per-cell numbers are less load-bearing than this
+        # ordering.
+        for regime in ("CHEAP", "MID", "CORE", "HIGH"):
+            btc = bc.addon_continuation_probability("Bitcoin", regime)
+            eth = bc.addon_continuation_probability("Ethereum", regime)
+            sol = bc.addon_continuation_probability("Solana", regime)
+            assert btc > eth, f"{regime}: Bitcoin should continue more than Ethereum"
+            assert btc > sol, f"{regime}: Bitcoin should continue more than Solana"
+
+
 class TestHedgeCountReinforcementMultiplier:
     """Hedge-count reinforcement, added 2026-09-13 (/loop iters 131-133,
     138) -- the mirror-image signal to REENTRY_FATIGUE: needing 2+ hedges
@@ -1277,59 +993,6 @@ class TestHedgeCountReinforcementMultiplier:
         for key, tiers in bc.HEDGE_COUNT_REINFORCEMENT_TIERS.items():
             for threshold, mult in tiers:
                 assert mult <= 2.0, f"{key}@{threshold}: {mult} exceeds the intended modest damped range"
-
-
-class TestHedgeTriggerAfterBigLossMultiplier:
-    """Hedge propensity after a big loss, added 2026-09-13 -- a market's
-    own asset having just taken a top-decile-sized rolling loss (bot.py's
-    _is_top_decile_loss, min 20 samples before ever triggering) predicted
-    the NEXT market's first hedge trigger fired more readily, for
-    Ethereum/Solana. RETIRED 2026-09-13 (post-halt, /loop cycle 11): a
-    simplified post-halt-only re-check (raw pooled comparison, not the
-    original's full Mantel-Haenszel stratification -- a reasonable
-    simplification given the post-halt window is only ~4.9 days, too
-    short for the kind of secular drift MH-control exists to handle)
-    found no detectable effect for either asset (Ethereum ratio=1.045,
-    z=0.341, n=74 flagged markets; Solana ratio=1.013, z=0.106, n=64) --
-    see the module docstring in behavior_config.py for the full numbers.
-    HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER is now an empty dict; every
-    asset (including the two that used to have a real boost) gets the
-    function's own no-op fallback."""
-
-    def test_always_neutral_now_the_table_is_empty(self):
-        # Every asset, including the two that used to have a real boost,
-        # must be a strict no-op now the underlying signal is gone.
-        for asset in ("Bitcoin", "Ethereum", "Solana", "Dogecoin", "Hyperliquid", "BNB"):
-            assert bc.hedge_trigger_after_big_loss_multiplier(asset, True) == 1.0
-
-    def test_noop_when_not_after_a_big_loss_or_unknown(self):
-        for asset in ("Ethereum", "Solana"):
-            assert bc.hedge_trigger_after_big_loss_multiplier(asset, False) == 1.0
-            assert bc.hedge_trigger_after_big_loss_multiplier(asset, None) == 1.0
-
-    def test_table_is_empty(self):
-        assert bc.HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER == {}
-
-
-class TestAccuracyScoutMultiplier:
-    """Accuracy-conditioned scout rate, added 2026-09-11, RETIRED
-    2026-09-23 (systematic post-Sep-18 audit, follow-up on the
-    SCOUT_PROBABILITY recalibration this composes on top of). Track
-    record across two boundaries: pre-halt negative, post-halt
-    (2026-09-13) reversed to positive, post-Sep-18 (now) null (pooled
-    r=-0.0173 t=-0.28; circularity-checked r=0.0381 t=0.60, both far
-    below this file's own |t|>=2.58 bar). A relationship that's been
-    negative, positive, and null across three windows isn't a stable
-    trait -- retired rather than recalibrated a third time."""
-
-    def test_noop_when_accuracy_unavailable(self):
-        assert bc.accuracy_scout_multiplier(None) == 1.0
-
-    def test_table_is_empty_and_every_accuracy_is_now_a_noop(self):
-        assert bc.ACCURACY_SCOUT_MULTIPLIER == {}
-        assert bc.accuracy_scout_multiplier(0.0) == 1.0
-        assert bc.accuracy_scout_multiplier(0.5) == 1.0
-        assert bc.accuracy_scout_multiplier(1.0) == 1.0
 
 
 class TestDecisiveEntryEligibilityMultiplier:
@@ -1660,6 +1323,34 @@ class TestParticipationAssetScale:
         assert bc.participation_asset_scale("Dogecoin") == 1.0
 
 
+class TestCheapDeepTailParticipationMultiplier:
+    """Added 2026-09-28, digging into paperbot-100's CHEAP oversizing --
+    the real driver underneath the known 5-share-floor mechanism: all
+    bots underweight the genuine CHEAP deep tail relative to the trader
+    (win rate matches, ~10%, but price paid doesn't). See
+    CHEAP_DEEP_TAIL_PARTICIPATION_BOOST's docstring in behavior_config.py
+    for the full derivation."""
+
+    def test_noop_for_dormant_assets(self):
+        for asset in ("Dogecoin", "Hyperliquid", "BNB"):
+            assert bc.cheap_deep_tail_participation_multiplier(asset, 0.03) == 1.0
+
+    def test_noop_at_or_above_the_deep_touch_threshold(self):
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            assert bc.cheap_deep_tail_participation_multiplier(asset, bc.CHEAP_DEEP_TOUCH_PRICE_THRESHOLD) == 1.0
+            assert bc.cheap_deep_tail_participation_multiplier(asset, 0.29) == 1.0
+
+    def test_boost_below_the_deep_touch_threshold_for_every_live_asset(self):
+        for asset in ("Bitcoin", "Ethereum", "Solana"):
+            mult = bc.cheap_deep_tail_participation_multiplier(asset, 0.03)
+            assert mult > 1.0, f"{asset}: expected a real boost, got {mult}"
+            assert mult == pytest.approx(bc.CHEAP_DEEP_TAIL_PARTICIPATION_BOOST[asset])
+
+    def test_matches_the_calibrated_table_exactly(self):
+        for asset, expected in bc.CHEAP_DEEP_TAIL_PARTICIPATION_BOOST.items():
+            assert bc.cheap_deep_tail_participation_multiplier(asset, 0.01) == pytest.approx(expected)
+
+
 class TestMidBoundaryEdgeMultiplier:
     def test_low_boundary_returns_size_boost(self):
         assert bc.mid_boundary_edge_multiplier("MID", 0.30) == bc.MID_LOW_BOUNDARY_SIZE_MULTIPLIER
@@ -1727,47 +1418,3 @@ class TestTickOffsetDistribution:
         assert bc.sample_tick_offset(FixedRNG(0.999999)) == 3
 
 
-class TestLateWindowHedgeUrgencyMultiplier:
-    """LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER, added 2026-09-24 -- a real,
-    stratification- and per-asset-confirmed hedge-hazard hump 150-180s
-    after an EARLY (t_in<120s) first entry. See late-window-hedge-
-    urgency-design / late-window-hedge-urgency-bot-baseline-check in
-    project memory for the full derivation and a same-day corrected
-    impact analysis."""
-
-    def test_noop_when_either_input_missing(self):
-        assert bc.late_window_hedge_urgency_multiplier(None, 160.0) == 1.0
-        assert bc.late_window_hedge_urgency_multiplier(50.0, None) == 1.0
-        assert bc.late_window_hedge_urgency_multiplier(None, None) == 1.0
-
-    def test_noop_for_late_first_entries(self):
-        # late first-entries showed NO hump at all (monotonic decay) --
-        # this must be a hard no-op regardless of seconds_since_first_entry.
-        assert bc.late_window_hedge_urgency_multiplier(120.0, 160.0) == 1.0
-        assert bc.late_window_hedge_urgency_multiplier(200.0, 160.0) == 1.0
-
-    def test_noop_for_negative_seconds_since_first_entry(self):
-        assert bc.late_window_hedge_urgency_multiplier(50.0, -1.0) == 1.0
-
-    def test_returns_the_peak_bucket_at_150_to_180s_for_an_early_entry(self):
-        assert bc.late_window_hedge_urgency_multiplier(50.0, 160.0) == pytest.approx(2.381)
-        assert bc.late_window_hedge_urgency_multiplier(0.0, 150.0) == pytest.approx(2.381)
-
-    def test_returns_the_correct_bucket_across_the_whole_range(self):
-        cases = [
-            (0.0, 0.575), (29.9, 0.575),
-            (30.0, 1.558), (59.9, 1.558),
-            (90.0, 1.870), (119.9, 1.870),
-            (180.0, 1.088), (209.9, 1.088),
-            (240.0, 0.0), (299.9, 0.0),
-        ]
-        for since, expected in cases:
-            assert bc.late_window_hedge_urgency_multiplier(50.0, since) == pytest.approx(expected)
-
-    def test_noop_beyond_the_measured_300s_range(self):
-        assert bc.late_window_hedge_urgency_multiplier(50.0, 301.0) == 1.0
-
-    def test_early_entry_threshold_is_120s(self):
-        # the boundary itself belongs to "late" (>=), not "early"
-        assert bc.late_window_hedge_urgency_multiplier(119.9, 160.0) == pytest.approx(2.381)
-        assert bc.late_window_hedge_urgency_multiplier(120.0, 160.0) == 1.0

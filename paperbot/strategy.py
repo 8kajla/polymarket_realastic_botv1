@@ -182,29 +182,37 @@ class MarketActivityState:
     # nothing previously tracked.
     up_first_price: Optional[float] = None
     down_first_price: Optional[float] = None
-    # ADDED 2026-09-21, alongside REGIME_ENGAGEMENT_MULTIPLIER: side ->
-    # list of regimes that gate has already rejected an ordinary entry
-    # for in THIS market. Needed because a flat per-tick skip-probability
-    # roll against a long-lived regime (MID/CORE routinely persist for
-    # minutes) "eventually" passes no matter how low the probability is --
-    # confirmed in the historical-replay validation this table's own
-    # docstring references. Latching the roll per (side, regime) EPISODE
-    # instead (roll once, remember the answer until the regime genuinely
-    # changes) fixes this: a real regime change produces a different
-    # dict key naturally, so no explicit clearing logic is needed -- an
-    # old rejection for a regime a side has since LEFT simply never
-    # matches again. Stored as a dict of lists (not a set of tuples) so
-    # this round-trips through save_activity_state/load_activity_state's
-    # plain JSON (a Python set isn't JSON-serializable).
-    rejected_regime_episodes: dict = field(default_factory=dict)
+    # GENERIC EPISODE-LATCH, added 2026-09-21 (regime), 2026-09-26 (hedge,
+    # add-on), MERGED into one mechanism 2026-09-28. Three independent
+    # gates -- REGIME_ENGAGEMENT_MULTIPLIER (keyed by side+regime),
+    # hedge_probability (keyed by attempt_index+hedge_count), and
+    # ADD_ON_CONTINUATION_PROBABILITY (keyed by side+k) -- all hit the
+    # exact same bug: a flat per-tick skip-probability roll against a
+    # long-lived state "eventually" passes no matter how low the
+    # probability is, confirmed live for regime-engagement (historical-
+    # replay validation) and for hedges (Bitcoin's observed hedge rate
+    # ran 1.8-3.0x his real rate before this was fixed, a per-tick 5%
+    # probability inflating to a 64% cumulative fire rate over 20
+    # unchanged ticks). All three used an IDENTICAL fix -- latch the roll
+    # per episode key, remember the answer until the key itself
+    # genuinely changes (a real regime shift / real fill advancing
+    # attempt_index or k / a side flip all naturally produce a different
+    # key, no explicit clearing needed) -- just with three different key
+    # shapes and three separate fields. Generalized here into one
+    # `kind` + variable-length key, stored as a single list of
+    # [kind, *key_parts] lists (not a set of tuples, so this round-trips
+    # through save_activity_state/load_activity_state's plain JSON).
+    # Existing kinds: "regime" (side, regime), "hedge" (attempt_index,
+    # hedge_count), "addon" (side, k).
+    rejected_episodes: list = field(default_factory=list)
 
-    def is_regime_episode_rejected(self, side: str, regime: str) -> bool:
-        return regime in self.rejected_regime_episodes.get(side, [])
+    def is_episode_rejected(self, kind: str, *key_parts) -> bool:
+        return [kind, *key_parts] in self.rejected_episodes
 
-    def reject_regime_episode(self, side: str, regime: str) -> None:
-        self.rejected_regime_episodes.setdefault(side, [])
-        if regime not in self.rejected_regime_episodes[side]:
-            self.rejected_regime_episodes[side].append(regime)
+    def reject_episode(self, kind: str, *key_parts) -> None:
+        entry = [kind, *key_parts]
+        if entry not in self.rejected_episodes:
+            self.rejected_episodes.append(entry)
 
     def update_first_prices(self, up_price: Optional[float], down_price: Optional[float]) -> None:
         """Latches the first non-None price seen for each side. Called
@@ -222,11 +230,11 @@ class MarketActivityState:
     def update_decisive_crossings(self, up_price: Optional[float], down_price: Optional[float],
                                    now: float, threshold: float = 0.70) -> None:
         """Records the first time each side's price reaches `threshold`,
-        called every tick with the market's current book prices (mirrors
-        bot.py's _recent_price_delta -- a book-state-derived per-market
-        signal updated once per tick before any decision is made this
-        cycle). A no-op once a side has already crossed -- see the
-        crossed_at fields' own docstring for why this locks."""
+        called every tick with the market's current book prices -- a
+        book-state-derived per-market signal updated once per tick before
+        any decision is made this cycle. A no-op once a side has already
+        crossed -- see the crossed_at fields' own docstring for why this
+        locks."""
         if self.up_decisive_crossed_at is None and up_price is not None and up_price >= threshold:
             self.up_decisive_crossed_at = now
         if self.down_decisive_crossed_at is None and down_price is not None and down_price >= threshold:
@@ -388,7 +396,49 @@ def load_activity_state(path: Path) -> dict:
     if not path.exists():
         return {}
     raw = json.loads(path.read_text())
-    return {cid: MarketActivityState(**fields) for cid, fields in raw.items()}
+    return {cid: MarketActivityState(**_migrate_legacy_episode_fields(fields)) for cid, fields in raw.items()}
+
+
+def _migrate_legacy_episode_fields(fields: dict) -> dict:
+    """One-time migration for activity_state.json written before
+    rejected_regime_episodes/rejected_hedge_episodes/rejected_addon_episodes
+    were generalized into the single rejected_episodes list (see
+    MarketActivityState.is_episode_rejected/reject_episode). Converts each
+    legacy shape -- rejected_regime_episodes: {side: [regime, ...]},
+    rejected_hedge_episodes: [[attempt_index, hedge_count], ...],
+    rejected_addon_episodes: {side: [k, ...]} -- into the equivalent
+    ["kind", *key_parts] entries so already-latched episodes aren't
+    silently forgotten (and re-rolled) across this deploy. A no-op on
+    already-migrated records, since the legacy keys are simply absent."""
+    fields = dict(fields)
+    episodes = list(fields.get("rejected_episodes", []))
+
+    regime_eps = fields.pop("rejected_regime_episodes", None)
+    if regime_eps:
+        for side, regimes in regime_eps.items():
+            for regime in regimes:
+                entry = ["regime", side, regime]
+                if entry not in episodes:
+                    episodes.append(entry)
+
+    hedge_eps = fields.pop("rejected_hedge_episodes", None)
+    if hedge_eps:
+        for attempt_index, hedge_count in hedge_eps:
+            entry = ["hedge", attempt_index, hedge_count]
+            if entry not in episodes:
+                episodes.append(entry)
+
+    addon_eps = fields.pop("rejected_addon_episodes", None)
+    if addon_eps:
+        for side, ks in addon_eps.items():
+            for k in ks:
+                entry = ["addon", side, k]
+                if entry not in episodes:
+                    episodes.append(entry)
+
+    if episodes:
+        fields["rejected_episodes"] = episodes
+    return fields
 
 
 @dataclass
@@ -462,266 +512,117 @@ def decide_side(asset: str, activity: MarketActivityState, rng: random.Random,
             return "Down" if previous_market_first_side == "Up" else "Up"
         return rng.choice(["Up", "Down"])
     held_regime = bc.classify_regime(held_side_price) if held_side_price is not None else "CHEAP"
-    persistence = bc.side_persistence_for(asset, held_regime)
-    if config.ENABLE_RECENT_SIDE_PERSISTENCE:
-        persistence = bc.recent_side_persistence(asset, held_regime, persistence)
+    persistence = bc.side_persistence(asset, held_regime,
+                                       use_recent_override=config.ENABLE_RECENT_SIDE_PERSISTENCE)
     if rng.random() < persistence:
         return activity.last_side
     return "Down" if activity.last_side == "Up" else "Up"
 
 
 def decide_hedge(asset: str, activity: MarketActivityState, rng: random.Random,
-                  liquidity: Optional[float] = None,
-                  is_weekend: Optional[bool] = None,
+                  price: Optional[float] = None,
                   dominant_current_price: Optional[float] = None,
-                  prev_hedge_rate: Optional[float] = None,
-                  after_big_loss: Optional[bool] = None,
-                  seconds_remaining: Optional[float] = None,
-                  seconds_since_first_entry: Optional[float] = None) -> Optional[str]:
+                  seconds_remaining: Optional[float] = None) -> Optional[tuple[str, float]]:
     """
-    Returns the hedge side ("Up"/"Down") if THIS entry should be a
-    deliberate insurance leg on the opposite side from the first entry,
-    or None if not (in which case the caller falls through to the
-    ordinary decide_side/decide_size flow).
+    THE single entry point for the ENTIRE hedge decision: whether to
+    hedge, which side, AND how much. Returns (side, notional_usd) if THIS
+    entry should be a deliberate insurance leg on the opposite side from
+    the first entry, or None if not (in which case the caller falls
+    through to the ordinary decide_side/decide_size flow). Matches
+    decide_size's own (value, flag) tuple-return convention elsewhere in
+    this file.
 
-    CHANGED 2026-09-08 (was: only ever fires at entry_count == 1, the
-    market's literal 2nd entry, using HEDGE_TRIGGER_PROBABILITY as a
-    single-shot probability there). Fresh re-derivation from the full
-    trader mirror found that design structurally missed most real
-    hedges: only 23.5% of them land at index 1; median index is 4. Now
-    checked at EVERY entry_count from 1 up through behavior_config's
-    modeled hazard window, using hedge_attempt_hazard's per-attempt
-    conditional probability -- rescaled so the cumulative probability
-    across the whole sequence still exactly reproduces
-    HEDGE_TRIGGER_PROBABILITY's calibrated overall frequency (unchanged),
-    while the SHAPE of when it fires now matches the real timing
-    distribution instead of concentrating everything at one point.
+    CONSOLIDATED 2026-09-26: previously the TRIGGER (this function,
+    returning just the side) and the SIZE (a separate call to
+    bc.hedge_notional_for_price, duplicated at a LATER, DIFFERENT point
+    in both strategy.py's and consolidated_engine.py's build_order_intent)
+    were two independent call sites a caller had to wire together
+    correctly itself. Folded into one call here -- `price` (the hedge
+    side's own current book price, the same input hedge_notional_for_price
+    always needed) is now a parameter of THIS function, and jitter/
+    SIZE_SCALE_FACTOR/streak-size-boost are all applied internally, same
+    as decide_size already does for ordinary entries. A caller that
+    doesn't have a price yet (or doesn't need the notional) can still
+    pass price=None and just check `is not None` on the result, same as
+    before this consolidation -- the returned notional is simply 0.0 in
+    that case.
 
-    CHANGED AGAIN 2026-09-09 (was: hedge_placed guarding every attempt,
-    at most one hedge-shaped entry ever per market). CONFIRMED LIVE:
-    even after collapsing raw trade rows into genuine decisions (merging
-    same-side CLOB fragments -- 63.5% of raw rows turned out to be
-    fragments, not separate decisions), only 39.8% of dual-sided markets
-    actually stop at 1 hedge; the rest keep going. Once the market's
-    FIRST hedge has fired (hedge_count >= 1), a further hedge-shaped
-    entry is now governed by HEDGE_CONTINUATION_PROBABILITY instead of
-    being blocked outright -- see its docstring in behavior_config.py for
-    the calibration. hedge_attempt_hazard above still exclusively governs
-    the FIRST hedge (hedge_count == 0); nothing about that path changed.
+    Prior 2026-09-24 consolidation (still true, unchanged by the above):
+    the TRIGGER probability itself is a single call to bc.hedge_probability
+    -- see that function's own docstring in behavior_config.py for exactly
+    which real findings survived (base hazard, the 2026-09-18 regime
+    post-shift dampener, the adverse/favorable-move shape) and which were
+    cut for simplicity (liquidity, weekend, cross-market, conviction,
+    after-a-big-loss, the MID favorable hump, the adverse-move x TTC
+    interaction, and late-window hedge urgency). Prior history
+    (attempt-index timing shape, the multi-hedge continuation mechanism,
+    the MAX_HEDGE_COUNT_PER_MARKET cap) is preserved below and in
+    git/project memory.
 
-    HARDENED SAME NIGHT: confirmed live that the per-opportunity
-    continuation roll runs away without a ceiling -- see
-    config.MAX_HEDGE_COUNT_PER_MARKET's docstring for the exact numbers
-    (real distribution vs. this bot's, and the confirmed net-negative $
-    effect on the ledger). Capped as a direct mitigation while the
-    underlying per-opportunity-vs-real-cadence mismatch gets a proper
-    fix.
+    `seconds_remaining` (added 2026-09-25): re-adds the late-window hedge
+    urgency this file's own comment above says was cut -- now correctly
+    based on absolute time-remaining (a research-loop finding refined
+    this from the original design's "seconds since first entry" framing,
+    which turned out to be the wrong basis) and generalized as part of
+    the same effect governing first entries and add-ons too. See
+    bc.hedge_urgency_multiplier. Optional (default None -> no-op) so
+    existing callers/tests keep working unchanged.
 
-    LIQUIDITY-conditioned (2026-09-10): `liquidity` (Market.liquidity,
-    Gamma's liquidityNum -- see its own docstring) scales the FIRST-hedge
-    probability only, via bc.hedge_liquidity_multiplier -- confirmed real
-    and well-powered (t=5.263) that he hedges more in higher-liquidity
-    markets. Deliberately NOT applied to hedge_continuation_probability:
-    that finding was measured on "did this market ever go dual-sided",
-    which maps onto the first hedge specifically, not the separate
-    continuation mechanism. Optional (default None -> no-op, same pattern
-    as decide_size's seconds_remaining) so every existing call site keeps
-    working unchanged.
+    (`streak_length` was threaded through here 2026-09-25 -> 2026-09-26,
+    removed entirely once STREAK_HEDGE_PROBABILITY_MULTIPLIER/
+    STREAK_HEDGE_SIZE_MULTIPLIER's on-chain re-check reversed the finding
+    they fed -- streak_length is still very much alive for
+    streak_fade_side's own side-selection use, just no longer relevant to
+    hedging.)
 
-    WEEKEND-conditioned (2026-09-10): `is_weekend` scales the FIRST-hedge
-    probability only, via bc.weekend_hedge_multiplier -- confirmed real,
-    well-powered (z=9.9), and causally explained (lower weekend
-    volatility -> more MID/undecided markets -> more hedging) that his
-    dual-sided rate is higher on weekends. Same scoping rationale as
-    liquidity above: the underlying measurement is "did this market ever
-    go dual-sided", not a continuation-shaped quantity. Optional (default
-    None -> no-op) for the same reason as every other optional param here.
-
-    ADVERSE-MOVE-conditioned TRIGGER (2026-09-10, same night as the SIZE
-    versions in behavior_config.py): `dominant_current_price` (the
-    dominant side's live book price, NOT the hedge side's) combines with
-    activity.first_entry_price to compute adverse_move, which scales the
-    FIRST-hedge probability via bc.adverse_move_hedge_trigger_multiplier
-    -- confirmed real and survives regime/attempt_index/TTC confound
-    checks, see that function's docstring. Distinct measurement from the
-    SIZE multipliers (whether he hedges at all, not how big it is once he
-    does) but the same since-origin adverse_move definition. Optional
-    (default None -> no-op) for the same reason as liquidity/is_weekend.
-
-    CROSS-MARKET HEDGE-RATE-conditioned (2026-09-11): `prev_hedge_rate`
-    (the PREVIOUS market's hedge_count/entry_count for this asset) scales
-    the FIRST-hedge probability only, via bc.cross_market_hedge_rate_
-    multiplier -- real, cross-asset (r=0.25-0.35 all three), survives
-    regime/weekend confounds, though the mechanism isn't fully pinned
-    down (see that function's docstring for the honest caveat). Optional
-    (default None -> no-op) for the same reason as every other optional
-    param here; build_order_intent tracks and passes in the prior
-    market's hedge rate per asset.
-
-    CONVICTION-conditioned (2026-09-11): computed INTERNALLY (not a new
-    parameter) from activity.first_entry_notional vs this (asset,
-    first_entry_regime)'s typical first-entry size, via bc.conviction_
-    hedge_multiplier -- real, regime-confound-checked finding that a
-    market's own below-median first entry predicts THIS SAME market
-    needing more hedging later (mechanism unexplained but the predictor
-    survives regime/weekend/liquidity confounds). Computed internally
-    (not threaded in from build_order_intent) because activity already
-    carries everything needed (first_entry_notional, first_entry_regime)
-    -- unlike prev_hedge_rate above, which is genuinely cross-market
-    state this function has no other way to see.
-
-    RECENT-BIG-LOSS-conditioned (2026-09-13): `after_big_loss` (whether
-    the PREVIOUS resolved market for this asset was a top-decile loss,
-    by this bot's own rolling loss history) scales the FIRST-hedge
-    probability only, via bc.hedge_trigger_after_big_loss_multiplier --
-    real loss-aversion reaction confirmed via Mantel-Haenszel stratified
-    odds ratio (Ethereum/Solana only, Bitcoin null; confirmed NOT
-    symmetric for a big win). Optional (default None -> no-op) for the
-    same reason as every other optional param here; bot.py maintains the
-    rolling per-asset loss history and passes in the flag.
-
-    REGIME POST-SHIFT-conditioned (2026-09-19, extended same day to
-    CORE/HIGH/MID): for every regime, the FIRST-hedge probability is
-    also scaled by bc.regime_hedge_post_shift_multiplier(asset, regime)
-    -- a real, sharp drop in the trader's hedge-trigger rate confirmed
-    at a specific recent boundary in most (regime, asset) cells (see
-    REGIME_HEDGE_POST_SHIFT_MULTIPLIER's docstring in
-    behavior_config.py for the full derivation, which cells are and
-    aren't calibrated, and the honest short-window caveat -- including
-    a same-day retraction of an earlier claim that MID needed a
-    different fix; it doesn't, once measured on the correct
-    first-hedge-only population). Not a new parameter -- computed
-    internally from `asset` and `activity.first_entry_regime`, which
-    this function already has.
-
-    LATE-WINDOW HEDGE URGENCY-conditioned (2026-09-24): `seconds_since_
-    first_entry` (how long ago THIS market's own first real entry
-    happened, computed by the caller) combines with
-    `activity.first_entry_t_in` (how early in the window that first entry
-    itself was) to scale the FIRST-hedge probability via bc.late_window_
-    hedge_urgency_multiplier -- a real, cross-asset-robust survival-
-    analysis finding (Kaplan-Meier hazard, right-censored) that hedge
-    hazard genuinely humps 150-180s after an EARLY (t_in<120s) first
-    entry, confirmed via stratification and per-asset breakdown, and
-    decisively cleared of double-counting with ADVERSE_MOVE_TTC_
-    INTERACTION (Ethereum has zero calibration there yet independently
-    shows the hump). No-ops cleanly (1.0) for late first entries or when
-    either input is unavailable -- see that function's docstring in
-    behavior_config.py. Optional (default None -> no-op) for the same
-    reason as every other optional param here.
+    EPISODE-LATCHED (added 2026-09-26): fixes a real, previously-
+    quantified bug -- see activity.is_hedge_episode_rejected's docstring
+    for the full derivation. Without this, the SAME (attempt_index,
+    hedge_count) state got re-rolled fresh on every eligible tick,
+    inflating the cumulative fire rate far past the calibrated per-roll
+    intent (confirmed live: Bitcoin ran 1.8-3.0x his real hedge rate in
+    every regime). Gated by config.ENABLE_HEDGE_EPISODE_LATCH so it can
+    be disabled as a safety valve if something looks wrong post-deploy,
+    same discipline as other correctness-affecting tables in this file.
     """
     if activity.entry_count < 1 or activity.first_entry_regime is None:
         return None
-    # CHANGED 2026-09-12 (bug audit #5, extended scope): hedge_count ->
-    # real_hedge_fill_count for every calibration-index/gate use below --
-    # hedge_count increments at PLACEMENT time (identical contamination to
-    # entry_count, see MarketActivityState's docstring), so a hedge that
-    # gets placed and then cancelled/expires unfilled would otherwise still
-    # trip MAX_HEDGE_COUNT_PER_MARKET early and shift every later
-    # continuation lookup to the wrong index. real_hedge_fill_count only
-    # counts confirmed fills, matching what HEDGE_CONTINUATION_PROBABILITY/
-    # HEDGE_CONTINUATION_SIZE_RATIO/hedge_attempt_hazard were actually
-    # calibrated against.
+    # real_hedge_fill_count (not the placement-based hedge_count) only
+    # counts confirmed fills -- a hedge that gets placed and then
+    # cancelled/expires unfilled doesn't trip this cap or shift the
+    # continuation index, matching what hedge_probability was calibrated
+    # against.
     if activity.real_hedge_fill_count >= config.MAX_HEDGE_COUNT_PER_MARKET:
         return None
     dominant = activity.dominant_side()
     if dominant is None:
         return None
-    if activity.real_hedge_fill_count == 0:
-        p = bc.hedge_attempt_hazard(asset, activity.first_entry_regime, activity.real_fill_count)
-        if config.ENABLE_REGIME_HEDGE_POST_SHIFT_DAMPENER:
-            # See REGIME_HEDGE_POST_SHIFT_MULTIPLIER's docstring in
-            # behavior_config.py -- the real trader's hedge rate crashed
-            # to a fraction of its old level in most (regime, asset)
-            # cells at a sharp boundary (~2026-09-18 03:00 UTC),
-            # confirmed a pure frequency change in every regime
-            # including MID (contra an earlier same-day claim -- see
-            # that docstring's retraction). Applied before the other
-            # conditional multipliers so it scales the same base hazard
-            # they all do, not layered on top of an already-adjusted p.
-            # No-op (1.0) for any uncalibrated or unaffected cell -- see
-            # that docstring for which ones (e.g. Solana/HIGH genuinely
-            # didn't shift).
-            p = max(0.0, min(1.0, p * bc.regime_hedge_post_shift_multiplier(
-                asset, activity.first_entry_regime)))
-        if config.ENABLE_LATE_WINDOW_HEDGE_URGENCY:
-            urgency_mult = bc.late_window_hedge_urgency_multiplier(
-                activity.first_entry_t_in, seconds_since_first_entry)
-            p = max(0.0, min(1.0, p * urgency_mult))
-        if config.ENABLE_HEDGE_LIQUIDITY_MULTIPLIER:
-            liq_mult = bc.hedge_liquidity_multiplier(asset, liquidity)
-            p = max(0.0, min(1.0, p * liq_mult))
-        if config.ENABLE_WEEKEND_HEDGE_MULTIPLIER:
-            weekend_mult = bc.weekend_hedge_multiplier(asset, is_weekend)
-            p = max(0.0, min(1.0, p * weekend_mult))
-        if (config.ENABLE_ADVERSE_MOVE_HEDGE_TRIGGER_MULTIPLIER
-                and activity.first_entry_price is not None and dominant_current_price is not None):
-            adverse_move = activity.first_entry_price - dominant_current_price
-            trigger_mult = bc.adverse_move_hedge_trigger_multiplier(asset, adverse_move)
-            p = max(0.0, min(1.0, p * trigger_mult))
-            # FAVORABLE-MOVE hedge trigger (2026-09-19): the mirror image
-            # of the block just above, covering adverse_move < 0 in
-            # CHEAP specifically -- see
-            # bc.favorable_move_hedge_trigger_multiplier's docstring for
-            # the full GP-IRL derivation. adverse_move_hedge_trigger_
-            # multiplier already no-ops for adverse_move<0, and this
-            # one already no-ops for adverse_move>=0, so applying both
-            # unconditionally is safe (exactly one of the two is ever
-            # non-1.0 for a given adverse_move) -- CHEAP-scoped at the
-            # call site since that's this multiplier's only calibrated
-            # regime, unlike its sibling which spans all four.
-            if (config.ENABLE_FAVORABLE_MOVE_HEDGE_TRIGGER_MULTIPLIER
-                    and activity.first_entry_regime == "CHEAP"):
-                favorable_mult = bc.favorable_move_hedge_trigger_multiplier(asset, adverse_move)
-                p = max(0.0, min(1.0, p * favorable_mult))
-            # MID favorable-move HUMP (2026-09-20): the MID-regime sibling
-            # of the CHEAP block just above -- see
-            # bc.mid_favorable_hedge_trigger_multiplier's docstring for
-            # the per-asset replication check (Solana only; Bitcoin null,
-            # Ethereum a different unshipped shape) that closes
-            # replication-checklist item #31. Same mutual-exclusivity
-            # reasoning as the CHEAP block: this only ever fires for
-            # adverse_move<0, adverse_move_hedge_trigger_multiplier only
-            # for >=0.
-            if (config.ENABLE_MID_FAVORABLE_HEDGE_HUMP_MULTIPLIER
-                    and activity.first_entry_regime == "MID"):
-                mid_hump_mult = bc.mid_favorable_hedge_trigger_multiplier(asset, adverse_move)
-                p = max(0.0, min(1.0, p * mid_hump_mult))
-            # ADVERSE-MOVE x TIME-REMAINING interaction (2026-09-20): a
-            # refinement ON TOP OF adverse_move_hedge_trigger_multiplier
-            # above, not instead of it -- see
-            # bc.adverse_move_ttc_interaction_multiplier's docstring for
-            # the full Avellaneda-Stoikov-derived rationale (his
-            # sensitivity to a given adverse move genuinely scales with
-            # how much time remains, real in CHEAP/MID/CORE for
-            # Bitcoin/Solana, absent in HIGH and for Ethereum). No-ops
-            # cleanly (1.0) outside those cells or when seconds_remaining
-            # is unavailable.
-            if config.ENABLE_ADVERSE_MOVE_TTC_INTERACTION:
-                ttc_interaction_mult = bc.adverse_move_ttc_interaction_multiplier(
-                    asset, activity.first_entry_regime, adverse_move, seconds_remaining)
-                p = max(0.0, min(1.0, p * ttc_interaction_mult))
-        if config.ENABLE_CROSS_MARKET_HEDGE_RATE_MULTIPLIER and prev_hedge_rate is not None:
-            rate_mult = bc.cross_market_hedge_rate_multiplier(asset, prev_hedge_rate)
-            p = max(0.0, min(1.0, p * rate_mult))
-        if (config.ENABLE_CONVICTION_HEDGE_MULTIPLIER
-                and activity.first_entry_notional is not None):
-            try:
-                regime_median = bc.median_entry_notional(asset, activity.first_entry_regime, "first")
-            except bc.BehaviorLookupError:
-                regime_median = 0.0
-            if regime_median > 0 and activity.first_entry_notional > 0:
-                conviction_log_ratio = math.log(activity.first_entry_notional / regime_median)
-                conviction_mult = bc.conviction_hedge_multiplier(
-                    asset, activity.first_entry_regime, conviction_log_ratio)
-                p = max(0.0, min(1.0, p * conviction_mult))
-        if config.ENABLE_HEDGE_TRIGGER_AFTER_BIG_LOSS_MULTIPLIER:
-            loss_mult = bc.hedge_trigger_after_big_loss_multiplier(asset, after_big_loss)
-            p = max(0.0, min(1.0, p * loss_mult))
-    else:
-        p = bc.hedge_continuation_probability(activity.real_hedge_fill_count)
+    attempt_index = activity.real_fill_count
+    hedge_count = activity.real_hedge_fill_count
+    if config.ENABLE_HEDGE_EPISODE_LATCH and activity.is_episode_rejected("hedge", attempt_index, hedge_count):
+        return None
+    adverse_move = None
+    if activity.first_entry_price is not None and dominant_current_price is not None:
+        adverse_move = activity.first_entry_price - dominant_current_price
+    p = bc.hedge_probability(asset, activity.first_entry_regime, attempt_index,
+                              hedge_count, adverse_move,
+                              seconds_remaining=seconds_remaining)
     if p > 0 and rng.random() < p:
-        return "Down" if dominant == "Up" else "Up"
+        side = "Down" if dominant == "Up" else "Up"
+        # SIZE (folded in 2026-09-26, previously a separate call site --
+        # see this function's own docstring). price is None for a caller
+        # that doesn't have book access yet or doesn't need the notional
+        # -- notional is simply 0.0 in that case, same as hedge_notional_
+        # for_price's own None-on-uncalibrated-asset behavior composing
+        # to zero rather than raising.
+        notional = 0.0
+        if price is not None:
+            price_notional = bc.hedge_notional_for_price(asset, price)
+            jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)
+            notional = max((price_notional or 0.0) * config.SIZE_SCALE_FACTOR * jitter, 0.0)
+        return side, notional
+    if config.ENABLE_HEDGE_EPISODE_LATCH:
+        activity.reject_episode("hedge", attempt_index, hedge_count)
     return None
 
 
@@ -846,22 +747,46 @@ def cross_asset_carryover_side(asset: str, activity: MarketActivityState,
     return None
 
 
-def gradient_score(asset: str, regime: str, recent_price_delta: Optional[float]) -> float:
+def streak_fade_side(asset: str, activity: MarketActivityState,
+                      streak_side: Optional[str], streak_length: int,
+                      seconds_since_window_open: Optional[float],
+                      rng: random.Random) -> Optional[str]:
+    """Returns the fade side ("Up"/"Down" -- the OPPOSITE of the asset's
+    recent resolved-outcome streak) if the streak-fade first-entry
+    override should fire this tick, or None if not (falls through to
+    the next priority override / decide_size's own persistence-or-
+    coinflip logic). See bc.streak_fade_probability's docstring for the
+    full derivation and every confound check this cleared.
+
+    Only meaningful for a market's TRUE first entry (activity.last_side
+    is None -- mirrors mid_contrarian_first_entry_side/cross_asset_
+    carryover_side's own scoping exactly, same architectural slot).
+    Regime-AGNOSTIC unlike those two overrides (confirmed real across
+    CHEAP/MID/HIGH, strongest in HIGH specifically) -- deliberately does
+    NOT gate on the suggested side's own price band.
+
+    `streak_side`/`streak_length` are bot.py-maintained state (this
+    module has no cross-window memory of its own) -- the direction and
+    length of the asset's own recent consecutive-same-outcome run,
+    computed from each retiring market's own last-known decisive price
+    rather than waiting on the slower Gamma-confirmed resolution (see
+    PaperBot._retire_market's own comment for why that timing matters:
+    the effect is strongest in the first 60s of the NEXT window, well
+    before a typical resolution confirmation would arrive).
+    `streak_length < 2` (including the no-streak-known default 0) means
+    no signal -- always returns None. `seconds_since_window_open` is
+    Optional (default None -> the elapsed-time factor no-ops, using the
+    pooled length-only rate) for the same "don't crash on missing timing
+    info" reason as everywhere else in this file.
     """
-    Soft tiebreak score in [0, 1] for how well a candidate opportunity
-    matches the universal weakness/strength gradient: CHEAP entries tend to
-    follow a recent drop, HIGH entries tend to follow a recent rise. Used
-    only to ORDER multiple simultaneously-eligible candidates within one
-    bot cycle -- never to filter one out.
-    """
-    if recent_price_delta is None:
-        return 0.5  # neutral -- no recent history to judge by
-    bias = bc.GRADIENT_BIAS_PCT.get(asset, {})
-    if regime == "CHEAP" and recent_price_delta < -bc.GRADIENT_FLAT_EPSILON:
-        return bias.get("CHEAP_follows_drop", 50.0) / 100.0
-    if regime == "HIGH" and recent_price_delta > bc.GRADIENT_FLAT_EPSILON:
-        return bias.get("HIGH_follows_rise", 50.0) / 100.0
-    return 0.5
+    if activity.last_side is not None:
+        return None
+    if streak_side is None or streak_length < 2:
+        return None
+    p = bc.streak_fade_probability(streak_length, seconds_since_window_open)
+    if rng.random() < p:
+        return "Down" if streak_side == "Up" else "Up"
+    return None
 
 
 def availability_check(book: BookState) -> tuple[bool, str]:
@@ -908,11 +833,10 @@ def timing_ok(market: Market, now: Optional[float] = None) -> bool:
 def decide_size(asset: str, regime: str, position_tier: str, price: float,
                  rng: random.Random, seconds_remaining: Optional[float] = None,
                  hours_since_resumption: Optional[float] = None,
-                 size_momentum_residual: Optional[float] = None,
-                 bankroll_pnl_residual: Optional[float] = None,
                  real_fill_count: Optional[int] = None,
                  live_hedge_count: Optional[int] = None,
-                 decisiveness_fraction: Optional[float] = None) -> tuple[float, bool]:
+                 decisiveness_fraction: Optional[float] = None,
+                 hour_of_day: Optional[int] = None) -> tuple[float, bool]:
     """
     Returns (notional_usd, is_floor_lot). Rolls the floor-lot tier first for
     assets where it's modeled (Part 4); falls back to the normal
@@ -920,13 +844,20 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     the confirmed median, since only medians -- not full distributions --
     were measured.
 
-    seconds_remaining, hours_since_resumption, size_momentum_residual,
-    bankroll_pnl_residual, real_fill_count, live_hedge_count, and
-    decisiveness_fraction are all Optional (default None -> no-op) so
-    every existing call site/test that doesn't pass them keeps working
-    unchanged. live_hedge_count should only ever be passed for an
-    ORDINARY (non-hedge) entry -- see
+    seconds_remaining, hours_since_resumption, real_fill_count,
+    live_hedge_count, decisiveness_fraction, and hour_of_day (added
+    2026-09-25, see bc.hour_size_multiplier's docstring) are all Optional
+    (default None -> no-op) so every existing call site/test that doesn't
+    pass them keeps working unchanged. live_hedge_count should only ever
+    be passed for an ORDINARY (non-hedge) entry -- see
     HEDGE_COUNT_REINFORCEMENT_MULTIPLIER's docstring in behavior_config.py.
+
+    (size_momentum_residual/bankroll_pnl_residual/rolling_accuracy were
+    removed 2026-09-26 -- CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER,
+    BANKROLL_PNL_SIZE_MULTIPLIER, and ACCURACY_SCOUT_MULTIPLIER had all
+    permanently retired to empty/no-op tables; see behavior_config.py's
+    git history for the retired mechanisms if reviving one is ever
+    warranted.)
     """
     floor_p = bc.floor_lot_probability(asset, regime, position_tier)
     if floor_p > 0 and rng.random() < floor_p:
@@ -981,35 +912,10 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
         # HIGH_TAIL_SHARE_MULTIPLIER on the share-based path.
         if (regime == "CHEAP" and price < bc.DEEP_CHEAP_TAIL_PRICE_THRESHOLD
                 and config.ENABLE_DEEP_CHEAP_TAIL_CORRECTION):
-            within_band *= bc.deep_cheap_tail_multiplier(asset)
-    # CROSS-MARKET sizing momentum (2026-09-11 finding): a market's first
-    # entry echoes the PREVIOUS market's own size residual (slow EWMA
-    # decay, not lag-1-only) -- see CROSS_MARKET_SIZE_MOMENTUM_MULTIPLIER's
-    # docstring in behavior_config.py. Scoped to position_tier=="first"
-    # only, since that's the quantity the finding was measured on (later
-    # entries in the same market already have their own within-market
-    # signals). size_momentum_residual is bot.py's per-asset EWMA state,
-    # threaded through build_order_intent -- this file has no cross-market
-    # memory of its own.
-    momentum_mult = 1.0
-    if (position_tier == "first" and config.ENABLE_CROSS_MARKET_SIZE_MOMENTUM
-            and size_momentum_residual is not None):
-        momentum_mult = bc.cross_market_size_momentum_multiplier(asset, size_momentum_residual)
-    # BANKROLL-linked sizing (2026-09-12 finding): Ethereum/Solana first-
-    # entry size scales DOWN after his own accumulated realized profit and
-    # UP after a drawdown -- see BANKROLL_PNL_SIZE_MULTIPLIER's docstring
-    # in behavior_config.py for the full validation trail (survives time-
-    # detrending and a partial-correlation check against the adverse-move
-    # multipliers; Bitcoin deliberately excluded, not just uncalibrated).
-    # Scoped to position_tier=="first" only, same reasoning as momentum
-    # above. bankroll_pnl_residual is Ledger.realized_pnl_by_asset()'s own
-    # directional (no-rebate) total for this asset, recomputed from source
-    # by bot.py at decision time -- this file has no bankroll memory of
-    # its own.
-    bankroll_mult = 1.0
-    if (position_tier == "first" and config.ENABLE_BANKROLL_PNL_SIZE_MULTIPLIER
-            and bankroll_pnl_residual is not None):
-        bankroll_mult = bc.bankroll_pnl_size_multiplier(asset, bankroll_pnl_residual)
+            within_band *= bc.table_lookup(bc.DEEP_CHEAP_TAIL_MULTIPLIER, asset)
+    # (CROSS-MARKET sizing momentum and BANKROLL-linked sizing removed
+    # 2026-09-26 -- both had permanently retired to empty/no-op tables
+    # in behavior_config.py; see decide_size's own docstring.)
     # TIME-TO-CLOSE scaling (2026-09-10 finding): confirmed the trader
     # actually SIZES differently by time remaining, holding price level
     # fixed -- not just present more late-window (already known), a real
@@ -1115,17 +1021,26 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
         raw_mid = bc.mid_boundary_edge_multiplier(regime, price)
         if raw_mid > 1.0:
             mid_boundary_mult = raw_mid
+    # HOUR-CONDITIONED SIZE BOOST (2026-09-25 finding): see
+    # bc.hour_size_multiplier's docstring for the full derivation. Same
+    # "only ever a boost (>=1.0) or a no-op" discipline as cheap_deep_
+    # touch_mult/mid_boundary_mult just above -- 1.0 (clean no-op)
+    # outside 06:00-07:00 UTC or when hour_of_day isn't known, so this
+    # can't silently perturb baseline sizing at any other hour. SCOPED TO
+    # position_tier=="first" ONLY (unlike mid_boundary_mult above) --
+    # the underlying finding was measured on first-entry notional
+    # specifically (same convention this project's other tables use:
+    # cheap_deep_touch_mult, TTC_SIZE_MULTIPLIER's own hedge-formula
+    # exclusion -- don't extrapolate a multiplier onto a decision tier it
+    # wasn't actually measured on).
+    hour_boost_mult = (bc.hour_size_multiplier(hour_of_day)
+                        if config.ENABLE_HOUR_SIZE_BOOST and position_tier == "first" else 1.0)
     # COMBINED-MULTIPLIER SAFETY BOUND (2026-09-12, bug audit #4): each of
-    # within_band/momentum_mult/bankroll_mult/ttc_mult/resumption_mult/
-    # reentry_fatigue_mult/hedge_count_reinforcement_mult/decisiveness_mult
-    # was fit MARGINALLY -- controlling for other already-known variables
-    # individually at build time -- but their PRODUCT has never been
-    # validated against his real observed size distribution as a joint
-    # quantity. Specific risk flagged in BUGS_TO_FIX.md #4: momentum_mult
-    # (EWMA of size residual) and bankroll_mult (realized-P&L-conditioned)
-    # plausibly both pick up overlapping "recent performance" signal, and
-    # multiplying them risks double-counting the same real effect into a
-    # swing more extreme than anything actually observed.
+    # within_band/ttc_mult/resumption_mult/reentry_fatigue_mult/
+    # hedge_count_reinforcement_mult/decisiveness_mult was fit MARGINALLY
+    # -- controlling for other already-known variables individually at
+    # build time -- but their PRODUCT has never been validated against
+    # his real observed size distribution as a joint quantity.
     #
     # This clamps the COMBINED cross-market/time signal (everything except
     # jitter and SIZE_SCALE_FACTOR, which aren't calibrated-signal
@@ -1139,11 +1054,11 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # cap (each ~3.0x) -- real, uncorrelated effects compounding somewhat
     # is expected and legitimate; this only stops the worst-case scenario
     # of every factor aligning in the same direction at once.
-    combined_signal = (within_band * momentum_mult * bankroll_mult * ttc_mult
+    combined_signal = (within_band * ttc_mult
                         * resumption_mult * reentry_fatigue_mult
                         * hedge_count_reinforcement_mult * decisiveness_mult
                         * overshoot_correction * withinband_overshoot_correction
-                        * cheap_deep_touch_mult * mid_boundary_mult)
+                        * cheap_deep_touch_mult * mid_boundary_mult * hour_boost_mult)
     cap = config.COMBINED_SIZE_MULTIPLIER_CAP
     combined_signal = max(1.0 / cap, min(cap, combined_signal))
     # config.SIZE_SCALE_FACTOR is a no-op (1.0) everywhere except a
@@ -1151,27 +1066,25 @@ def decide_size(asset: str, regime: str, position_tier: str, price: float,
     # config.py. Applied here (not to the floor-lot branch above) so the
     # tiny, independently-calibrated probe tier is never pushed below a
     # real exchange minimum by a scale-down meant for the ordinary curve.
-    level_correction = (bc.entry_size_level_correction(asset, regime)
+    level_correction = (bc.table_lookup(bc.ENTRY_SIZE_LEVEL_CORRECTION, asset, regime)
                          if config.ENABLE_ENTRY_SIZE_LEVEL_CORRECTION else 1.0)
     return max(median * level_correction * jitter * combined_signal * config.SIZE_SCALE_FACTOR, 0.0), False
 
 
 def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                         activity: MarketActivityState, rng: random.Random,
-                        recent_price_delta: Optional[float] = None,
                         now: Optional[float] = None,
                         hours_since_resumption: Optional[float] = None,
                         previous_market_first_side: Optional[str] = None,
                         previous_market_won: Optional[bool] = None,
                         prev_hedge_rate: Optional[float] = None,
-                        size_momentum_residual: Optional[float] = None,
-                        rolling_accuracy: Optional[float] = None,
                         max_notional_usd: Optional[float] = None,
-                        bankroll_pnl_residual: Optional[float] = None,
                         after_big_loss: Optional[bool] = None,
                         forced_first_entry_side: Optional[str] = None,
                         last_first_entry_by_asset: Optional[dict] = None,
-                        regime_engagement_state: Optional[dict] = None) -> Optional[OrderIntent]:
+                        regime_engagement_state: Optional[dict] = None,
+                        streak_side: Optional[str] = None,
+                        streak_length: int = 0) -> Optional[OrderIntent]:
     """
     Runs the full per-market pipeline (steps 1-6 of Part 5) and returns an
     OrderIntent, or None if this market isn't tradeable right now. Does NOT
@@ -1194,11 +1107,10 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     notional divided by a CHEAP-regime price -- a 1354-share order that
     should have been a normal small CHEAP-band size.
 
-    `previous_market_won`, `prev_hedge_rate`, `size_momentum_residual`,
-    `rolling_accuracy` (all added 2026-09-11), `bankroll_pnl_residual`
-    (added 2026-09-12), and `after_big_loss` (added 2026-09-13) are
-    per-asset cross-market state that only bot.py can maintain (this
-    module has no memory across markets of its own) -- all Optional
+    `previous_market_won`, `prev_hedge_rate` (both added 2026-09-11), and
+    `after_big_loss` (added 2026-09-13) are per-asset cross-market state
+    that only bot.py can maintain (this module has no memory across
+    markets of its own) -- all Optional
     (default None -> no-op for every one of them) so every existing call
     site/test keeps working unchanged. See decide_side/decide_hedge/
     decide_size's own docstrings for what each one feeds.
@@ -1265,49 +1177,51 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         return None
 
     seconds_remaining = market.seconds_remaining(now)
-    # UTC weekday (>=5 is Sat/Sun) -- matches the calibration's own
-    # methodology exactly (real trades.jsonl timestamps grouped by UTC
-    # weekday(), not local time). `now` defaults to real wall-clock time,
-    # same convention as Market.seconds_remaining's own `now` handling.
-    is_weekend = datetime.fromtimestamp(now if now is not None else time.time(),
-                                         tz=timezone.utc).weekday() >= 5
+    # HOUR-CONDITIONED SIZE BOOST (2026-09-25): see bc.hour_size_multiplier's
+    # docstring. UTC hour-of-day, None if `now` isn't supplied (matches
+    # this file's usual defensive handling for a signal that isn't
+    # available yet -- hour_size_multiplier itself no-ops on None).
+    hour_of_day = datetime.fromtimestamp(now, timezone.utc).hour if now is not None else None
 
-    # ADDED 2026-09-10: dominant side's live book price, for decide_hedge's
-    # adverse-move-conditioned trigger multiplier -- must come from the
-    # DOMINANT side's own book (not the eventual hedge side's), computed
-    # here since decide_hedge doesn't have book access itself, same reason
-    # `held_side_price` is looked up fresh below rather than cached on
-    # MarketActivityState.
+    # Dominant side's live book price, for decide_hedge's adverse-move
+    # calculation -- must come from the DOMINANT side's own book (not the
+    # eventual hedge side's), computed here since decide_hedge doesn't
+    # have book access itself, same reason `held_side_price` is looked up
+    # fresh below rather than cached on MarketActivityState.
     dominant_side_now = activity.dominant_side()
     dominant_book = None
+    hedge_side_book = None  # opposite of dominant -- where a hedge, if any, would price
     if dominant_side_now == "Up":
         dominant_book = up_book
+        hedge_side_book = down_book
     elif dominant_side_now == "Down":
         dominant_book = down_book
+        hedge_side_book = up_book
     dominant_current_price = dominant_book.best_bid if dominant_book is not None else None
+    hedge_side_price = hedge_side_book.best_bid if hedge_side_book is not None else None
 
-    # ADDED 2026-09-24, for LATE_WINDOW_HEDGE_URGENCY_MULTIPLIER: seconds
-    # elapsed in THIS window since THIS market's own first real entry.
-    # Markets are always exactly 300s (5-min) by this project's own
-    # convention throughout -- `market.end_time - 300.0` is the window's
-    # open time, matching how first_entry_t_in itself gets computed at
-    # bot.py's record_entry call site. None whenever there's no first
-    # entry recorded yet (activity.first_entry_t_in is None) -- decide_hedge
-    # already no-ops cleanly on a None input.
-    seconds_since_first_entry = (
-        (300.0 - seconds_remaining) - activity.first_entry_t_in
-        if activity.first_entry_t_in is not None and seconds_remaining is not None
-        else None
-    )
-    hedge_side = decide_hedge(
-        market.asset, activity, rng, liquidity=market.liquidity,
-        is_weekend=is_weekend, dominant_current_price=dominant_current_price,
-        prev_hedge_rate=prev_hedge_rate, after_big_loss=after_big_loss,
-        seconds_remaining=seconds_remaining,
-        seconds_since_first_entry=seconds_since_first_entry)
+    # NOTE 2026-09-24: `prev_hedge_rate` and `after_big_loss` are no longer
+    # threaded into decide_hedge (the mechanisms they fed -- cross-market
+    # hedge-rate persistence and after-a-big-loss reactivity -- were both
+    # cut in the single-function hedge consolidation). Left as accepted
+    # parameters here rather than also changing this function's own
+    # signature and every caller in bot.py, since nothing else in
+    # build_order_intent uses them.
+    #
+    # CONSOLIDATED 2026-09-26: decide_hedge now returns (side, notional)
+    # together -- see its own docstring -- so hedge_notional is already
+    # final (jitter/SIZE_SCALE_FACTOR/streak-size-boost all applied)
+    # the moment this call returns, no separate size computation needed
+    # further down like there used to be.
+    hedge_decision = decide_hedge(market.asset, activity, rng,
+                                   price=hedge_side_price,
+                                   dominant_current_price=dominant_current_price,
+                                   seconds_remaining=seconds_remaining)
+    hedge_side, hedge_notional = hedge_decision if hedge_decision is not None else (None, None)
     is_hedge = hedge_side is not None
     is_contrarian = False
     is_cross_asset_carryover = False
+    is_streak_fade = False
     if is_hedge:
         side = hedge_side
     elif forced_first_entry_side is not None and activity.real_fill_count == 0:
@@ -1348,6 +1262,24 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # own magnitude/probability check missed).
         side = carryover_side
         is_cross_asset_carryover = True
+    elif (config.ENABLE_STREAK_FADE
+          and (fade_side := streak_fade_side(
+              market.asset, activity, streak_side, streak_length,
+              (300.0 - seconds_remaining) if seconds_remaining is not None else None,
+              rng)) is not None):
+        # STREAK-FADE first-entry override (2026-09-25): see
+        # bc.streak_fade_probability's docstring for the full derivation.
+        # Priority override ahead of decide_side, same architectural slot
+        # as mid_contrarian/cross_asset_carryover above -- deliberately
+        # placed LAST of the three so those two already-shipped,
+        # regime-scoped (CHEAP/MID) mechanisms keep first refusal; this
+        # is regime-AGNOSTIC (confirmed real across CHEAP/MID/HIGH) so it
+        # only needs to fall through when a real streak isn't available,
+        # not when a specific regime doesn't apply. `300.0 -
+        # seconds_remaining` recovers seconds-since-window-open from the
+        # value already computed above -- no separate parameter needed.
+        side = fade_side
+        is_streak_fade = True
     else:
         # Regime-dependent persistence needs the CURRENTLY-HELD side's
         # live price, not a stale one -- both books are already available
@@ -1438,7 +1370,7 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
     # since a real regime change naturally produces a fresh (side,
     # regime) key with no rejection recorded against it yet.
     if config.ENABLE_REGIME_ENGAGEMENT_MULTIPLIER and not is_hedge:
-        if activity.is_regime_episode_rejected(side, regime):
+        if activity.is_episode_rejected("regime", side, regime):
             return None
         engagement_mult = bc.regime_engagement_multiplier(market.asset, regime)
         # PARTICIPATION_ASSET_SCALE (2026-09-22): a per-asset overlay on
@@ -1464,8 +1396,30 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                 market.asset, regime,
                 asset_state.get("counts", {}), asset_state.get("total", 0))
             engagement_mult = max(0.0, min(1.0, engagement_mult * drift_mult))
+        # CLOSE-URGENCY boost (2026-09-25, research-loop capstone finding):
+        # as the window approaches close, first-entry activity gets
+        # sharply more likely -- the same effect already re-added to
+        # decide_hedge above, generalized here to ordinary entries. See
+        # bc.entry_urgency_multiplier's docstring; confirmed regime-
+        # agnostic (applies uniformly, not conditioned on `regime`) and
+        # split-half stable. Composed at the same point as
+        # PARTICIPATION_ASSET_SCALE/REGIME_DRIFT_CORRECTION, all layered
+        # onto the same base REGIME_ENGAGEMENT_MULTIPLIER roll.
+        if config.ENABLE_CLOSE_URGENCY_BOOST and seconds_remaining is not None:
+            engagement_mult = min(1.0, engagement_mult * bc.urgency_multiplier("entry", seconds_remaining))
+        # CHEAP DEEP-TAIL PARTICIPATION BOOST (2026-09-28): see
+        # bc.cheap_deep_tail_participation_multiplier's docstring for the
+        # full derivation (dug up while investigating paperbot-100's CHEAP
+        # oversizing -- the real driver was this participation gap, not
+        # the sizing floor). Composed at the same point as the other
+        # boost-only overlays above; a no-op outside the genuine deep tail
+        # so the calibrated shallow-CHEAP/MID/CORE/HIGH rates are
+        # untouched.
+        if config.ENABLE_CHEAP_DEEP_TAIL_PARTICIPATION_BOOST and regime == "CHEAP":
+            engagement_mult = min(1.0, engagement_mult
+                                  * bc.cheap_deep_tail_participation_multiplier(market.asset, price))
         if engagement_mult < 1.0 and rng.random() > engagement_mult:
-            activity.reject_regime_episode(side, regime)
+            activity.reject_episode("regime", side, regime)
             logger.info(
                 "SKIP asset=%s regime=%s price=%.4f: regime engagement dampener (mult=%.2f)",
                 market.asset, regime, price, engagement_mult)
@@ -1577,104 +1531,46 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                 market.asset, regime, price, seconds_since_decisive_crossing, eligibility_mult)
             return None
 
+    # ADD-ON CONTINUATION (2026-09-26): the complementary case to the two
+    # real_fill_count==0-scoped gates just above -- see
+    # bc.addon_continuation_probability's docstring for the full
+    # derivation. k = how many same-side non-hedge fills already exist
+    # BEFORE this one would-be add-on (real_fill_count includes hedges,
+    # so subtract those out; k=0 means a first entry exists and this
+    # would be the 1st add-on, matching this table's own calibration
+    # convention). Latched per (side, k) episode via
+    # activity.is_addon_episode_rejected/reject_addon_episode, same
+    # discipline as REGIME_ENGAGEMENT_MULTIPLIER's own episode latch just
+    # above -- k only advances on a real fill, so a rejected roll stays
+    # latched across repeated same-k retries.
+    if config.ENABLE_ADDON_CONTINUATION_PROBABILITY and not is_hedge and activity.real_fill_count > 0:
+        same_side_fill_count = activity.real_fill_count - activity.real_hedge_fill_count
+        k = same_side_fill_count - 1
+        if k >= 0:
+            if activity.is_episode_rejected("addon", side, k):
+                return None
+            continuation_mult = bc.addon_continuation_probability(market.asset, regime)
+            if continuation_mult < 1.0 and rng.random() > continuation_mult:
+                activity.reject_episode("addon", side, k)
+                logger.info(
+                    "SKIP asset=%s regime=%s price=%.4f: add-on continuation dampener "
+                    "(k=%d, mult=%.2f)",
+                    market.asset, regime, price, k, continuation_mult)
+                return None
+
     position_tier = activity.position_tier()
 
     min_size = market.order_min_size
 
     if is_hedge:
-        # Hedge sizing scales with what it's protecting (the dominant
-        # side's cost so far), not the position-count curve -- that's the
-        # whole point: it's proportional insurance, not another ordinary
-        # entry. See HEDGE_SIZE_RATIO's docstring in behavior_config.py.
-        #
-        # CHANGED 2026-09-09: hedge_count==0 (the market's FIRST hedge)
-        # still uses HEDGE_SIZE_RATIO, unchanged. A 2nd+ hedge (hedge_count
-        # >= 1, now reachable at all since decide_hedge no longer hard-
-        # blocks after the first) uses HEDGE_CONTINUATION_SIZE_RATIO
-        # instead -- a real, separately-calibrated decaying curve (2nd
-        # hedge sizes at ~19% of the dominant side's RUNNING cost, 3rd at
-        # ~13%, 4th+ at ~11% -- much flatter than the drop from 1st to
-        # 2nd), not the same ratio repeated. See its docstring.
-        dominant_cost = activity.cost_by_side.get(activity.dominant_side(), 0.0)
-        # CHANGED 2026-09-12 (bug audit #5): hedge_count -> real_hedge_fill_count,
-        # must mirror decide_hedge's own real_hedge_fill_count==0 branch
-        # exactly (that's what decided is_hedge/hedge_side in the first
-        # place) -- using placement-based hedge_count here instead could
-        # size a hedge decide_hedge classified as "first" using the
-        # continuation ratio, or vice versa.
-        # hedge_mult accumulates every CORRECTION multiplier below,
-        # separately from `ratio`'s own base value (HEDGE_SIZE_RATIO /
-        # HEDGE_CONTINUATION_SIZE_RATIO, which varies legitimately by
-        # asset/regime/index and isn't a 1.0-centered factor) -- so the
-        # combined-pileup safety cap just below only ever bounds the
-        # correction, never clips a base ratio that's intentionally > 1.0
-        # (e.g. BTC/CHEAP's 2.64). See HEDGE_RATIO_MULTIPLIER_CAP's
-        # docstring in config.py (code-audit pass, 2026-09-13) -- the exact
-        # same class of risk COMBINED_SIZE_MULTIPLIER_CAP already bounds on
-        # the ordinary entry-curve path in decide_size, never previously
-        # extended to this chain even as multipliers kept being added here.
-        hedge_mult = 1.0
-        if activity.real_hedge_fill_count == 0:
-            ratio = bc.hedge_size_ratio(market.asset, activity.first_entry_regime)
-            # ADDED 2026-09-10: real, cross-asset-confirmed finding that
-            # first-hedge SIZE scales with how far price has moved against
-            # the dominant side since entry, on top of (not instead of)
-            # the first_entry_regime baseline above -- see
-            # ADVERSE_MOVE_SIZE_MULTIPLIER's docstring in behavior_config.py.
-            # `price` here is the hedge side's book price (opposite of the
-            # dominant side), so 1 - price is the dominant side's current
-            # implied price -- matches this multiplier's real-data
-            # derivation exactly (entry price minus current price, positive
-            # = moved against the dominant side).
-            if config.ENABLE_ADVERSE_MOVE_SIZE_MULTIPLIER and activity.first_entry_price is not None:
-                adverse_move = activity.first_entry_price - (1.0 - price)
-                hedge_mult *= bc.adverse_move_size_multiplier(market.asset, adverse_move)
-            # ADDED 2026-09-12: real, confirmed-independent (via partial
-            # correlation controlling for adverse_move) finding that the
-            # hedge side's own ABSOLUTE price also predicts size, on top of
-            # (not instead of) the delta-from-entry effect just above -- see
-            # ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER's docstring in
-            # behavior_config.py. Uses the same `price` (the hedge side's
-            # own book price) the adverse_move calculation above already
-            # reads, no new state needed.
-            if config.ENABLE_ABSOLUTE_PRICE_HEDGE_SIZE_MULTIPLIER:
-                hedge_mult *= bc.absolute_price_hedge_size_multiplier(market.asset, price)
-        else:
-            ratio = bc.hedge_continuation_size_ratio(activity.real_hedge_fill_count + 1)
-            # ADDED 2026-09-10: direct extension of the hedge_count==0 case
-            # above to continuation hedges -- same since-ORIGIN adverse_move
-            # definition (deep-research-confirmed to beat a since-last-hedge
-            # alternative), see ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER's
-            # docstring in behavior_config.py.
-            if config.ENABLE_ADVERSE_MOVE_CONTINUATION_SIZE_MULTIPLIER and activity.first_entry_price is not None:
-                adverse_move = activity.first_entry_price - (1.0 - price)
-                hedge_mult *= bc.adverse_move_continuation_size_multiplier(market.asset, adverse_move)
-        # HEDGE TTC (time-to-close) scaling (2026-09-13 finding): re-derived
-        # and regime-composition-checked specifically for hedges (the
-        # entry-side correction at TTC_SIZE_MULTIPLIER was never verified
-        # against the original hedge data) -- real and cross-asset-
-        # consistent in CHEAP/HIGH only. Applies to both the first hedge
-        # and continuation hedges (calibrated on all hedge trades pooled).
-        # See HEDGE_TTC_SIZE_MULTIPLIER's docstring in behavior_config.py.
-        if config.ENABLE_HEDGE_TTC_SIZE_MULTIPLIER and seconds_remaining is not None:
-            hedge_mult *= bc.hedge_ttc_size_multiplier(market.asset, regime, seconds_remaining)
-        cap = config.HEDGE_RATIO_MULTIPLIER_CAP
-        hedge_mult = max(1.0 / cap, min(cap, hedge_mult))
-        ratio *= hedge_mult
-        jitter = 1.0 + rng.uniform(-config.SIZING_JITTER_FRACTION, config.SIZING_JITTER_FRACTION)
-        notional = max(dominant_cost * ratio * jitter, 0.0)
+        # Hedge SIZE: already fully computed (price + streak-boost +
+        # jitter + SIZE_SCALE_FACTOR all applied) by decide_hedge's own
+        # consolidated (side, notional) return above -- see its
+        # docstring. `price` here is the same hedge_side_price already
+        # passed into that call (same book, same tick), so this is just
+        # using the answer decide_hedge already gave, not recomputing it.
+        notional = hedge_notional if hedge_notional is not None else 0.0
         is_floor_lot = False
-        # PRICE-BASED HEDGE SIZING (2026-09-22, Phase 3): replaces the whole
-        # dominant-cost-ratio result above (first AND continuation hedges)
-        # with the price-only model -- see hedge_notional_for_price's
-        # comment in behavior_config.py for the out-of-sample evidence.
-        # SIZE_SCALE_FACTOR is applied explicitly here because the legacy
-        # chain got it implicitly through dominant_cost (itself built from
-        # scaled entries).
-        if config.ENABLE_PRICE_BASED_HEDGE_SIZING:
-            price_notional = bc.hedge_notional_for_price(market.asset, price)
-            if price_notional is not None:
-                notional = max(price_notional * config.SIZE_SCALE_FACTOR * jitter, 0.0)
 
         if min_size is not None and notional < min_size * price:
             # CONFIRMED LIVE (2026-09-08): hedge notional -- deliberately
@@ -1702,20 +1598,18 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
             notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
                                                   seconds_remaining=seconds_remaining,
                                                   hours_since_resumption=hours_since_resumption,
-                                                  size_momentum_residual=size_momentum_residual,
-                                                  bankroll_pnl_residual=bankroll_pnl_residual,
                                                   real_fill_count=activity.real_fill_count,
                                                   live_hedge_count=activity.real_hedge_fill_count,
-                                                  decisiveness_fraction=decisiveness_fraction)
+                                                  decisiveness_fraction=decisiveness_fraction,
+                                                  hour_of_day=hour_of_day)
     else:
         notional, is_floor_lot = decide_size(market.asset, regime, position_tier, price, rng,
                                               seconds_remaining=seconds_remaining,
                                               hours_since_resumption=hours_since_resumption,
-                                              size_momentum_residual=size_momentum_residual,
-                                              bankroll_pnl_residual=bankroll_pnl_residual,
                                               real_fill_count=activity.real_fill_count,
                                               live_hedge_count=activity.real_hedge_fill_count,
-                                              decisiveness_fraction=decisiveness_fraction)
+                                              decisiveness_fraction=decisiveness_fraction,
+                                              hour_of_day=hour_of_day)
         if is_contrarian and not is_floor_lot:
             # MID-CONTRARIAN size dampener (2026-09-18): a real, ~28%
             # size gap found the same day as the side-selection bias
@@ -1730,10 +1624,19 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
 
     is_scout = False
     if (not is_hedge and not is_floor_lot and not is_contrarian
-            and not is_cross_asset_carryover and activity.real_fill_count == 0):
+            and not is_cross_asset_carryover and not is_streak_fade
+            and activity.real_fill_count == 0):
         # SCOUT: a deliberately small, tentative first entry -- see
         # SCOUT_PROBABILITY/SCOUT_SIZE_RATIO's docstring in
-        # behavior_config.py. CHANGED 2026-09-14: entry_count ->
+        # behavior_config.py. is_streak_fade excluded (added 2026-09-25)
+        # same reasoning as is_contrarian/is_cross_asset_carryover just
+        # above: scout represents "no real side-selection signal, hedge
+        # with a small tentative bet" -- once one of these three
+        # dedicated overrides HAS produced a real signal, layering a
+        # separate "no signal" tentativeness treatment on top doesn't fit
+        # the same rationale, and would otherwise silently relabel a
+        # streak-fade decision's reason to "scout_entry", hiding which
+        # mechanism actually chose the side. CHANGED 2026-09-14: entry_count ->
         # real_fill_count (see MarketActivityState's docstring) -- a
         # market whose first placement attempt was cancelled/expired
         # unfilled still deserves scout eligibility on its next attempt,
@@ -1771,21 +1674,13 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         # masking one override behind another would defeat the whole
         # point of being able to isolate this mechanism's effect later.
         #
-        # ACCURACY-conditioned (2026-09-11): scout_probability's base rate
-        # is scaled by bc.accuracy_scout_multiplier(rolling_accuracy) --
-        # real, cross-asset-pooled, circularity-checked finding that worse
-        # recent accuracy predicts more scouting. rolling_accuracy is
-        # bot.py's per-asset rolling correctness tracker, populated inside
-        # resolution_tick (see ACCURACY_SCOUT_MULTIPLIER's docstring in
-        # behavior_config.py for the biggest architectural lift of this
-        # implementation pass). Clamped to [0, 1] since it's still a
-        # probability after scaling.
-        scout_p = bc.scout_probability(market.asset)
-        if config.ENABLE_ACCURACY_SCOUT_MULTIPLIER and rolling_accuracy is not None:
-            scout_p = max(0.0, min(1.0, scout_p * bc.accuracy_scout_multiplier(rolling_accuracy)))
+        # (ACCURACY-conditioned scout rate removed 2026-09-26 --
+        # ACCURACY_SCOUT_MULTIPLIER permanently retired to an empty/no-op
+        # table in behavior_config.py; see decide_size's own docstring.)
+        scout_p, scout_size = bc.scout_params(market.asset)
         if rng.random() < scout_p:
             is_scout = True
-            notional = notional * bc.scout_size_ratio(market.asset)
+            notional = notional * scout_size
 
     # HARD PER-ORDER CAP (2026-09-11, $100-bankroll safety work): clamp
     # DOWN only, and strictly BEFORE the exchange-minimum bump-up check
@@ -1862,6 +1757,8 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
         reason = "mid_contrarian"
     elif is_cross_asset_carryover:
         reason = "cross_asset_carryover"
+    elif is_streak_fade:
+        reason = "streak_fade"
     else:
         reason = "entry_curve"
 

@@ -89,23 +89,10 @@ class BookState:
             return None
         return (self.best_bid + self.best_ask) / 2
 
-    def depth_usd_at_or_better(self, side: str, price: float) -> float:
-        """
-        Sum of resting USD notional at-or-better than `price` on the given
-        side. side="bid" -> bids priced >= price (better for a seller
-        crossing in). side="ask" -> asks priced <= price.
-        """
-        levels = self.bids if side == "bid" else self.asks
-        total = 0.0
-        for lvl_price, lvl_size in levels:
-            if side == "bid" and lvl_price >= price:
-                total += lvl_price * lvl_size
-            elif side == "ask" and lvl_price <= price:
-                total += lvl_price * lvl_size
-        return total
-
     def depth_shares_at_or_better(self, side: str, price: float) -> float:
-        """Same as depth_usd_at_or_better but in raw share count -- used by
+        """Sum of resting share count at-or-better than `price` on the
+        given side. side="bid" -> bids priced >= price (better for a
+        seller crossing in). side="ask" -> asks priced <= price. Used by
         the fill simulator's queue-ahead model, since trade prints consume
         shares, not USD."""
         levels = self.bids if side == "bid" else self.asks
