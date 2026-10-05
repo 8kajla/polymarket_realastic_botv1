@@ -1090,6 +1090,45 @@ ENABLE_REGIME_DRIFT_CORRECTION = os.environ.get(
     "ENABLE_REGIME_DRIFT_CORRECTION", "false"
 ).strip().lower() not in ("false", "0", "no")
 
+# ADDED 2026-10-03: capital-aware per-regime admission gate (see
+# bc.regime_capital_budget's docstring for the full derivation). Built
+# specifically for small-bankroll instances where BANKROLL_USD's existing
+# blanket "can't spend money we don't have" check (available_cash(), see
+# its own docstring) is too coarse on its own -- a historical backtest
+# against paperbot's real trade outcomes found that with only a blanket
+# cash check, a small bankroll falls into a vicious cycle: CHEAP entries
+# are cheap enough to always clear whatever cash is left even after a
+# losing streak, and CHEAP's own low win rate (2-15% in the tested
+# windows) then grinds the remainder to zero -- this is believed to be
+# exactly what happened to coinbase-bot's real $100->$0.03 collapse.
+# Several fixes were backtested (fixed-dollar CHEAP caps, uniform
+# percent-of-equity caps); all were highly path-dependent/noisy across
+# different historical windows except one: excluding CHEAP from this
+# gate entirely while rationing MID/CORE/HIGH by their real target share
+# (REGIME_MIX_TARGET) was the most consistent survivor, though even that
+# came within ~1% of total ruin in some tested windows -- this is a
+# mitigation for the admission-control failure mode, not a guarantee
+# $100 can run this strategy's full natural variance safely. Only
+# applied to ORDINARY (non-hedge) entries -- a hedge on an
+# already-open position is exempt, same "manage what's open, gate
+# what's new" principle _update_drawdown_tracking already uses. Default
+# OFF everywhere; enabled only where BANKROLL_USD is also set.
+ENABLE_CAPITAL_REGIME_BUDGET = os.environ.get(
+    "ENABLE_CAPITAL_REGIME_BUDGET", "false"
+).strip().lower() not in ("false", "0", "no")
+
+# ADDED 2026-10-04: Bitcoin CORE book-imbalance entry dampener (see
+# bc.CORE_IMBALANCE_DAMPENER_THRESHOLD's docstring in behavior_config.py
+# for the full derivation -- a live MarketLens cross-check, n=161 on the
+# real trader's own fills, not yet at the thousands-scale sample this
+# project usually wants before shipping flag-less). Default OFF --
+# ship disabled first, enable on one bot for a live read before any
+# wider rollout, same "controlled rollout first" discipline as every
+# other fresh-but-modest-sample mechanism in this project.
+ENABLE_CORE_BOOK_IMBALANCE_DAMPENER = os.environ.get(
+    "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", "false"
+).strip().lower() not in ("false", "0", "no")
+
 # CLOSE-URGENCY boost (2026-09-25 research-loop capstone finding): boosts
 # ordinary first-entry eligibility as a market's window approaches close,
 # mirroring the same effect already unconditionally live in

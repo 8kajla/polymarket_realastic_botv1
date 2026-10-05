@@ -1531,6 +1531,23 @@ def build_order_intent(market: Market, up_book: BookState, down_book: BookState,
                 market.asset, regime, price, seconds_since_decisive_crossing, eligibility_mult)
             return None
 
+    # CORE BOOK-IMBALANCE DAMPENER (2026-10-04): see bc.CORE_IMBALANCE_
+    # DAMPENER_THRESHOLD's docstring in behavior_config.py for the full
+    # derivation -- a DIFFERENT axis from the freshness check just above
+    # (how long since the crossing vs how well-supported the price level
+    # is RIGHT NOW). Bitcoin + CORE only, the only slice actually measured.
+    if (config.ENABLE_CORE_BOOK_IMBALANCE_DAMPENER and not is_hedge
+            and activity.real_fill_count == 0 and regime == "CORE" and market.asset == "Bitcoin"):
+        side_book = up_book if side == "Up" else down_book
+        imbalance = bc.core_book_imbalance(side_book.bids, side_book.asks)
+        if (imbalance is not None and imbalance < bc.CORE_IMBALANCE_DAMPENER_THRESHOLD
+                and rng.random() > bc.CORE_IMBALANCE_DAMPENER_MULTIPLIER):
+            logger.info(
+                "SKIP asset=%s regime=%s price=%.4f: core-book-imbalance dampener "
+                "(imbalance=%.3f, threshold=%.2f)",
+                market.asset, regime, price, imbalance, bc.CORE_IMBALANCE_DAMPENER_THRESHOLD)
+            return None
+
     # ADD-ON CONTINUATION (2026-09-26): the complementary case to the two
     # real_fill_count==0-scoped gates just above -- see
     # bc.addon_continuation_probability's docstring for the full

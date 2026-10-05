@@ -1540,6 +1540,57 @@ DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER = {
     "Solana":   [(0.0, 60.0, 1.00), (60.0, 120.0, 1.00), (120.0, 180.0, 1.00), (180.0, math.inf, 1.00)],
 }
 
+# ---------------------------------------------------------------------------
+# CORE BOOK-IMBALANCE DAMPENER (2026-10-04). A different axis from the
+# freshness table just above (how long since the crossing) -- this one is
+# about how well-supported the price level itself is RIGHT NOW, via real
+# order-book bid/ask depth on the side being bought. Derived from a live
+# MarketLens cross-check (not this project's own internal depth-imbalance
+# collector, which already closed a RELATED-but-DIFFERENT question as null
+# -- see depth-imbalance-promising-underpowered project memory: that test
+# measured imbalance EARLY in a market's life, as a leading indicator,
+# before any trading activity, and found no effect in CORE. This measures
+# imbalance AT THE INSTANT OF THE FILL instead -- a different question
+# ("is this price level genuinely well-supported right now" vs "does early
+# book pressure predict the eventual winner") that the earlier null doesn't
+# cover.) Confirmed on the real trader's own Bitcoin CORE fills (n=161,
+# full CORE band 0.70-0.90, last 7 days -- the max history a free
+# MarketLens account exposes): median-split win rate 77.5% below vs 95.1%
+# above (z=3.24). The SAME split measured on paperbot's own CORE fills
+# (n=201, identical window/method) showed no effect (z=0.57) -- paperbot's
+# current entry logic has no sensitivity to this signal at all, which is
+# exactly why adding it is a real behavior change, not a redundant check.
+#
+# Bitcoin + CORE only -- the only slice actually measured (every MarketLens
+# pull this finding is based on was Bitcoin-scoped; HIGH and ETH/SOL were
+# never tested and must not be assumed to generalize).
+#
+# THRESHOLD is the pooled median imbalance from the confirmatory pull, not
+# a fitted curve -- unlike DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER's bucketed
+# table, this is a single-split first cut from a real but modest sample
+# (n=161), deliberately not over-fit to noise a finer bucketing would
+# introduce. MULTIPLIER is a soft dampener (60% of ordinary entries still
+# go through below the threshold), not a hard skip -- below-median
+# imbalance still wins 77.5% of the time in absolute terms, which is a
+# good trade, just a worse one than above-median; a hard skip would
+# overcorrect past what the data actually showed.
+CORE_IMBALANCE_DAMPENER_THRESHOLD = 0.30
+CORE_IMBALANCE_DAMPENER_MULTIPLIER = 0.6
+
+
+def core_book_imbalance(bids: list, asks: list) -> Optional[float]:
+    """(bid_depth - ask_depth) / (bid_depth + ask_depth) over a book's own
+    resting shares, on whichever side is being bought -- bids/asks are
+    plain (price, size) lists, e.g. BookState.bids/.asks for that same
+    token. None when the book is empty on both sides (nothing to compute
+    a ratio from); the call site treats None as a no-op, same convention
+    as decisive_entry_eligibility_multiplier's None handling."""
+    total_bid = sum(size for _, size in bids)
+    total_ask = sum(size for _, size in asks)
+    if total_bid + total_ask <= 0:
+        return None
+    return (total_bid - total_ask) / (total_bid + total_ask)
+
 
 def decisive_entry_eligibility_multiplier(asset: str, seconds_since_decisive_crossing: Optional[float]) -> float:
     """1.0 (no-op) when there's no recorded decisive crossing yet
@@ -1773,9 +1824,21 @@ def cheap_deep_tail_participation_multiplier(asset: str, price: float) -> float:
 #
 # REGIME_MIX_TARGET: real trader's per-asset first-entry regime shares,
 # post-Sep-18 boundary (n=713/540/458 Bitcoin/Ethereum/Solana, well-powered).
+#
+# RECALIBRATED 2026-10-03 (Ethereum only): a 3-day sweep (Sep-23) found
+# Ethereum's CHEAP share still climbing (29%->47%->47%->63%), a Sep-24
+# recheck called it "plateaued ~50-63%" -- both reads are now stale. A
+# full post-boundary re-pull (Sep-18->2026-10-03) pools to 60.73%, but that
+# blends the early, lower-share days into a level the trader has since
+# moved past: day-by-day from Sep-27 onward is stable at 66-70% for 7
+# straight days, pooling to 68.58%/10.25%/6.61%/14.56% (CHEAP/MID/CORE/
+# HIGH, n=1044) -- used here instead of the full-window average since the
+# share is no longer moving (unlike Bitcoin's HIGH hedge rate above, where
+# the full window was the right call because IT was the one still
+# settling). Bitcoin/Solana untouched -- this recheck only covered Ethereum.
 REGIME_MIX_TARGET = {
     "Bitcoin":  {"CHEAP": 0.4194, "MID": 0.1501, "CORE": 0.1543, "HIGH": 0.2763},
-    "Ethereum": {"CHEAP": 0.5667, "MID": 0.0574, "CORE": 0.0519, "HIGH": 0.3241},
+    "Ethereum": {"CHEAP": 0.6858, "MID": 0.1025, "CORE": 0.0661, "HIGH": 0.1456},
     "Solana":   {"CHEAP": 0.5175, "MID": 0.0721, "CORE": 0.0502, "HIGH": 0.3603},
 }
 # k=3.0 matches the exact value validated in the held-out test above -- not
@@ -1804,6 +1867,104 @@ def regime_drift_correction(asset: str, regime: str, realized_counts: dict, real
     factor = 1.0 + REGIME_DRIFT_CORRECTION_K * deficit
     cap = REGIME_DRIFT_CORRECTION_CAP
     return max(1.0 / cap, min(cap, factor))
+
+
+# ---------------------------------------------------------------------------
+# CAPITAL-AWARE REGIME BUDGET. Added 2026-10-03, specifically for the
+# small-bankroll ruin problem: config.BANKROLL_USD's existing available_cash()
+# check only answers "can we afford this at all" -- it says nothing about
+# WHICH regime should get what's left when cash is scarce. Backtested
+# against paperbot's real trade outcomes (30/14/7-day replays, real
+# win/loss results, not simulated draws) before building: a plain
+# proportional split (budget = available_cash * REGIME_MIX_TARGET) still
+# collapses to near-zero, because CHEAP's own trades are cheap enough to
+# clear a shrinking proportional budget right alongside everything else,
+# and CHEAP's low win rate (2-15% in the tested windows) then grinds
+# whatever's left to zero -- a reinforcing cycle, not a one-off bad
+# streak. Several candidate fixes were tested (small fixed-dollar CHEAP
+# caps, uniform percent-of-equity caps across all regimes); all were
+# highly path-dependent -- the SAME rule swung from +1700% to -99%
+# across different historical windows, meaning no single parameter in
+# that family is a reliable fix. The one consistent improvement found:
+# excluding CHEAP from this gate ENTIRELY (budget 0.0, i.e. no new
+# CHEAP entries at all under this bot) while rationing MID/CORE/HIGH
+# proportionally by their real target share. Even that still dipped to
+# ~1% of starting bankroll in some tested windows -- flagged honestly as
+# a mitigation, not a solved problem; a bankroll under roughly $500-1000
+# retains real ruin risk under this strategy's natural variance no
+# matter how admission is rationed.
+#
+# CAPITAL_REGIME_BUDGET_HEADROOM widens the proportional share so a
+# regime isn't starved the instant cash dips even slightly below its
+# exact target fraction -- 2.0 matches the value backtested above (1.0,
+# i.e. no headroom, was also tested and performed about the same on the
+# non-excluded regimes; 2.0 was kept since it never made the excluded-
+# CHEAP variant's result worse in any tested window).
+CAPITAL_REGIME_BUDGET_HEADROOM = 2.0
+# EXTENDED 2026-10-04: MID added alongside CHEAP. Grounded in the trader's
+# own revealed Kelly mismatch -- his real win-rate/price in MID implies a
+# NEGATIVE edge (Kelly says don't bet it), yet he trades real size there
+# anyway, consistent with MID being hedge/insurance-driven for him (see
+# project memory: a position he's already holding gets managed through
+# MID, not a fresh conviction bet). A small bankroll taking FRESH,
+# speculative MID entries has no equivalent insurance rationale -- and
+# this isn't just theory: both $100 bots independently showed MID as a
+# top-2 loss driver the same week this was derived (coinbase-bot: Bitcoin
+# MID -$42.62, 23.1% win rate, its single biggest drag; paperbot-100:
+# Solana MID a loser across its own 7-day history). Hedges remain fully
+# exempt from this exclusion (see the function docstring below) --
+# managing an existing position through MID is left completely untouched;
+# only opening a brand-new speculative MID position is blocked.
+CAPITAL_REGIME_BUDGET_EXCLUDED_REGIMES = ("CHEAP", "MID")
+
+# ADDED 2026-10-04: admission boost for the trader's one Bonferroni-
+# significant, cross-asset-replicated, true-out-of-sample-confirmed edge
+# window (06:00-07:00 UTC, +11.2pp vs +2.5pp overall -- see project
+# memory edge-by-hour-0600-utc-standout). The project's existing
+# ENABLE_HOUR_SIZE_BOOST only bumps SIZE ~1.1-1.26x, far short of the
+# ~4.4x edge multiplier -- underexploited on every bot, full-scale
+# included. For a bankroll-constrained bot specifically, this is the one
+# place real data justifies admitting MORE than the usual share, not
+# just sizing existing admissions bigger. Deliberately conservative
+# relative to the measured 4.4x edge multiplier (2.0x headroom, not
+# 4.4x) -- the edge finding is well-validated but this specific
+# application of it (widening an admission budget, not just a size
+# multiplier) has not itself been backtested the way the exclusions
+# above were, so it stays modest pending a live read. Does not apply to
+# an excluded regime (CHEAP/MID stay excluded at every hour, including
+# 06:00 UTC -- the ruin-risk rationale for excluding them is unrelated
+# to time of day and must not be overridden by this).
+CORE_HOUR_EDGE_UTC_HOUR = 6
+CORE_HOUR_EDGE_HEADROOM_BOOST = 2.0
+
+
+def regime_capital_budget(asset: str, regime: str, available_cash: float,
+                           now: Optional[float] = None) -> float:
+    """Max $ this ORDINARY (non-hedge) entry may spend right now, given how
+    much cash is actually left and this (asset, regime)'s fair share of it.
+    Returns 0.0 for any regime in CAPITAL_REGIME_BUDGET_EXCLUDED_REGIMES
+    (CHEAP/MID, see module comment above for why) -- a hard "don't open a
+    new position in this regime on this bot" rule, not a small-but-nonzero
+    allowance. Returns available_cash unchanged (a no-op cap) for an asset
+    with no REGIME_MIX_TARGET entry, matching regime_drift_correction's own
+    missing-target handling. Deliberately NOT applied to hedges by the
+    caller -- see config.ENABLE_CAPITAL_REGIME_BUDGET's docstring.
+
+    `now` (optional, Unix timestamp -- Unix time is already UTC, no
+    timezone conversion needed) applies CORE_HOUR_EDGE_HEADROOM_BOOST
+    on top of the usual headroom during the trader's confirmed 06:00 UTC
+    edge hour, for any NON-excluded regime. None (the default) is a
+    no-op, same backward-compatible convention as every other optional
+    time parameter in this file."""
+    if regime in CAPITAL_REGIME_BUDGET_EXCLUDED_REGIMES:
+        return 0.0
+    target = REGIME_MIX_TARGET.get(asset, {}).get(regime)
+    if target is None or available_cash <= 0:
+        return max(0.0, available_cash)
+    headroom = CAPITAL_REGIME_BUDGET_HEADROOM
+    if now is not None and int(now // 3600) % 24 == CORE_HOUR_EDGE_UTC_HOUR:
+        headroom *= CORE_HOUR_EDGE_HEADROOM_BOOST
+    return available_cash * target * headroom
 
 
 # ---------------------------------------------------------------------------
@@ -3220,11 +3381,26 @@ def hedge_attempt_hazard(asset: str, primary_regime: str, attempt_index: int) ->
 # the existing dampener). CODED AND TESTED, NOT YET DEPLOYED to the live
 # bots pending explicit go-ahead -- same discipline as every other numeric
 # recalibration this session.
+# RECALIBRATED 2026-10-03 (HIGH/Bitcoin only): the 2026-09-22 value (0.292 =
+# 7.36% [n=258, Sep-18->22] / 25.24% pre-shift baseline) was flagged the
+# next day as a likely-stale read of a still-moving target -- a 3-day sweep
+# (Sep-20->23) found the real ever-hedged rate climbing cleanly day over
+# day (5%->10%->14.5%->23%), and a same-day recency-weighted re-read put it
+# as high as 0.535-0.699 (last-2-day/last-1-day windows). That decision was
+# deliberately QUEUED, not shipped, pending more data (see project memory
+# ready-to-implement-queue-2026-09-24). Re-running the full post-boundary
+# window now (Sep-18 03:00 UTC -> 2026-10-03, n=715, well-powered) shows
+# the climb did NOT continue: the day-by-day rate oscillates noisily
+# (8%-32%, no trend) and pools to 12.45% ever-hedged, i.e. ratio 0.493
+# against the same 25.24% baseline. The queued 0.535-0.699 extrapolation
+# would have been wrong to ship -- that was a short-lived spike, not a
+# structural shift. 0.493 uses the full, now-stable post-boundary window,
+# consistent with how every other cell in this table was derived.
 REGIME_HEDGE_POST_SHIFT_MULTIPLIER = {
     "CHEAP": {"Bitcoin": 0.075, "Ethereum": 0.393, "Solana": 0.270},
     "MID": {"Bitcoin": 0.320, "Ethereum": 0.191, "Solana": 0.176},
     "CORE": {"Bitcoin": 0.370, "Ethereum": 0.122, "Solana": 0.214},
-    "HIGH": {"Bitcoin": 0.292, "Ethereum": 0.455, "Solana": 0.484},
+    "HIGH": {"Bitcoin": 0.493, "Ethereum": 0.455, "Solana": 0.484},
 }
 
 

@@ -1996,6 +1996,65 @@ class TestBankrollGate:
         assert market.condition_id in bot.resting_order_ids
 
 
+class TestCapitalRegimeBudgetGate:
+    """Added 2026-10-03 -- bc.regime_capital_budget's wiring into
+    _evaluate_one_market. See that function's docstring for the backtest
+    this gate is derived from. config.ENABLE_CAPITAL_REGIME_BUDGET
+    defaults False, so every other test in this file (none of which
+    monkeypatch it) is unaffected by this gate existing at all."""
+
+    def test_disabled_by_default_even_with_bankroll_set_and_cheap_price(self, monkeypatch):
+        # Same CHEAP-priced (bid=0.20) setup as
+        # test_order_still_places_normally_when_bankroll_covers_it above --
+        # confirms the new gate changes nothing when its own flag is off,
+        # which is every bot except the one this gets explicitly enabled on.
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        assert config.ENABLE_CAPITAL_REGIME_BUDGET is False
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()
+        market = make_bitcoin_market(condition_id="cond-x")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        assert market.condition_id in bot.resting_order_ids
+
+    def test_cheap_entry_skipped_when_gate_enabled_even_with_ample_bankroll(self, monkeypatch):
+        # bid=0.20 lands in CHEAP (<0.30) -- regime_capital_budget returns
+        # 0.0 for CHEAP unconditionally, so this must be skipped even
+        # though $100 would trivially cover a CHEAP-sized entry on its own.
+        monkeypatch.setattr(config, "BANKROLL_USD", 100.0)
+        monkeypatch.setattr(config, "ENABLE_CAPITAL_REGIME_BUDGET", True)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()
+        market = make_bitcoin_market(condition_id="cond-x")
+        wire_market(bot, market, bid=0.20, ask=0.21, depth=200.0)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        assert market.condition_id not in bot.resting_order_ids
+        assert len(bot.fill_sim.orders) == 0
+
+    def test_non_cheap_entry_still_places_when_within_its_regime_budget(self, monkeypatch):
+        # bid=0.95 lands in HIGH. $2000 bankroll -> HIGH's Bitcoin target
+        # share (0.2763) x headroom (2.0) x $2000 = ~$1105 budget, comfortably
+        # above even the jittered tail of a single HIGH entry's notional --
+        # a smaller bankroll here would make this test depend on exactly how
+        # big this one random draw happens to land, which isn't what this
+        # test is checking (that's regime_capital_budget's own arithmetic,
+        # already covered in test_behavior_config.py).
+        monkeypatch.setattr(config, "BANKROLL_USD", 2000.0)
+        monkeypatch.setattr(config, "ENABLE_CAPITAL_REGIME_BUDGET", True)
+        bot = PaperBot(assets=["Bitcoin"], seed=1)
+        bot.ledger = Ledger()
+        market = make_bitcoin_market(condition_id="cond-x")
+        wire_market(bot, market, bid=0.95, ask=0.96, depth=200.0)
+
+        asyncio.run(bot.strategy_tick(now=1000.0))
+
+        assert market.condition_id in bot.resting_order_ids
+
+
 class TestCurrentEquity:
     """PaperBot.current_equity(), added 2026-09-11 alongside the $100-
     bankroll safety work -- the denominator MAX_ORDER_PCT_OF_EQUITY and

@@ -853,6 +853,23 @@ class PaperBot:
             intent.size_shares = intent.notional_usd / price if price > 0 else 0.0
 
         cash = self.available_cash()
+        if (cash is not None and config.ENABLE_CAPITAL_REGIME_BUDGET
+                and not intent.is_hedge):
+            # CAPITAL-AWARE REGIME BUDGET (2026-10-03): checked BEFORE the
+            # blanket affordability check below, and only for ordinary
+            # (non-hedge) entries -- a hedge on a position already open is
+            # exempt, same "manage what's open, gate what's new" principle
+            # _update_drawdown_tracking already applies to the drawdown
+            # breaker. See bc.regime_capital_budget's docstring for why
+            # this exists (a backtested fix for a small-bankroll vicious
+            # cycle, not just a tighter version of the cash check below).
+            budget = bc.regime_capital_budget(market.asset, intent.regime, cash, now=now)
+            if intent.notional_usd > budget:
+                logger.info(
+                    "SKIP_REGIME_BUDGET asset=%s regime=%s need=$%.4f budget=$%.4f cash=$%.4f",
+                    market.asset, intent.regime, intent.notional_usd, budget, cash,
+                )
+                return
         if cash is not None and intent.notional_usd > cash:
             # Real "insufficient buying power" rejection, not a silent
             # downsize -- see available_cash()'s docstring. Only reachable

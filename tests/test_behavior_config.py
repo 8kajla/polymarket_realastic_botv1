@@ -1040,6 +1040,40 @@ class TestDecisiveEntryEligibilityMultiplier:
     def test_multiplier_treats_a_negative_elapsed_as_the_first_bucket(self):
         assert bc.decisive_entry_eligibility_multiplier("Bitcoin", -5.0) == 1.0
 
+
+class TestCoreBookImbalance:
+    """core_book_imbalance, added 2026-10-04 -- see CORE_IMBALANCE_
+    DAMPENER_THRESHOLD's docstring for the MarketLens cross-check this
+    was derived from (real trader's own Bitcoin CORE fills, n=161)."""
+
+    def test_balanced_book_is_zero(self):
+        assert bc.core_book_imbalance([(0.85, 100.0)], [(0.86, 100.0)]) == pytest.approx(0.0)
+
+    def test_bid_heavy_book_is_positive(self):
+        result = bc.core_book_imbalance([(0.85, 300.0)], [(0.86, 100.0)])
+        assert result == pytest.approx(0.5)  # (300-100)/(300+100)
+
+    def test_ask_heavy_book_is_negative(self):
+        result = bc.core_book_imbalance([(0.85, 100.0)], [(0.86, 300.0)])
+        assert result == pytest.approx(-0.5)
+
+    def test_sums_across_multiple_levels(self):
+        bids = [(0.85, 100.0), (0.84, 50.0)]
+        asks = [(0.86, 50.0), (0.87, 50.0)]
+        result = bc.core_book_imbalance(bids, asks)
+        assert result == pytest.approx((150.0 - 100.0) / (150.0 + 100.0))
+
+    def test_empty_both_sides_returns_none(self):
+        assert bc.core_book_imbalance([], []) is None
+
+    def test_one_sided_book_is_fully_imbalanced(self):
+        assert bc.core_book_imbalance([(0.85, 100.0)], []) == pytest.approx(1.0)
+        assert bc.core_book_imbalance([], [(0.86, 100.0)]) == pytest.approx(-1.0)
+
+    def test_threshold_and_multiplier_are_sane_probabilities(self):
+        assert 0.0 < bc.CORE_IMBALANCE_DAMPENER_THRESHOLD < 1.0
+        assert 0.0 < bc.CORE_IMBALANCE_DAMPENER_MULTIPLIER <= 1.0
+
     def test_cap_is_not_accidentally_clipping_real_calibrated_values(self):
         for asset, buckets in bc.DECISIVE_ENTRY_ELIGIBILITY_MULTIPLIER.items():
             for lo, hi, mult in buckets:
@@ -1295,6 +1329,94 @@ class TestRegimeDriftCorrection:
         for asset, table in bc.REGIME_ENGAGEMENT_MULTIPLIER.items():
             for regime, mult in table.items():
                 assert 0.0 < mult <= 1.0
+
+
+class TestRegimeCapitalBudget:
+    """Added 2026-10-03 -- see regime_capital_budget's docstring for the
+    backtest this was derived from (project memory: a small-bankroll
+    vicious-cycle finding, not just a theoretical design)."""
+
+    def test_cheap_and_mid_are_always_zero_budget(self):
+        # The hard, deliberate exclusion -- CHEAP/MID get zero no matter how
+        # much cash is available, not just a small allowance. MID added
+        # 2026-10-04: his own Kelly mismatch (negative theoretical edge,
+        # trades it anyway for hedge/insurance reasons that don't apply to
+        # a fresh speculative entry) plus live confirmation (coinbase-bot's
+        # and paperbot-100's own biggest MID losses the same week).
+        assert bc.regime_capital_budget("Bitcoin", "CHEAP", 1000.0) == 0.0
+        assert bc.regime_capital_budget("Ethereum", "CHEAP", 0.01) == 0.0
+        assert bc.regime_capital_budget("Bitcoin", "MID", 1000.0) == 0.0
+        assert bc.regime_capital_budget("Solana", "MID", 0.01) == 0.0
+
+    def test_other_regimes_scale_with_target_and_headroom(self):
+        target = bc.REGIME_MIX_TARGET["Bitcoin"]["HIGH"]
+        result = bc.regime_capital_budget("Bitcoin", "HIGH", 100.0)
+        assert result == pytest.approx(100.0 * target * bc.CAPITAL_REGIME_BUDGET_HEADROOM)
+
+    def test_unknown_asset_is_a_noop_cap_at_available_cash(self):
+        # Matches regime_drift_correction's own missing-target handling --
+        # no target means no restriction beyond what's actually available.
+        assert bc.regime_capital_budget("Dogecoin", "HIGH", 42.0) == 42.0
+
+    def test_zero_or_negative_available_cash_returns_zero(self):
+        # CORE, not MID -- MID is now excluded regardless of cash, so this
+        # must use a non-excluded regime to actually test the cash<=0 path.
+        assert bc.regime_capital_budget("Bitcoin", "CORE", 0.0) == 0.0
+        assert bc.regime_capital_budget("Bitcoin", "CORE", -5.0) == 0.0
+
+    def test_budget_never_exceeds_available_cash_by_much_more_than_headroom(self):
+        # Sanity bound: even with headroom, a single asset/regime's budget
+        # shouldn't exceed available cash itself (REGIME_MIX_TARGET shares
+        # are all well under 1/headroom).
+        for asset, table in bc.REGIME_MIX_TARGET.items():
+            for regime in table:
+                if regime in bc.CAPITAL_REGIME_BUDGET_EXCLUDED_REGIMES:
+                    continue
+                budget = bc.regime_capital_budget(asset, regime, 100.0)
+                assert budget <= 100.0
+
+
+class TestRegimeCapitalBudgetHourEdgeBoost:
+    """Added 2026-10-04 -- see CORE_HOUR_EDGE_UTC_HOUR's docstring for the
+    edge-by-hour-0600-utc-standout finding this boost is derived from.
+    Unix timestamps are already UTC, so no timezone conversion needed:
+    21600 = 1970-01-01 06:00:00 UTC exactly."""
+
+    HOUR_6_START = 21600.0       # 06:00:00 UTC
+    HOUR_6_MID = 21600.0 + 1800  # 06:30:00 UTC
+    HOUR_5 = 21600.0 - 1800      # 05:30:00 UTC
+    HOUR_7 = 21600.0 + 3600      # 07:00:00 UTC (boundary -- must NOT boost)
+
+    def test_no_boost_without_a_timestamp(self):
+        plain = bc.regime_capital_budget("Bitcoin", "HIGH", 100.0)
+        explicit_none = bc.regime_capital_budget("Bitcoin", "HIGH", 100.0, now=None)
+        assert plain == explicit_none
+
+    def test_boost_applies_at_06_00_utc(self):
+        baseline = bc.regime_capital_budget("Bitcoin", "HIGH", 100.0)
+        boosted = bc.regime_capital_budget("Bitcoin", "HIGH", 100.0, now=self.HOUR_6_START)
+        assert boosted == pytest.approx(baseline * bc.CORE_HOUR_EDGE_HEADROOM_BOOST)
+
+    def test_boost_applies_throughout_the_hour_not_just_on_the_boundary(self):
+        baseline = bc.regime_capital_budget("Bitcoin", "HIGH", 100.0)
+        boosted = bc.regime_capital_budget("Bitcoin", "HIGH", 100.0, now=self.HOUR_6_MID)
+        assert boosted == pytest.approx(baseline * bc.CORE_HOUR_EDGE_HEADROOM_BOOST)
+
+    def test_no_boost_just_outside_the_hour(self):
+        baseline = bc.regime_capital_budget("Bitcoin", "HIGH", 100.0)
+        before = bc.regime_capital_budget("Bitcoin", "HIGH", 100.0, now=self.HOUR_5)
+        after = bc.regime_capital_budget("Bitcoin", "HIGH", 100.0, now=self.HOUR_7)
+        assert before == pytest.approx(baseline)
+        assert after == pytest.approx(baseline)
+
+    def test_excluded_regimes_stay_excluded_even_during_the_edge_hour(self):
+        # The whole point of CHEAP/MID exclusion is ruin-risk, unrelated to
+        # time of day -- the hour boost must never resurrect them.
+        assert bc.regime_capital_budget("Bitcoin", "CHEAP", 1000.0, now=self.HOUR_6_START) == 0.0
+        assert bc.regime_capital_budget("Bitcoin", "MID", 1000.0, now=self.HOUR_6_START) == 0.0
+
+    def test_boost_still_respects_the_zero_cash_floor(self):
+        assert bc.regime_capital_budget("Bitcoin", "HIGH", 0.0, now=self.HOUR_6_START) == 0.0
 
 
 class TestCheapDeepTouchEdgeMultiplier:

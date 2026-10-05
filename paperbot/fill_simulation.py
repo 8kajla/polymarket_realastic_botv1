@@ -116,6 +116,22 @@ class SimulatedOrder:
     remaining_size: Optional[float] = None
     queue_ahead_raw: float = 0.0
     queue_ahead_discounted: float = 0.0
+    # ADDED 2026-10-04 (CORE win-rate-gap research instrumentation): queue_
+    # ahead_raw/discounted above are LIVE state -- consumed as other fills
+    # land ahead of this order (manage_open_orders) and reset on every
+    # reprice (_reprice) -- so by settlement time they reflect whatever the
+    # LAST reprice saw, not the queue depth that existed at the moment the
+    # strategy actually decided to place this order. Same problem
+    # original_placed_at was added to solve for placed_at above, and the
+    # same fix: snapshotted once in __post_init__, never touched again.
+    # Exists specifically to let a future ledger analysis test whether this
+    # bot's fills are systematically "too easy" (small original queue,
+    # i.e. an optimistic fill assumption) on trades that go on to lose --
+    # a question that was previously impossible to answer retroactively
+    # without a live log trace, and this project's own journald retention
+    # doesn't go back far enough to cover a multi-day investigation window.
+    original_queue_ahead_raw: Optional[float] = None
+    original_queue_ahead_discounted: Optional[float] = None
     status: OrderStatus = OrderStatus.PENDING
     fills: list = field(default_factory=list)
     first_fill_at: Optional[float] = None
@@ -147,6 +163,10 @@ class SimulatedOrder:
             self.remaining_size = self.original_size
         if self.original_placed_at is None:
             self.original_placed_at = self.placed_at
+        if self.original_queue_ahead_raw is None:
+            self.original_queue_ahead_raw = self.queue_ahead_raw
+        if self.original_queue_ahead_discounted is None:
+            self.original_queue_ahead_discounted = self.queue_ahead_discounted
 
     @property
     def filled_size(self) -> float:

@@ -268,6 +268,123 @@ class TestEntryEligible:
         assert reason2 == "addon_continuation_episode_already_rejected"
 
 
+class TestCoreBookImbalanceDampener:
+    """core_book_imbalance wiring, added 2026-10-04 -- see its docstring
+    in behavior_config.py for the MarketLens-derived rationale. Flagged
+    (config.ENABLE_CORE_BOOK_IMBALANCE_DAMPENER, default False), unlike
+    this module's own no-flag findings, since the sample behind it is
+    thinner than what this module's other mechanisms were built on."""
+
+    def test_dampener_can_skip_an_ask_heavy_core_first_entry(self, monkeypatch):
+        market = make_market(end_time=2000.0)
+        book = make_liquid_book(0.85, "up")
+        monkeypatch.setattr(ce.config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: -0.99)
+
+        class AlwaysFailRng:
+            def random(self):
+                return 0.99
+
+        eligible, reason = ce.entry_eligible(
+            market, MarketActivityState(), "Up", book, 0.85, "CORE", now=1000.0, seconds_remaining=200.0,
+            is_hedge=False, is_first_entry=True, regime_engagement_state=None, rng=AlwaysFailRng())
+        assert eligible is False
+        assert reason == "core_book_imbalance"
+
+    def test_dampener_never_fires_on_a_bid_heavy_book(self, monkeypatch):
+        market = make_market(end_time=2000.0)
+        book = make_liquid_book(0.85, "up")
+        monkeypatch.setattr(ce.config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: 0.99)
+
+        class AlwaysFailRng:
+            def random(self):
+                return 0.99
+
+        eligible, _ = ce.entry_eligible(
+            market, MarketActivityState(), "Up", book, 0.85, "CORE", now=1000.0, seconds_remaining=200.0,
+            is_hedge=False, is_first_entry=True, regime_engagement_state=None, rng=AlwaysFailRng())
+        assert eligible is True
+
+    def test_feature_flag_disables_the_dampener(self, monkeypatch):
+        market = make_market(end_time=2000.0)
+        book = make_liquid_book(0.85, "up")
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: -0.99)
+
+        class AlwaysFailRng:
+            def random(self):
+                return 0.99
+
+        eligible, _ = ce.entry_eligible(
+            market, MarketActivityState(), "Up", book, 0.85, "CORE", now=1000.0, seconds_remaining=200.0,
+            is_hedge=False, is_first_entry=True, regime_engagement_state=None, rng=AlwaysFailRng())
+        assert eligible is True  # flag off -- must not skip even though imbalance says to
+
+    def test_dampener_does_not_apply_to_hedges(self, monkeypatch):
+        market = make_market(end_time=2000.0)
+        book = make_liquid_book(0.85, "up")
+        monkeypatch.setattr(ce.config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: -0.99)
+
+        class AlwaysFailRng:
+            def random(self):
+                return 0.99
+
+        eligible, _ = ce.entry_eligible(
+            market, MarketActivityState(), "Up", book, 0.85, "CORE", now=1000.0, seconds_remaining=200.0,
+            is_hedge=True, is_first_entry=True, regime_engagement_state=None, rng=AlwaysFailRng())
+        assert eligible is True
+
+    def test_dampener_does_not_apply_outside_core_regime(self, monkeypatch):
+        market = make_market(end_time=2000.0)
+        book = make_liquid_book(0.95, "up")
+        monkeypatch.setattr(ce.config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: -0.99)
+
+        class AlwaysFailRng:
+            def random(self):
+                return 0.99
+
+        eligible, _ = ce.entry_eligible(
+            market, MarketActivityState(), "Up", book, 0.95, "HIGH", now=1000.0, seconds_remaining=200.0,
+            is_hedge=False, is_first_entry=True, regime_engagement_state=None, rng=AlwaysFailRng())
+        assert eligible is True
+
+    def test_dampener_does_not_apply_to_non_bitcoin(self, monkeypatch):
+        market = make_market(end_time=2000.0, asset="Ethereum")
+        book = make_liquid_book(0.85, "up")
+        monkeypatch.setattr(ce.config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: -0.99)
+
+        class AlwaysFailRng:
+            def random(self):
+                return 0.99
+
+        eligible, _ = ce.entry_eligible(
+            market, MarketActivityState(), "Up", book, 0.85, "CORE", now=1000.0, seconds_remaining=200.0,
+            is_hedge=False, is_first_entry=True, regime_engagement_state=None, rng=AlwaysFailRng())
+        assert eligible is True
+
+    def test_real_book_computation_integrates_correctly(self, monkeypatch):
+        # No mocking of core_book_imbalance -- confirms the real bids/asks
+        # on side_book actually drive the decision end-to-end.
+        market = make_market(end_time=2000.0)
+        ask_heavy_book = BookState(token_id="up")
+        ask_heavy_book.apply_snapshot(bids=[(0.85, 10.0)], asks=[(0.86, 100.0)])
+        monkeypatch.setattr(ce.config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+
+        class AlwaysFailRng:
+            def random(self):
+                return 0.99
+
+        eligible, reason = ce.entry_eligible(
+            market, MarketActivityState(), "Up", ask_heavy_book, 0.85, "CORE", now=1000.0,
+            seconds_remaining=200.0, is_hedge=False, is_first_entry=True,
+            regime_engagement_state=None, rng=AlwaysFailRng())
+        assert eligible is False
+        assert reason == "core_book_imbalance"
+
+
 class TestDecideSize:
     def test_returns_a_positive_notional_for_an_ordinary_first_entry(self):
         rng = random.Random(3)

@@ -99,6 +99,19 @@ class SettlementRecord:
     # placed_at above -- existing ledger.json files predating this field
     # still load cleanly via SettlementRecord(**raw).
     reason: Optional[str] = None
+    # ADDED 2026-10-04 (CORE win-rate-gap research instrumentation): source
+    # order.original_queue_ahead_raw/discounted -- see their docstrings in
+    # fill_simulation.py for the full motivation. Lets a future analysis
+    # test whether this bot's fills are "too easy" (small original queue
+    # ahead, i.e. an optimistic fill vs. what a real resting order facing
+    # genuine queue competition would have cleared) specifically on trades
+    # that go on to lose, without needing a live log trace -- this project's
+    # journald retention doesn't cover a multi-day investigation window.
+    # Optional/None default, same backward-compatible pattern as placed_at/
+    # reason above -- existing ledger.json files predating this field still
+    # load cleanly via SettlementRecord(**raw).
+    original_queue_ahead_raw: Optional[float] = None
+    original_queue_ahead_discounted: Optional[float] = None
 
     def pnl_with_rebate(self) -> float:
         return self.pnl + self.rebate_usd
@@ -183,6 +196,8 @@ class Ledger:
             fills=[{"size": f.size, "price": f.price, "ts": f.ts} for f in order.fills],
             placed_at=order.original_placed_at,
             reason=order.reason,
+            original_queue_ahead_raw=order.original_queue_ahead_raw,
+            original_queue_ahead_discounted=order.original_queue_ahead_discounted,
         )
         self.records.append(record)
         self._settled_order_ids.add(order.order_id)

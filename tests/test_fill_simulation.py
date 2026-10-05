@@ -164,6 +164,38 @@ class TestPerRegimeQueueSafetyFactorOverride:
         assert order.placed_at == 99.0, "placed_at should still move on reprice, unchanged behavior"
         assert order.original_placed_at == 10.0, "original_placed_at must survive the reprice"
 
+    def test_reprice_resets_queue_ahead_but_not_the_original_snapshot(self):
+        # ADDED 2026-10-04 (CORE win-rate-gap research instrumentation):
+        # same discipline as original_placed_at above, applied to queue
+        # depth -- a reprice resets queue_ahead_raw/discounted to whatever
+        # the book looks like NOW (see _reprice()'s own logic), but
+        # original_queue_ahead_raw/discounted must keep the depth that
+        # existed at the ORIGINAL placement, for the same reason
+        # original_placed_at exists: so a later analysis can ask "was this
+        # fill too easy" without that answer getting overwritten by
+        # whatever happened on a subsequent reprice.
+        book = make_book(best_bid=0.90, bid_depth_at_best=100.0, best_ask=0.92, tick_size=0.01)
+        sim = FillSimulator(queue_safety_factor=0.25)
+        order = sim.place_order(make_intent(price=0.90, regime="HIGH"), book, now=10.0)
+        original_raw = order.queue_ahead_raw
+        original_discounted = order.queue_ahead_discounted
+        assert order.original_queue_ahead_raw == pytest.approx(original_raw)
+        assert order.original_queue_ahead_discounted == pytest.approx(original_discounted)
+
+        book.apply_snapshot(bids=[(0.95, 200.0)], asks=[(0.97, 100.0)])
+        seconds_remaining = {"cond-1": 1000}
+        sim.manage_open_orders({"tok-up": book}, seconds_remaining, now=99.0)
+
+        assert order.queue_ahead_raw != pytest.approx(original_raw), (
+            "sanity check: the reprice should actually have changed the live field"
+        )
+        assert order.original_queue_ahead_raw == pytest.approx(original_raw), (
+            "original_queue_ahead_raw must survive the reprice"
+        )
+        assert order.original_queue_ahead_discounted == pytest.approx(original_discounted), (
+            "original_queue_ahead_discounted must survive the reprice"
+        )
+
     def test_empty_override_dict_is_also_a_full_noop(self):
         book = make_book(best_bid=0.20, bid_depth_at_best=100.0)
         sim = FillSimulator(queue_safety_factor=0.25, queue_safety_factor_by_regime={})

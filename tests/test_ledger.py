@@ -327,6 +327,110 @@ class TestOriginalPlacementTimePersisted:
         assert reloaded.records[0].placed_at == 0.0
 
 
+class TestOriginalQueueAheadPersisted:
+    """ADDED 2026-10-04 (CORE win-rate-gap research instrumentation): same
+    pattern as TestOriginalPlacementTimePersisted above, but for the queue
+    depth that existed at PLACEMENT time, not whatever a later reprice or
+    partial-fill consumption left queue_ahead_raw/discounted holding by
+    settlement time."""
+
+    def test_records_the_original_queue_ahead(self):
+        ledger = Ledger()
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-1", token_id="tok-up",
+            asset="Bitcoin", regime="CORE", position_tier="first", side="Up",
+            price=0.85, original_size=10.0, is_floor_lot=False,
+            placed_at=0.0, remaining_size=0.0,
+            queue_ahead_raw=50.0, queue_ahead_discounted=12.5,
+        )
+        order.fills.append(Fill(size=10.0, price=0.85, ts=1.0))
+        order.status = OrderStatus.FILLED
+        record = ledger.settle_order(order, winning_side="Up")
+        assert record.original_queue_ahead_raw == 50.0
+        assert record.original_queue_ahead_discounted == 12.5
+
+    def test_survives_later_consumption_unlike_the_mutable_fields(self):
+        # queue_ahead_raw/discounted get consumed as other fills land ahead
+        # (manage_open_orders) or reset on reprice (_reprice) -- the
+        # original_* snapshot must not move when that happens.
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-1", token_id="tok-up",
+            asset="Bitcoin", regime="CORE", position_tier="first", side="Up",
+            price=0.85, original_size=10.0, is_floor_lot=False,
+            placed_at=0.0, remaining_size=0.0,
+            queue_ahead_raw=50.0, queue_ahead_discounted=12.5,
+        )
+        assert order.original_queue_ahead_raw == 50.0
+        assert order.original_queue_ahead_discounted == 12.5
+
+        # simulate what manage_open_orders/_reprice do to the live fields
+        order.queue_ahead_discounted = 0.0
+        order.queue_ahead_raw = 5.0
+        assert order.original_queue_ahead_raw == 50.0, (
+            "a later consumption/reprice must never move original_queue_ahead_raw"
+        )
+        assert order.original_queue_ahead_discounted == 12.5, (
+            "a later consumption/reprice must never move original_queue_ahead_discounted"
+        )
+
+        order.fills.append(Fill(size=10.0, price=0.85, ts=1.0))
+        order.status = OrderStatus.FILLED
+        ledger = Ledger()
+        record = ledger.settle_order(order, winning_side="Up")
+        assert record.original_queue_ahead_raw == 50.0, (
+            "the settlement record must keep the ORIGINAL queue depth, "
+            "not whatever was left by settlement time"
+        )
+        assert record.original_queue_ahead_discounted == 12.5
+
+    def test_explicit_original_queue_ahead_is_not_overridden(self):
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-1", token_id="tok-up",
+            asset="Bitcoin", regime="CORE", position_tier="first", side="Up",
+            price=0.85, original_size=10.0, is_floor_lot=False,
+            placed_at=0.0, remaining_size=0.0,
+            queue_ahead_raw=5.0, queue_ahead_discounted=1.0,
+            original_queue_ahead_raw=50.0, original_queue_ahead_discounted=12.5,
+        )
+        assert order.original_queue_ahead_raw == 50.0
+        assert order.original_queue_ahead_discounted == 12.5
+
+    def test_old_records_without_this_field_default_to_none_not_a_crash(self):
+        """Same backward-compatibility discipline as placed_at/reason above --
+        a ledger.json saved before this field existed has no
+        'original_queue_ahead_raw'/'original_queue_ahead_discounted' keys at
+        all -- must load cleanly as None, never fabricate a queue depth we
+        don't have."""
+        raw = {
+            "order_id": 1, "condition_id": "c1", "asset": "Bitcoin", "regime": "CORE",
+            "side": "Up", "entry_price": 0.85, "filled_size": 10.0, "entry_cost": 8.5,
+            "winning_side": "Up", "won": True, "payout": 10.0, "pnl": 1.5,
+            "settled_at": 1.0, "is_floor_lot": False,
+        }
+        record = SettlementRecord(**raw)
+        assert record.original_queue_ahead_raw is None
+        assert record.original_queue_ahead_discounted is None
+
+    def test_persists_and_reloads_correctly(self, tmp_path):
+        path = tmp_path / "ledger.json"
+        ledger = Ledger()
+        order = SimulatedOrder(
+            order_id=1, condition_id="cond-1", token_id="tok-up",
+            asset="Bitcoin", regime="CORE", position_tier="first", side="Up",
+            price=0.85, original_size=10.0, is_floor_lot=False,
+            placed_at=0.0, remaining_size=0.0,
+            queue_ahead_raw=50.0, queue_ahead_discounted=12.5,
+        )
+        order.fills.append(Fill(size=10.0, price=0.85, ts=1.0))
+        order.status = OrderStatus.FILLED
+        ledger.settle_order(order, winning_side="Up")
+        ledger.save(path)
+
+        reloaded = Ledger.load(path)
+        assert reloaded.records[0].original_queue_ahead_raw == 50.0
+        assert reloaded.records[0].original_queue_ahead_discounted == 12.5
+
+
 class TestRealizedPnlRecompute:
     def test_pnl_recomputes_from_records_not_a_running_counter(self):
         ledger = Ledger()

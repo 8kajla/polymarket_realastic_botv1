@@ -233,6 +233,19 @@ def entry_eligible(market: Market, activity: MarketActivityState, side: str,
         if elig_mult < 1.0 and rng.random() > elig_mult:
             return False, "decisive_entry_eligibility"
 
+    # CORE BOOK-IMBALANCE DAMPENER (2026-10-04): see bc.CORE_IMBALANCE_
+    # DAMPENER_THRESHOLD's docstring in behavior_config.py for the full
+    # derivation. Bitcoin + CORE only, the only slice actually measured.
+    # Flagged (unlike this module's own no-flag findings) since the
+    # sample behind it (n=161) is thinner than what this module's other
+    # mechanisms were built on.
+    if (config.ENABLE_CORE_BOOK_IMBALANCE_DAMPENER and is_first_entry
+            and regime == "CORE" and market.asset == "Bitcoin"):
+        imbalance = bc.core_book_imbalance(side_book.bids, side_book.asks)
+        if (imbalance is not None and imbalance < bc.CORE_IMBALANCE_DAMPENER_THRESHOLD
+                and rng.random() > bc.CORE_IMBALANCE_DAMPENER_MULTIPLIER):
+            return False, "core_book_imbalance"
+
     # ADD-ON CONTINUATION (2026-09-26): see bc.addon_continuation_
     # probability's docstring -- the complementary case to the two
     # is_first_entry-scoped blocks just above. No flag, consistent with

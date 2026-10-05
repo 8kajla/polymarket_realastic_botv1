@@ -2534,6 +2534,139 @@ class TestDecisiveEntryEligibilityDampener:
         assert intent is not None  # flag off -- must not skip even though the multiplier says to
 
 
+class TestCoreBookImbalanceDampener:
+    """core_book_imbalance wiring, added 2026-10-04 -- a different axis
+    from TestDecisiveEntryEligibilityDampener above (how well-supported
+    the price level is RIGHT NOW via real book depth, not how long since
+    the crossing). Default OFF (config.ENABLE_CORE_BOOK_IMBALANCE_
+    DAMPENER), so every other test in this file is unaffected. Mocks
+    bc.core_book_imbalance directly (same discipline as that class
+    mocking bc.decisive_entry_eligibility_multiplier) rather than the
+    shared rng, so these tests can't be tripped up by an unrelated
+    gate's own rng.random() call earlier in the same pipeline."""
+
+    def test_dampener_can_skip_an_ask_heavy_core_first_entry(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.85, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, price=None, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None, seconds_since_first_entry=None, streak_length=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: -0.99)  # far below threshold
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=1.0)
+        assert intent is None
+
+    def test_dampener_never_fires_on_a_bid_heavy_book(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.85, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, price=None, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None, seconds_since_first_entry=None, streak_length=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: 0.99)  # far above threshold
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=1.0)
+        assert intent is not None
+
+    def test_dampener_is_a_noop_when_imbalance_is_unavailable(self, monkeypatch):
+        # core_book_imbalance returns None for an empty book -- must not skip.
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.85, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, price=None, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None, seconds_since_first_entry=None, streak_length=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: None)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=1.0)
+        assert intent is not None
+
+    def test_feature_flag_disables_the_dampener(self, monkeypatch):
+        # Flag defaults False -- an ask-heavy reading must not skip without it.
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.85, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, price=None, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None, seconds_since_first_entry=None, streak_length=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: -0.99)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=1.0)
+        assert intent is not None
+
+    def test_dampener_does_not_apply_to_hedges(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.15, token_id="up")
+        down_book = make_liquid_book(price=0.85, token_id="down")
+        activity = MarketActivityState()
+        record_filled_entry(activity, "Up", notional_usd=100.0, regime="CHEAP", price=0.15)
+
+        monkeypatch.setattr(config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, price=None, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None, seconds_since_first_entry=None, streak_length=None: ("Down", 5.0))
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: -0.99)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=1.0)
+        assert intent is not None
+        assert intent.is_hedge is True
+
+    def test_dampener_does_not_apply_outside_core_regime(self, monkeypatch):
+        # HIGH band (price 0.95) -- never measured, must not be gated.
+        market = make_market(end_time=1000.0, asset="Bitcoin")
+        up_book = make_liquid_book(price=0.95, token_id="up")
+        down_book = make_liquid_book(price=0.05, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, price=None, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None, seconds_since_first_entry=None, streak_length=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: -0.99)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=1.0)
+        assert intent is not None
+
+    def test_dampener_does_not_apply_to_non_bitcoin(self, monkeypatch):
+        market = make_market(end_time=1000.0, asset="Ethereum")
+        up_book = make_liquid_book(price=0.85, token_id="up")
+        down_book = make_liquid_book(price=0.15, token_id="down")
+        activity = MarketActivityState()
+
+        monkeypatch.setattr(config, "ENABLE_CORE_BOOK_IMBALANCE_DAMPENER", True)
+        monkeypatch.setattr(stratmod, "decide_hedge", lambda asset, activity, rng, price=None, liquidity=None,
+                             is_weekend=None, dominant_current_price=None, prev_hedge_rate=None,
+                             after_big_loss=None, seconds_remaining=None, seconds_since_first_entry=None, streak_length=None: None)
+        monkeypatch.setattr(stratmod, "decide_side", lambda asset, activity, rng, held_side_price=None,
+                             previous_market_first_side=None, previous_market_won=None: "Up")
+        monkeypatch.setattr(bc, "core_book_imbalance", lambda bids, asks: -0.99)
+
+        intent = build_order_intent(market, up_book, down_book, activity, random.Random(0), now=1.0)
+        assert intent is not None
+
+
 class TestRegimeDriftCorrection:
     """regime_engagement_state/bc.regime_drift_correction wiring, added
     2026-09-23 -- a closed-loop overlay on top of
